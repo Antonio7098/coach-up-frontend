@@ -27,3 +27,8 @@ docs/api/*/reference.html
 # Playwright artifacts
 ui/test-results/
 ui/playwright-report/
+
+# Convex
+.convex/
+convex/_generated/
+convex/.cache/

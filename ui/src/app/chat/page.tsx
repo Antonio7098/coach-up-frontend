@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const AI_API_BASE_URL = process.env.NEXT_PUBLIC_AI_API_BASE_URL || "http://localhost:8000";
+const SESSION_ID = (globalThis as any).crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
 
 export default function ChatPage() {
   const [status, setStatus] = useState<
@@ -17,6 +18,9 @@ export default function ChatPage() {
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [firstTokenMs, setFirstTokenMs] = useState<number | null>(null);
   const [totalMs, setTotalMs] = useState<number | null>(null);
+  const [assessRunning, setAssessRunning] = useState(false);
+  const [groupId, setGroupId] = useState<string | null>(null);
+  const [summary, setSummary] = useState<any | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const retryRef = useRef<number>(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -98,6 +102,38 @@ export default function ChatPage() {
       disconnect();
     };
   }, [disconnect]);
+
+  const runAssessment = useCallback(async () => {
+    try {
+      setAssessRunning(true);
+      setSummary(null);
+      const res = await fetch("/api/assessments/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: SESSION_ID }),
+      });
+      if (!res.ok) throw new Error(`run failed: ${res.status}`);
+      const data = await res.json();
+      setGroupId(data.groupId ?? null);
+      // Immediately fetch summary (stubbed in API for now)
+      await fetchSummary();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setAssessRunning(false);
+    }
+  }, []);
+
+  const fetchSummary = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/assessments/${encodeURIComponent(SESSION_ID)}`);
+      if (!res.ok) throw new Error(`get failed: ${res.status}`);
+      const data = await res.json();
+      setSummary(data);
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
 
   return (
     <div className="mx-auto max-w-2xl p-6 space-y-4">
@@ -188,6 +224,40 @@ export default function ChatPage() {
 
       <div className="text-xs text-gray-500">
         Notes: This demo uses native EventSource, which cannot send custom headers. The server generates a request ID for logs; the client prints a final [DONE] marker when streaming ends.
+      </div>
+
+      <div className="mt-8 border-t pt-4 space-y-3">
+        <h2 className="text-lg font-semibold">Assessments (SPR-002 demo)</h2>
+        <div className="text-sm text-gray-600">Session ID: <code className="font-mono">{SESSION_ID}</code></div>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={runAssessment}
+            disabled={assessRunning}
+            className="rounded bg-emerald-600 px-3 py-1.5 text-white hover:bg-emerald-700 disabled:opacity-50"
+          >
+            {assessRunning ? "Running…" : "Run Assessment"}
+          </button>
+          <button
+            type="button"
+            onClick={fetchSummary}
+            className="rounded bg-gray-200 px-3 py-1.5 hover:bg-gray-300"
+          >
+            Fetch Summary
+          </button>
+          {groupId && (
+            <span className="text-xs text-gray-500">groupId: <code className="font-mono">{groupId}</code></span>
+          )}
+        </div>
+        {summary && (
+          <div className="rounded border p-3 text-sm space-y-2">
+            <div className="font-medium">Summary</div>
+            <div>Highlights: {summary.summary?.highlights?.join(", ") ?? "–"}</div>
+            <div>Recommendations: {summary.summary?.recommendations?.join(", ") ?? "–"}</div>
+            <div>Rubric: {summary.summary?.rubricVersion ?? "–"}</div>
+            <div>Categories: {summary.summary?.categories?.join(", ") ?? "–"}</div>
+          </div>
+        )}
       </div>
     </div>
   );
