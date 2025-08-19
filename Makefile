@@ -13,7 +13,7 @@ help:
 	@echo "  openapi-snapshot-ai Placeholder: run in AI repo to snapshot FastAPI spec"
 
 openapi-lint:
-	$(SPECTRAL) lint $(OPENAPI_FILES)
+	$(SPECTRAL) lint --ruleset docs/api/.spectral.yaml $(OPENAPI_FILES)
 
 redoc-build:
 	$(REDOCLY) build-docs docs/api/core/openapi.json -o docs/api/core/reference.html || true

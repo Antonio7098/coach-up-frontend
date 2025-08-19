@@ -12,7 +12,7 @@ High-level view of all planned sprints for the MVP.
 ## Sprint Checklist
 Mark a sprint done by ticking its box.
 
-- [ ] [SPR-001 — MVP Chat Core](./SPR-001.md) (chat SSE baseline). Features: FEAT-001 | FEAT-002 | FEAT-018
+- [x] [SPR-001 — MVP Chat Core](./SPR-001.md) (chat SSE baseline). Features: FEAT-001 | FEAT-002 | FEAT-018
 - [ ] [SPR-002 — Assessments v1](./SPR-002.md) (multi‑turn + summary). Features: FEAT-010 | FEAT-011 | FEAT-008 | FEAT-009 | FEAT-028
 - [ ] [SPR-003 — Auth & Data](./SPR-003.md) (auth, schema, storage). Features: FEAT-014 | FEAT-024 | FEAT-025 | FEAT-007
 - [ ] [SPR-004 — Monitoring & Guardrails](./SPR-004.md) (metrics, limits, breakers). Features: FEAT-019 | FEAT-020 | FEAT-026 | FEAT-022 | FEAT-023
@@ -22,8 +22,8 @@ Mark a sprint done by ticking its box.
 ## Portfolio View (All Planned Sprints)
 | sprint_id | name | start_date | end_date | objective | themes | features (IDs) | owners | status |
 |---|---|---|---|---|---|---|---|---|
-| [SPR-001](./SPR-001.md) | MVP Chat Core | <YYYY-MM-DD> | <YYYY-MM-DD> | Ship realtime chat SSE baseline | chat, frontend | FEAT-001|FEAT-002|FEAT-018 | <owner(s)> | planned |
-| [SPR-002](./SPR-002.md) | Assessments v1 | <YYYY-MM-DD> | <YYYY-MM-DD> | Multi-turn assessment + summary | ai, backend | FEAT-010|FEAT-011|FEAT-008|FEAT-009|FEAT-028 | <owner(s)> | planned |
+| [SPR-001](./SPR-001.md) | MVP Chat Core | 19/08/2025 | 19/08/2025 | Ship realtime chat SSE baseline | chat, frontend | FEAT-001|FEAT-002|FEAT-018 | <owner(s)> | done |
+| [SPR-002](./SPR-002.md) | Assessments v1 | 19/08/2025 | <DD/MM/YYYY> | Multi-turn assessment + summary | ai, backend | FEAT-010|FEAT-011|FEAT-008|FEAT-009|FEAT-028 | <owner(s)> | active |
 | [SPR-003](./SPR-003.md) | Auth & Data | <YYYY-MM-DD> | <YYYY-MM-DD> | Auth, schema, storage | backend, infra | FEAT-014|FEAT-024|FEAT-025|FEAT-007 | <owner(s)> | planned |
 | [SPR-004](./SPR-004.md) | Monitoring & Guardrails | <YYYY-MM-DD> | <YYYY-MM-DD> | Metrics/logs, rate limits, breakers | infra | FEAT-019|FEAT-020|FEAT-026|FEAT-022|FEAT-023 | <owner(s)> | planned |
 | [SPR-005](./SPR-005.md) | Coaching UX & Focus | <YYYY-MM-DD> | <YYYY-MM-DD> | Corrections UI + UserFocus + dashboard | frontend, backend | FEAT-006|FEAT-012|FEAT-013|FEAT-015|FEAT-016|FEAT-017 | <owner(s)> | planned |

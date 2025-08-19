@@ -1,6 +1,9 @@
 {
   "openapi": "3.1.0",
-  "info": { "title": "Coach Up Core API", "version": "v1" },
+  "info": { "title": "Coach Up Core API", "version": "v1", "description": "Core Next.js API for chat and app services." },
+  "servers": [
+    { "url": "http://localhost:3000", "description": "Local dev" }
+  ],
   "paths": {},
   "components": {}
 }

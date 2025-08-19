@@ -13,6 +13,10 @@ export default function ChatPage() {
     | "closed"
   >( "idle");
   const [output, setOutput] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [firstTokenMs, setFirstTokenMs] = useState<number | null>(null);
+  const [totalMs, setTotalMs] = useState<number | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const retryRef = useRef<number>(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -34,13 +38,20 @@ export default function ChatPage() {
     retryRef.current = 0;
   }, []);
 
-  const connect = useCallback(() => {
+  const connect = useCallback((p?: string) => {
     // Clean any previous connection
     disconnect();
 
     setStatus("connecting");
     // Use same-origin API proxy to avoid CORS
-    const url = `/api/chat`;
+    const qs = p && p.length > 0 ? `?prompt=${encodeURIComponent(p)}` : "";
+    const url = `/api/chat${qs}`;
+    // Reset output/metrics
+    setOutput("");
+    setFirstTokenMs(null);
+    setTotalMs(null);
+    const t0 = Date.now();
+    setStartedAt(t0);
     const es = new EventSource(url, { withCredentials: false });
     esRef.current = es;
 
@@ -53,8 +64,15 @@ export default function ChatPage() {
       // Server sends token chunks and a final [DONE]
       if (evt.data === "[DONE]") {
         append("\n[DONE]\n");
+        if (firstTokenMs == null) {
+          setFirstTokenMs(Date.now() - t0);
+        }
+        setTotalMs(Date.now() - t0);
         disconnect();
         return;
+      }
+      if (firstTokenMs == null) {
+        setFirstTokenMs(Date.now() - t0);
       }
       append(evt.data);
     };
@@ -86,21 +104,63 @@ export default function ChatPage() {
       <h1 className="text-2xl font-semibold">Chat Stream (SSE)</h1>
       <p className="text-sm text-gray-500">AI API: {AI_API_BASE_URL}</p>
 
-      <div className="flex items-center gap-3">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          connect(prompt);
+        }}
+        className="flex items-center gap-3"
+      >
+        <input
+          type="text"
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder="Type a prompt…"
+          className="flex-1 rounded border px-3 py-1.5"
+        />
         <button
-          onClick={connect}
+          type="submit"
           className="rounded bg-blue-600 px-3 py-1.5 text-white hover:bg-blue-700 disabled:opacity-50"
-          disabled={status === "connecting" || status === "open" || status === "retrying"}
+          disabled={status === "connecting" || status === "open" || status === "retrying" || prompt.length === 0}
         >
-          Connect
+          Send
         </button>
         <button
+          type="button"
           onClick={disconnect}
           className="rounded bg-gray-200 px-3 py-1.5 hover:bg-gray-300"
         >
-          Disconnect
+          Cancel
         </button>
-        <span className="text-sm">Status: <span className="font-mono">{status}</span></span>
+      </form>
+
+      <div className="flex items-center gap-2 text-sm">
+        <span
+          className={`inline-flex items-center rounded px-2 py-0.5 font-mono ${
+            status === "open"
+              ? "bg-green-100 text-green-700"
+              : status === "connecting"
+              ? "bg-yellow-100 text-yellow-700"
+              : status === "retrying"
+              ? "bg-orange-100 text-orange-700"
+              : status === "closed"
+              ? "bg-gray-100 text-gray-700"
+              : "bg-slate-100 text-slate-700"
+          }`}
+        >
+          {status}
+        </span>
+        <button
+          type="button"
+          onClick={() => {
+            setOutput("");
+            setFirstTokenMs(null);
+            setTotalMs(null);
+          }}
+          className="rounded bg-gray-100 px-2 py-1 hover:bg-gray-200"
+        >
+          Clear
+        </button>
       </div>
 
       <div>
@@ -110,6 +170,20 @@ export default function ChatPage() {
           readOnly
           value={output}
         />
+      </div>
+
+      <div className="text-sm text-gray-600 space-y-1">
+        <div>
+          First token: {firstTokenMs != null ? `${firstTokenMs} ms` : "–"}
+        </div>
+        <div>
+          Total: {totalMs != null ? `${totalMs} ms` : "–"}
+        </div>
+        {startedAt != null && (
+          <div className="text-xs text-gray-400">
+            Started at: {new Date(startedAt).toLocaleTimeString()}
+          </div>
+        )}
       </div>
 
       <div className="text-xs text-gray-500">

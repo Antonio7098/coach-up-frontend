@@ -11,7 +11,8 @@ function aiApiBaseUrl() {
 
 export async function GET(request: Request) {
   const controller = new AbortController();
-  const upstreamUrl = `${aiApiBaseUrl()}/chat/stream`;
+  const { search } = new URL(request.url);
+  const upstreamUrl = `${aiApiBaseUrl()}/chat/stream${search}`;
   const requestId = (globalThis as any).crypto?.randomUUID?.() ??
     Math.random().toString(36).slice(2);
 
