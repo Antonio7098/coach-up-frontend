@@ -1,0 +1,30 @@
+feature_id,feature,version,status,area
+FEAT-001,Realtime Chat SSE,0.1.0,planned,frontend
+FEAT-002,Chat API Route (/api/chat),0.1.0,planned,backend
+FEAT-003,FastAPI AI Service Scaffold,0.1.0,planned,ai
+FEAT-004,Provider Abstraction Layer,0.1.0,planned,ai
+FEAT-005,Micro-corrections Engine v1,0.1.0,planned,ai
+FEAT-006,Corrections UI Chips & Panel,0.1.0,planned,frontend
+FEAT-007,Session Transcript Storage,0.1.0,planned,backend
+FEAT-008,End-of-Session Summary v1,0.1.0,planned,ai
+FEAT-009,Summary Display UI,0.1.0,planned,frontend
+FEAT-010,Assessment Data Model v1,0.1.0,planned,backend
+FEAT-011,Multi-turn Assessment Job v1,0.1.0,planned,ai
+FEAT-012,UserFocus Model v1,0.1.0,planned,backend
+FEAT-013,Dashboard (History & Trends) MVP,0.1.0,planned,frontend
+FEAT-014,Auth (Clerk) Integration,0.1.0,planned,backend
+FEAT-015,Settings (Mic, Language, Privacy),0.1.0,planned,frontend
+FEAT-016,Voice TTS Playback,0.1.0,planned,frontend
+FEAT-017,STT Fallback (Cloud),0.1.0,planned,ai
+FEAT-018,SSE Client & Reconnect Logic,0.1.0,planned,frontend
+FEAT-019,Monitoring Baseline (Metrics/Logs),0.1.0,planned,infra
+FEAT-020,Rate Limiting & Circuit Breakers,0.1.0,planned,infra
+FEAT-021,Feature Flags for Provider Swap,0.1.0,planned,infra
+FEAT-022,Cost Tracking & Budget Alarms,0.1.0,planned,infra
+FEAT-023,Privacy Redaction Pipeline,0.1.0,planned,infra
+FEAT-024,Convex Schema Setup,0.1.0,planned,backend
+FEAT-025,Audio Object Storage (S3-Compatible),0.1.0,planned,infra
+FEAT-026,RequestId Propagation End-to-End,0.1.0,planned,infra
+FEAT-027,Error Handling UX for Outages,0.1.0,planned,frontend
+FEAT-028,Rubric v1 for Assessments,0.1.0,planned,ai
+FEAT-029,Benchmarking & LLM Provider Evaluation,0.1.0,planned,infra
