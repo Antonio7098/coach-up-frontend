@@ -10,29 +10,79 @@ Overview of AI endpoints (chat streaming, assessments, summaries) served by the 
 
 ## Endpoints (MVP)
 
-### POST /v1/chat/stream
-- Summary: Stream LLM tokens for chat interaction.
-- Auth: required (service)
+### GET /chat/stream
+- Summary: Stream tokens via SSE for chat.
 - Headers: X-Request-Id, Accept: text/event-stream
-- Body: { "message": string, "sessionId": string }
+- Query: prompt? (optional)
 - Response: text/event-stream
 
-### POST /v1/assessments/batch
-- Summary: Analyze a batch of interactions; return per-focus assessments.
-- Auth: required (service)
-- Body: { "interactionIds": string[], "rubricVersion": string }
-- Response: { "groupId": string, "assessments": Assessment[] }
+curl (direct to AI API):
+```bash
+curl -N -H 'Accept: text/event-stream' 'http://localhost:8000/chat/stream?prompt=Hello'
+```
 
-### POST /v1/summary/generate
-- Summary: Generate end-of-session summary document.
-- Auth: required (service)
+curl (via frontend proxy):
+```bash
+curl -N 'http://localhost:3000/api/chat?prompt=Hello'
+```
+
+### POST /assessments/run
+- Summary: Start a multi-turn assessment job for a session; returns a groupId (stub in SPR-002 start).
+- Body: { "sessionId": string }
+- Response: { "groupId": string, "status": "accepted" }
+
+curl (direct):
+```bash
+curl -s -H 'content-type: application/json' \
+  -d '{"sessionId":"s_demo"}' \
+  http://localhost:8000/assessments/run
+```
+
+curl (via proxy):
+```bash
+curl -s -H 'content-type: application/json' \
+  -d '{"sessionId":"s_demo"}' \
+  http://localhost:3000/api/assessments/run
+```
+
+TypeScript example:
+```ts
+const res = await fetch('/api/assessments/run', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ sessionId: 's_demo' }),
+});
+const data = await res.json(); // { groupId, status }
+```
+
+### GET /assessments/{sessionId}
+- Summary: Fetch latest assessment summary for a session (stub response for now).
+- Response: { sessionId, latestGroupId, summary: { highlights[], recommendations[], rubricVersion } }
+
+curl (direct):
+```bash
+curl -s http://localhost:8000/assessments/s_demo | jq .
+```
+
+curl (via proxy):
+```bash
+curl -s http://localhost:3000/api/assessments/s_demo | jq .
+```
+
+TypeScript example:
+```ts
+const res = await fetch('/api/assessments/s_demo');
+const summary = await res.json();
+```
 
 ### GET /health
 - Summary: healthcheck endpoint.
 
 ## OpenAPI Spec
 - FastAPI serves /openapi.json automatically.
-- Snapshot into this repo when needed for docs: curl http://localhost:8000/openapi.json > docs/api/ai/openapi.json
+- Snapshot into this repo when needed for docs:
+  - Dev server example: curl http://127.0.0.1:8001/openapi.json > docs/api/ai/openapi.json
+  - Default server: curl http://localhost:8000/openapi.json > docs/api/ai/openapi.json
 
 ## Changelog
-- 2025-08-19: Initial stub added.
+- 2025-08-19: Added assessments (run/get) endpoints and updated chat SSE docs.
