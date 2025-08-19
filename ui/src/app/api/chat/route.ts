@@ -12,6 +12,8 @@ function aiApiBaseUrl() {
 export async function GET(request: Request) {
   const controller = new AbortController();
   const upstreamUrl = `${aiApiBaseUrl()}/chat/stream`;
+  const requestId = (globalThis as any).crypto?.randomUUID?.() ??
+    Math.random().toString(36).slice(2);
 
   // Propagate client abort to upstream
   request.signal.addEventListener("abort", () => controller.abort());
@@ -22,6 +24,7 @@ export async function GET(request: Request) {
       method: "GET",
       headers: {
         Accept: "text/event-stream",
+        "X-Request-Id": requestId,
       },
       signal: controller.signal,
     });
@@ -52,6 +55,7 @@ export async function GET(request: Request) {
       Connection: "keep-alive",
       // Explicitly prevent Next.js from buffering
       "X-Accel-Buffering": "no",
+      "X-Request-Id": requestId,
     },
   });
 }
