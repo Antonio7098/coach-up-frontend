@@ -28,3 +28,5 @@ FEAT-026,RequestId Propagation End-to-End,0.1.0,planned,infra
 FEAT-027,Error Handling UX for Outages,0.1.0,planned,frontend
 FEAT-028,Rubric v1 for Assessments,0.1.0,in_progress,ai
 FEAT-029,Benchmarking & LLM Provider Evaluation,0.1.0,planned,infra
+
+FEAT-030,LLM Boundary Classifier,0.1.0,planned,ai
