@@ -2,8 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const AI_API_BASE_URL = process.env.NEXT_PUBLIC_AI_API_BASE_URL || "http://localhost:8000";
-const SESSION_ID = (globalThis as any).crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+const AI_API_BASE_URL = process.env.NEXT_PUBLIC_AI_API_BASE_URL || "http://127.0.0.1:8001";
 
 export default function ChatPage() {
   const [status, setStatus] = useState<
@@ -24,6 +23,28 @@ export default function ChatPage() {
   const esRef = useRef<EventSource | null>(null);
   const retryRef = useRef<number>(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Generate a sessionId only on the client after mount to avoid SSR/client mismatch
+  const [sessionId, setSessionId] = useState<string>("");
+  useEffect(() => {
+    try {
+      const key = "chatSessionId";
+      const existing = typeof window !== "undefined" ? window.sessionStorage.getItem(key) : null;
+      if (existing && existing.length > 0) {
+        setSessionId(existing);
+        return;
+      }
+      const id = (globalThis as any).crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+      setSessionId(id);
+      if (typeof window !== "undefined") {
+        window.sessionStorage.setItem(key, id);
+      }
+    } catch {
+      // Fallback: still set a random id even if sessionStorage is unavailable
+      const id = (globalThis as any).crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+      setSessionId(id);
+    }
+  }, []);
 
   const append = useCallback((text: string) => {
     setOutput((prev) => prev + text);
@@ -103,6 +124,17 @@ export default function ChatPage() {
     };
   }, [disconnect]);
 
+  const fetchSummary = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/assessments/${encodeURIComponent(sessionId)}`);
+      if (!res.ok) throw new Error(`get failed: ${res.status}`);
+      const data = await res.json();
+      setSummary(data);
+    } catch (e) {
+      console.error(e);
+    }
+  }, [sessionId]);
+
   const runAssessment = useCallback(async () => {
     try {
       setAssessRunning(true);
@@ -110,7 +142,7 @@ export default function ChatPage() {
       const res = await fetch("/api/assessments/run", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionId: SESSION_ID }),
+        body: JSON.stringify({ sessionId }),
       });
       if (!res.ok) throw new Error(`run failed: ${res.status}`);
       const data = await res.json();
@@ -122,18 +154,7 @@ export default function ChatPage() {
     } finally {
       setAssessRunning(false);
     }
-  }, []);
-
-  const fetchSummary = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/assessments/${encodeURIComponent(SESSION_ID)}`);
-      if (!res.ok) throw new Error(`get failed: ${res.status}`);
-      const data = await res.json();
-      setSummary(data);
-    } catch (e) {
-      console.error(e);
-    }
-  }, []);
+  }, [sessionId, fetchSummary]);
 
   return (
     <div className="mx-auto max-w-2xl p-6 space-y-4">
@@ -157,7 +178,7 @@ export default function ChatPage() {
         <button
           type="submit"
           className="rounded bg-blue-600 px-3 py-1.5 text-white hover:bg-blue-700 disabled:opacity-50"
-          disabled={status === "connecting" || status === "open" || status === "retrying" || prompt.length === 0}
+          disabled={!sessionId || status === "connecting" || status === "open" || status === "retrying" || prompt.length === 0}
         >
           Send
         </button>
@@ -228,12 +249,14 @@ export default function ChatPage() {
 
       <div className="mt-8 border-t pt-4 space-y-3">
         <h2 className="text-lg font-semibold">Assessments (SPR-002 demo)</h2>
-        <div className="text-sm text-gray-600">Session ID: <code className="font-mono">{SESSION_ID}</code></div>
+        <div className="text-sm text-gray-600">
+          Session ID: <code className="font-mono">{sessionId || "(initializing…)"}</code>
+        </div>
         <div className="flex items-center gap-3">
           <button
             type="button"
             onClick={runAssessment}
-            disabled={assessRunning}
+            disabled={assessRunning || !sessionId}
             className="rounded bg-emerald-600 px-3 py-1.5 text-white hover:bg-emerald-700 disabled:opacity-50"
           >
             {assessRunning ? "Running…" : "Run Assessment"}
@@ -241,6 +264,7 @@ export default function ChatPage() {
           <button
             type="button"
             onClick={fetchSummary}
+            disabled={!sessionId}
             className="rounded bg-gray-200 px-3 py-1.5 hover:bg-gray-300"
           >
             Fetch Summary
