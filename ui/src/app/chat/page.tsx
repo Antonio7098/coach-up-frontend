@@ -23,6 +23,7 @@ export default function ChatPage() {
   const esRef = useRef<EventSource | null>(null);
   const retryRef = useRef<number>(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const assistantBufferRef = useRef<string>("");
 
   // Generate a sessionId only on the client after mount to avoid SSR/client mismatch
   const [sessionId, setSessionId] = useState<string>("");
@@ -49,6 +50,36 @@ export default function ChatPage() {
   const append = useCallback((text: string) => {
     setOutput((prev) => prev + text);
   }, []);
+
+  const genId = useCallback((): string => {
+    return (
+      (globalThis as any).crypto?.randomUUID?.() ??
+      Math.random().toString(36).slice(2)
+    );
+  }, []);
+
+  const ingestMessage = useCallback(
+    async (role: "user" | "assistant", content: string) => {
+      try {
+        if (!sessionId || !content) return;
+        const payload = {
+          sessionId,
+          messageId: genId(),
+          role,
+          content,
+          ts: Date.now(),
+        };
+        await fetch("/api/messages/ingest", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      } catch (e) {
+        console.error(e);
+      }
+    },
+    [sessionId, genId]
+  );
 
   const disconnect = useCallback(() => {
     if (retryTimerRef.current) {
@@ -77,6 +108,8 @@ export default function ChatPage() {
     setTotalMs(null);
     const t0 = Date.now();
     setStartedAt(t0);
+    // Reset assistant buffer for a fresh assistant final message
+    assistantBufferRef.current = "";
     const es = new EventSource(url, { withCredentials: false });
     esRef.current = es;
 
@@ -88,6 +121,9 @@ export default function ChatPage() {
     es.onmessage = (evt) => {
       // Server sends token chunks and a final [DONE]
       if (evt.data === "[DONE]") {
+        // Fire-and-forget: ingest assistant final message after SSE completion
+        const finalContent = assistantBufferRef.current;
+        void ingestMessage("assistant", finalContent);
         append("\n[DONE]\n");
         if (firstTokenMs == null) {
           setFirstTokenMs(Date.now() - t0);
@@ -100,6 +136,8 @@ export default function ChatPage() {
         setFirstTokenMs(Date.now() - t0);
       }
       append(evt.data);
+      // Accumulate assistant tokens to build the final assistant message
+      assistantBufferRef.current += evt.data;
     };
 
     es.onerror = () => {
@@ -164,7 +202,11 @@ export default function ChatPage() {
       <form
         onSubmit={(e) => {
           e.preventDefault();
+          // Ingest the user message immediately when sending
+          void ingestMessage("user", prompt);
           connect(prompt);
+          // Optional UX: clear input after send
+          setPrompt("");
         }}
         className="flex items-center gap-3"
       >

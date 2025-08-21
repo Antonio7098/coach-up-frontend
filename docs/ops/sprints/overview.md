@@ -26,7 +26,7 @@ Mark a sprint done by ticking its box.
 | [SPR-002](./SPR-002.md) | Assessments v1 | 19/08/2025 | <DD/MM/YYYY> | Multi-turn assessment + summary | ai, backend | FEAT-010|FEAT-011|FEAT-008|FEAT-009|FEAT-028 | <owner(s)> | active |
 | [SPR-003](./SPR-003.md) | Auth & Data | <YYYY-MM-DD> | <YYYY-MM-DD> | Auth, schema, storage | backend, infra | FEAT-014|FEAT-024|FEAT-025|FEAT-007 | <owner(s)> | planned |
 | [SPR-004](./SPR-004.md) | Monitoring & Guardrails | <YYYY-MM-DD> | <YYYY-MM-DD> | Metrics/logs, rate limits, breakers | infra | FEAT-019|FEAT-020|FEAT-026|FEAT-022|FEAT-023 | <owner(s)> | planned |
-| [SPR-005](./SPR-005.md) | Coaching UX & Focus | <YYYY-MM-DD> | <YYYY-MM-DD> | Corrections UI + UserFocus + dashboard | frontend, backend | FEAT-006|FEAT-012|FEAT-013|FEAT-015|FEAT-016|FEAT-017 | <owner(s)> | planned |
+| [SPR-005](./SPR-005.md) | Coaching UX & Focus | <YYYY-MM-DD> | <YYYY-MM-DD> | Corrections UI + Tracked Skill + dashboard | frontend, backend | FEAT-006|FEAT-012|FEAT-013|FEAT-015|FEAT-016|FEAT-017 | <owner(s)> | planned |
 | [SPR-006](./SPR-006.md) | Provider & Benchmarking | <YYYY-MM-DD> | <YYYY-MM-DD> | Provider abstraction + benchmarking | ai, infra | FEAT-004|FEAT-029|FEAT-021|FEAT-022 | <owner(s)> | planned |
 
 Notes:

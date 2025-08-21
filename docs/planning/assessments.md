@@ -13,7 +13,7 @@ Collection: `assessments`
 - id: string (Convex Id)
 - userId: string (required)
 - sessionId: string (required)
-- focusId: string (optional; current UserFocus)
+- trackedSkillId: string (optional; current Tracked Skill)
 - interactionId: string (present for per-interaction assessments)
 - groupId: string (present for multi-turn batch/run)
 - kind: string (e.g., "per_interaction" | "multi_turn" | "summary")
@@ -31,7 +31,7 @@ Constraints/validation:
 - score must be within [0, 1]
 
 Indexes:
-- by userId, sessionId, focusId
+- by userId, sessionId, trackedSkillId
 - by kind, category
 - by createdAt (descending)
 - by groupId (for multi-turn & summary lookups)
@@ -84,7 +84,11 @@ Example (summary doc):
   "summary": {
     "highlights": ["good decomposition", "clear variable naming"],
     "recommendations": ["explain time complexity", "add unit tests"],
-    "rubricKeyPoints": ["correctness", "clarity", "conciseness"]
+    "categories": ["correctness", "clarity", "conciseness", "fluency"],
+    "scores": { "correctness": 0.9, "clarity": 0.8, "conciseness": 0.7, "fluency": 0.85 },
+    "meta": { "messageCount": 4, "durationMs": 12345, "slice": { "startIndex": 0, "endIndex": 3 } },
+    "rubricVersion": "v1",
+    "rubricKeyPoints": ["correctness:0.9", "clarity:0.8", "conciseness:0.7", "fluency:0.85"]
   }
 }
 ```

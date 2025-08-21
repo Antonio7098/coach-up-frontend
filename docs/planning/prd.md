@@ -78,8 +78,8 @@ Personas:
  - 48-hour slice: auth, chat (text/voice), inline corrections, basic summary, lightweight dashboard.
  - Simplest AI delivery: web-first Next.js app with streaming text + TTS; optional STT.
  - Cost control: start with open/free tiers (Web Speech API, Whisper small), batch background analysis.
- - Fast, impactful feedback: inline micro-corrections + end-of-session summary with 1–10 score and next focus.
- - Simple learning paths called focuses with linear progression towards a goal. The user chooses up to 3 focuses and can switch them at any time. Managed via the [UserFocus model](./technical-overview.md#1-core-data-models) (up to 3 active, ordered).
+ - Fast, impactful feedback: inline micro-corrections + end-of-session summary with 1–10 score and a concise next-step tip (Focus Insights reserved for V2).
+ - Simple predefined Skills with linear progression towards a goal. The user chooses up to 3 tracked skills and can switch them at any time. Managed via the [Tracked Skill model](./technical-overview.md#1-core-data-models) (up to 3 active, ordered).
  - Defer: payments, P2P practice, heavy gamification, offline mode, non-English UI.
 
 ### 2.1 Core Features
@@ -94,6 +94,7 @@ Personas:
 
 ### 2.2 Optional / Nice-to-Have Features
 
+- Focus Insights (V2 — non-MVP): actionable recommendations tied to tracked skills; derived from assessments and prioritized to drive progression.
 - Peer-to-peer practice.
 - AI tutor personality customization.
 - Offline mode.
@@ -314,4 +315,4 @@ Initial glossary terms:
 - Rate limiting: exceed per-user quotas to verify 429 with Retry-After and graceful UI messaging.
 - Audio guardrails: reject oversized/invalid audio; fallback to text mode with clear banner.
 - Load smoke: 20 concurrent sessions streaming; p95 latency within targets; no dropped updates.
-- Data constraints: Assessment write/read, groupId grouping for multi-turn, UserFocus constraints (max 3 active, ordering updates).
+- Data constraints: Assessment write/read, groupId grouping for multi-turn, Tracked Skill constraints (max 3 active, ordering updates).

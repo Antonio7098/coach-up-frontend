@@ -35,6 +35,24 @@ The easiest way to deploy your Next.js app is to use the [Vercel Platform](https
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
 
+## Dev Quickstart (E2E + Mock Convex)
+
+- What this does
+  - Spawns both servers via Playwright:
+    - FastAPI (AI API) on `http://127.0.0.1:8001`
+    - Next.js UI on `http://localhost:3100` (fresh server per run)
+  - Runs all Playwright E2E tests in Chromium with in-memory Convex mock.
+- Install once
+  - `npm install`
+  - `npx playwright install --with-deps chromium`
+- Run tests (mock Convex)
+  - `PERSIST_ASSESSMENTS_SECRET=test-secret npx playwright test --project=chromium`
+  - Env toggles available:
+    - `SKIP_AI_CONTRACTS=1` to skip AI contract tests (FastAPI server won’t start)
+    - `MOCK_CONVEX=1` (default) uses in-memory persistence; finalize auth skipped
+- Run a single test
+  - `npx playwright test tests/e2e/api.contract.messages.ingest.spec.ts --project=chromium`
+
 ## Real Convex Quickstart
 
 Use a real Convex dev deployment instead of mocks.

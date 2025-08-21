@@ -25,7 +25,7 @@ Schema (JSONL)
 {
   "id": "ex_001",
   "task": "micro_correction|assertiveness|word_choice|summary|multi_turn",
-  "focusId": "focus_assertiveness",
+  "trackedSkillId": "focus_assertiveness",
   "rubricVersion": "v1",
   "input": {
     "messages": [

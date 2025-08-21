@@ -3,33 +3,52 @@ FEAT-001,Realtime Chat SSE,0.1.0,done,frontend
 FEAT-002,Chat API Route (/api/chat),0.1.0,planned,backend
 FEAT-003,FastAPI AI Service Scaffold,0.1.0,done,ai
 FEAT-004,Provider Abstraction Layer,0.1.0,planned,ai
-FEAT-005,Micro-corrections Engine v1,0.1.0,planned,ai
-FEAT-006,Corrections UI Chips & Panel,0.1.0,planned,frontend
+FEAT-005,Micro-corrections Engine v1,0.2.0,planned,ai
+FEAT-006,Corrections UI Chips & Panel,0.2.0,planned,frontend
 FEAT-007,Session Transcript Storage,0.1.0,planned,backend
 FEAT-008,End-of-Session Summary v1,0.1.0,planned,ai
 FEAT-009,Summary Display UI,0.1.0,done,frontend
 FEAT-010,Assessment Data Model v1,0.1.0,done,backend
 FEAT-011,Multi-turn Assessment Job v1,0.1.0,in_progress,ai
-FEAT-012,UserFocus Model v1,0.1.0,planned,backend
-FEAT-013,Dashboard (History & Trends) MVP,0.1.0,planned,frontend
+FEAT-012,Tracked Skill Model v1,0.1.0,planned,backend
+FEAT-013,Dashboard (History & Trends) MVP,0.2.0,planned,frontend
 FEAT-014,Auth (Clerk) Integration,0.1.0,planned,backend
 FEAT-015,Settings (Mic, Language, Privacy),0.1.0,planned,frontend
 FEAT-016,Voice TTS Playback,0.1.0,planned,frontend
-FEAT-017,STT Fallback (Cloud),0.1.0,planned,ai
+FEAT-017,STT Fallback (Cloud),0.2.0,planned,ai
 FEAT-018,SSE Client & Reconnect Logic,0.1.0,planned,frontend
-FEAT-019,Monitoring Baseline (Metrics/Logs),0.1.0,planned,infra
+FEAT-019,Monitoring Baseline (Metrics/Logs),0.1.0,in_progress,infra
 FEAT-020,Rate Limiting & Circuit Breakers,0.1.0,planned,infra
-FEAT-021,Feature Flags for Provider Swap,0.1.0,planned,infra
-FEAT-022,Cost Tracking & Budget Alarms,0.1.0,planned,infra
-FEAT-023,Privacy Redaction Pipeline,0.1.0,planned,infra
+FEAT-021,Feature Flags for Provider Swap,0.2.0,planned,infra
+FEAT-022,Cost Tracking & Budget Alarms,0.2.0,planned,infra
+FEAT-023,Privacy Redaction Pipeline,0.2.0,planned,infra
 FEAT-024,Convex Schema Setup,0.1.0,done,backend
-FEAT-025,Audio Object Storage (S3-Compatible),0.1.0,planned,infra
+FEAT-025,Audio Object Storage (S3-Compatible),0.2.0,planned,infra
 FEAT-026,RequestId Propagation End-to-End,0.1.0,planned,infra
 FEAT-027,Error Handling UX for Outages,0.1.0,planned,frontend
 FEAT-028,Rubric v1 for Assessments,0.1.0,in_progress,ai
-FEAT-029,Benchmarking & LLM Provider Evaluation,0.1.0,planned,infra
+FEAT-029,Benchmarking & LLM Provider Evaluation,0.2.0,planned,infra
 
 FEAT-030,LLM Boundary Classifier,0.1.0,planned,ai
 
 FEAT-031,Durable Job Queue,0.1.0,planned,infra
-FEAT-032,Convex Session State & Event Log,0.1.0,planned,backend
+FEAT-032,Convex Session State & Event Log,0.2.0,planned,backend
+
+FEAT-033,Focus Areas Generation v1,0.1.0,planned,ai
+FEAT-034,Session Summary Consolidation (Focus Areas),0.1.0,planned,ai
+FEAT-035,In-memory Transcript Buffering,0.1.0,done,ai
+FEAT-036,Group Span Tracking for Multi-turn,0.1.0,done,ai
+FEAT-037,Worker Concurrency & Jittered Retries,0.1.0,done,ai
+FEAT-038,SQS + Worker Metrics (Prometheus),0.1.0,done,ai
+FEAT-039,Alerts: SQS/Worker + DLQ Runbook,0.1.0,done,infra
+FEAT-040,API Docs Scaffolding,0.1.0,done,docs
+FEAT-041,E2E: /chat Summary Panel,0.1.0,done,qa
+FEAT-042,FastAPI Lifespan Context Manager,0.1.0,done,ai
+FEAT-043,STT Mic Capture & Submit,0.1.0,planned,frontend
+FEAT-044,STT Provider Integration,0.1.0,planned,ai
+FEAT-045,TTS Provider Integration,0.1.0,planned,ai
+FEAT-046,Service-to-Service Auth (Clerk JWT verify),0.1.0,planned,backend
+FEAT-047,Assessments Finalize API (UI route),0.1.0,planned,backend
+FEAT-048,Voice Mode Guardrails (max utterance, concurrent mic),0.2.0,planned,infra
+FEAT-049,Mock STT Path for E2E,0.1.0,planned,qa
+

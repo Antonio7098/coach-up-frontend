@@ -54,7 +54,7 @@ List feature IDs from Features CSV (pipe-separate multiple)
 
 ## Technical Details
 ### Database Models
-- Collections/Tables impacted: <User|Session|Interaction|Assessment|UserFocus|...>
+- Collections/Tables impacted: <User|Session|Interaction|Assessment|TrackedSkill|...>
 - New/changed fields: <model.field: type/notes>
 - Constraints/validation: <required/enum/range>
 - Indexes (read/write paths): <model: [field,...]>
