@@ -1,0 +1,106 @@
+name: Storage Smoke (LocalStack)
+
+on:
+  pull_request:
+    paths:
+      - 'ui/**'
+      - '.github/workflows/storage-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  storage-smoke:
+    runs-on: ubuntu-latest
+
+    services:
+      localstack:
+        image: localstack/localstack:latest
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: s3
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Wait for LocalStack S3
+        run: |
+          for i in {1..60}; do
+            if curl -fsS http://localhost:4566/_localstack/health | grep -q '"s3"\s*:\s*"running"'; then
+              echo "LocalStack S3 is running"; break; fi; sleep 2; done
+          curl -fsS http://localhost:4566/_localstack/health || true
+
+      - name: Apply S3 CORS and ensure bucket
+        working-directory: ui
+        env:
+          STORAGE_PROVIDER: s3
+          S3_BUCKET_AUDIO: coachup-audio-ci
+          S3_REGION: us-east-1
+          S3_ENDPOINT_URL: http://localhost:4566
+          S3_FORCE_PATH_STYLE: '1'
+          AWS_ACCESS_KEY_ID: local
+          AWS_SECRET_ACCESS_KEY: local
+        run: npm run s3:setup:cors
+
+      - name: Build Next.js app
+        working-directory: ui
+        env:
+          STORAGE_PROVIDER: s3
+          S3_BUCKET_AUDIO: coachup-audio-ci
+          S3_REGION: us-east-1
+          S3_ENDPOINT_URL: http://localhost:4566
+          S3_FORCE_PATH_STYLE: '1'
+          AWS_ACCESS_KEY_ID: local
+          AWS_SECRET_ACCESS_KEY: local
+          CLERK_ENABLED: '0'
+        run: npm run build
+
+      - name: Start Next.js server
+        working-directory: ui
+        env:
+          PORT: '3000'
+          STORAGE_PROVIDER: s3
+          S3_BUCKET_AUDIO: coachup-audio-ci
+          S3_REGION: us-east-1
+          S3_ENDPOINT_URL: http://localhost:4566
+          S3_FORCE_PATH_STYLE: '1'
+          AWS_ACCESS_KEY_ID: local
+          AWS_SECRET_ACCESS_KEY: local
+          CLERK_ENABLED: '0'
+        run: |
+          nohup npm start >/tmp/ui-next.log 2>&1 &
+          echo $! > /tmp/ui-next.pid
+
+      - name: Wait for Next.js
+        run: |
+          for i in {1..60}; do code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/ || true); if [ "$code" = "200" ]; then echo "Next.js is up"; break; fi; sleep 2; done
+          tail -n 100 /tmp/ui-next.log || true
+
+      - name: Smoke - Upload (presign + PUT)
+        working-directory: ui
+        env:
+          BASE_URL: http://localhost:3000
+        run: npm run smoke:storage
+
+      - name: Smoke - Download (presign + GET)
+        working-directory: ui
+        env:
+          BASE_URL: http://localhost:3000
+        run: npm run smoke:storage:download
+
+      - name: Show Next.js logs on failure
+        if: failure()
+        run: |
+          echo '--- Next.js logs ---'
+          tail -n +1 /tmp/ui-next.log || true
