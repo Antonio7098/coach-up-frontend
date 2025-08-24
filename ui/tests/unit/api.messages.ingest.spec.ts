@@ -50,7 +50,7 @@ describe('API: /api/messages/ingest proxy', () => {
     const res = await ingestPOST(req);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe('http://127.0.0.1:8001/messages/ingest');
+    expect(url).toBe('http://127.0.0.1:8000/messages/ingest');
     // upstream headers include the same X-Request-Id
     expect(new Headers(init.headers).get('x-request-id')).toBe(reqId);
     // upstream receives same bytes

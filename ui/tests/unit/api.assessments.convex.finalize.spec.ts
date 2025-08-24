@@ -48,8 +48,8 @@ describe('API: POST /api/assessments/convex/finalize', () => {
     expect(client).toBeTruthy();
     expect(client.url).toBe('http://127.0.0.1:3210');
     expect(client.mutation).toHaveBeenCalledWith(
-      'assessments:finalizeAssessmentSummary',
-      payload,
+      'assessments:persistAssessmentSummary',
+      expect.objectContaining(payload),
     );
   });
 
@@ -68,5 +68,66 @@ describe('API: POST /api/assessments/convex/finalize', () => {
     const res = await finalizePOST(req);
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ error: 'Convex mutation failed' });
+  });
+
+  it('returns 400 when sessionId is empty', async () => {
+    const payload = {
+      sessionId: '   ',
+      groupId: 'g1',
+      summary: { highlights: ['a'], recommendations: ['b'], rubricKeyPoints: ['c'] },
+    } as any;
+    const req = new Request('http://localhost:3000/api/assessments/convex/finalize', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const res = await finalizePOST(req);
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 when groupId is empty', async () => {
+    const payload = {
+      sessionId: 's1',
+      groupId: '   ',
+      summary: { highlights: ['a'], recommendations: ['b'], rubricKeyPoints: ['c'] },
+    } as any;
+    const req = new Request('http://localhost:3000/api/assessments/convex/finalize', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const res = await finalizePOST(req);
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 when rubricVersion is provided but empty', async () => {
+    const payload = {
+      sessionId: 's1',
+      groupId: 'g1',
+      rubricVersion: '   ',
+      summary: { highlights: ['a'], recommendations: ['b'], rubricKeyPoints: ['c'] },
+    } as any;
+    const req = new Request('http://localhost:3000/api/assessments/convex/finalize', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const res = await finalizePOST(req);
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 when summary arrays are invalid', async () => {
+    const payload = {
+      sessionId: 's1',
+      groupId: 'g1',
+      summary: { highlights: [1], recommendations: ['ok'], rubricKeyPoints: ['ok'] },
+    } as any;
+    const req = new Request('http://localhost:3000/api/assessments/convex/finalize', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const res = await finalizePOST(req);
+    expect(res.status).toBe(400);
   });
 });

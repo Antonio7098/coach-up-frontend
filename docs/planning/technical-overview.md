@@ -454,10 +454,10 @@ See the detailed guide: [Benchmarking & LLM Provider Evaluation](../ops/benchmar
 ## 12. Dev & E2E Environment (Summary)
 
 - Servers spun up by Playwright (see `ui/playwright.config.ts`):
-  - FastAPI (AI API): `http://127.0.0.1:8001`
+  - FastAPI (AI API): `http://127.0.0.1:8000`
   - Next.js UI: `http://localhost:3100` with fresh server per run (`reuseExistingServer=false`)
 - Key environment variables for local runs:
-  - UI webServer env: `CSS_TRANSFORMER_WASM=1`, `AI_API_BASE_URL=http://127.0.0.1:8001`, `MOCK_CONVEX=1`, `PERSIST_ASSESSMENTS_SECRET`, `NEXT_PUBLIC_STT_PROVIDER`, `NEXT_PUBLIC_TTS_PROVIDER`, `ENABLE_TTS=1`
+  - UI webServer env: `CSS_TRANSFORMER_WASM=1`, `AI_API_BASE_URL=http://127.0.0.1:8000`, `MOCK_CONVEX=1`, `PERSIST_ASSESSMENTS_SECRET`, `NEXT_PUBLIC_STT_PROVIDER`, `NEXT_PUBLIC_TTS_PROVIDER`, `ENABLE_TTS=1`
   - Server env (if server-proxying STT/TTS): `STT_API_KEY`, `TTS_API_KEY`
   - Real Convex: `MOCK_CONVEX=0`, `CONVEX_URL`, `NEXT_PUBLIC_CONVEX_URL`
 - Mock behavior:

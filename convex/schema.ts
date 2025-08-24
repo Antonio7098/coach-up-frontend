@@ -77,6 +77,7 @@ export default defineSchema({
     messageId: v.string(),
     role: v.union(v.literal("user"), v.literal("assistant")),
     contentHash: v.string(),
+    text: v.optional(v.string()),
     audioUrl: v.optional(v.string()),
     ts: v.number(), // event timestamp (ms since epoch)
     createdAt: v.number(),
@@ -97,8 +98,45 @@ export default defineSchema({
     createdAt: v.number(),
   })
     .index("by_session", ["sessionId"]) 
+    .index("by_user", ["userId"]) 
     .index("by_group", ["groupId"]) 
     .index("by_requestId", ["requestId"]) 
     .index("by_createdAt", ["createdAt"]) 
     .index("by_tracked_hash", ["trackedSkillIdHash"]),
+
+  // Skills — predefined pathways for learning with ranked levels and progression criteria
+  skills: defineTable({
+    id: v.string(), // unique skill identifier (e.g., "clarity_eloquence", "stutter_reduction")
+    title: v.string(), // display name (e.g., "Clarity/Eloquence")
+    description: v.string(), // brief description of what the skill teaches
+    levels: v.array(
+      v.object({
+        level: v.number(), // 1-10 scale
+        criteria: v.string(), // requirements for achieving this level
+        examples: v.optional(v.array(v.string())), // example utterances/behaviors
+        rubricHints: v.optional(v.array(v.string())), // hints for assessment
+      })
+    ),
+    category: v.optional(v.string()), // e.g., "communication", "fluency", "style"
+    isActive: v.boolean(), // whether this skill is available for selection
+    createdAt: v.number(), // ms since epoch
+    updatedAt: v.number(), // ms since epoch
+  })
+    .index("by_skill_id", ["id"])
+    .index("by_category", ["category"])
+    .index("by_isActive", ["isActive"])
+    .index("by_createdAt", ["createdAt"]),
+
+  // Per-user tracked skills — at most 2 per user, ordered, with current level (0-10)
+  tracked_skills: defineTable({
+    userId: v.string(),
+    skillId: v.string(),
+    currentLevel: v.number(), // 0..10
+    order: v.number(), // 1..2
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user", ["userId"]) 
+    .index("by_user_skill", ["userId", "skillId"]) 
+    .index("by_user_order", ["userId", "order"]),
 });

@@ -7,12 +7,23 @@ process.env.PERSIST_ASSESSMENTS_SECRET = persistSecret;
 
 // Build UI web server env without clobbering .env.local values.
 // Only pass Convex envs when explicitly provided to Playwright.
+const aiApiBase = process.env.AI_API_BASE_URL || 'http://127.0.0.1:8000';
+const aiApiUrl = (() => {
+  try { return new URL(aiApiBase); } catch { return new URL('http://127.0.0.1:8000'); }
+})();
+const aiApiPort = aiApiUrl.port || (aiApiUrl.protocol === 'https:' ? '443' : '8000');
+
 const uiWebServerEnv: Record<string, string> = {
   PORT: process.env.PORT || '3100',
   CSS_TRANSFORMER_WASM: '1',
-  AI_API_BASE_URL: 'http://127.0.0.1:8001',
+  AI_API_BASE_URL: aiApiUrl.toString().replace(/\/$/, ''),
   MOCK_CONVEX: process.env.MOCK_CONVEX ?? '1',
   PERSIST_ASSESSMENTS_SECRET: persistSecret,
+  // Force mock speech providers during E2E to avoid external dependencies
+  STT_PROVIDER: 'mock',
+  TTS_PROVIDER: 'mock',
+  // Ensure Voice UI is enabled in tests
+  NEXT_PUBLIC_ENABLE_VOICE: '1',
 };
 if (process.env.CONVEX_URL) {
   uiWebServerEnv.CONVEX_URL = process.env.CONVEX_URL;
@@ -20,6 +31,12 @@ if (process.env.CONVEX_URL) {
 if (process.env.NEXT_PUBLIC_CONVEX_URL || process.env.CONVEX_URL) {
   uiWebServerEnv.NEXT_PUBLIC_CONVEX_URL = process.env.NEXT_PUBLIC_CONVEX_URL || process.env.CONVEX_URL!;
 }
+// Pass through optional Clerk flags when specified for targeted runs
+if (process.env.CLERK_PROTECT_ALL) {
+  uiWebServerEnv.CLERK_PROTECT_ALL = process.env.CLERK_PROTECT_ALL;
+}
+// Ensure CLERK_ENABLED=0 during E2E to prevent auth() calls in API routes
+uiWebServerEnv.CLERK_ENABLED = '0';
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -41,8 +58,8 @@ export default defineConfig({
   webServer: [
     ...(skipContracts ? [] : [{
       // FastAPI (AI API) — run via uvicorn
-      command: 'python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8001',
-      url: 'http://127.0.0.1:8001/health',
+      command: `python3 -m uvicorn app.main:app --host 127.0.0.1 --port ${aiApiPort}`,
+      url: `http://127.0.0.1:${aiApiPort}/health`,
       reuseExistingServer: false,
       timeout: 120_000,
       cwd: '../../coach-up-ai-api',
@@ -51,10 +68,10 @@ export default defineConfig({
     }]),
     {
       // Next.js UI
-      command: 'npm run dev:wasm',
+      command: "sh -lc 'npm run build && npm run start'",
       url: process.env.BASE_URL || 'http://localhost:3100',
       reuseExistingServer: false,
-      timeout: 120_000,
+      timeout: 300_000,
       env: uiWebServerEnv,
       stdout: 'pipe' as const,
       stderr: 'pipe' as const,

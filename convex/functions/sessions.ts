@@ -13,6 +13,18 @@ export const updateSessionState = mutation({
     latestGroupId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    // Runtime guards
+    const nonEmpty = (s: unknown) => typeof s === 'string' && s.trim().length > 0;
+    if (!nonEmpty(args.userId)) throw new Error('userId required');
+    if (!nonEmpty(args.sessionId)) throw new Error('sessionId required');
+    if (args.latestGroupId !== undefined && args.latestGroupId !== null && !nonEmpty(args.latestGroupId)) {
+      throw new Error('latestGroupId must be non-empty when provided');
+    }
+    if (args.state !== undefined && args.state !== null) {
+      if (typeof args.state !== 'object' || Array.isArray(args.state)) {
+        throw new Error('state must be an object when provided');
+      }
+    }
     const now = Date.now();
     // Lookup by sessionId
     const existing = await ctx.db

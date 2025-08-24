@@ -7,7 +7,7 @@ const skipContracts = /^(1|true)$/i.test(process.env.SKIP_AI_CONTRACTS ?? '');
 test.skip(skipContracts, 'Requires AI API server to be running');
 
 test('chat: run assessment -> Summary panel shows with categories', async ({ page }) => {
-  await page.goto('/chat');
+  await page.goto('/chat', { waitUntil: 'domcontentloaded' });
 
   // Click "Run Assessment"
   const runBtn = page.getByRole('button', { name: 'Run Assessment' });
@@ -25,6 +25,8 @@ test('chat: run assessment -> Summary panel shows with categories', async ({ pag
   await expect(page.getByText('Categories:')).toBeVisible();
 
   // Categories should include rubric v1 categories from AI API stub
-  await expect(page.getByText(/clarity/i)).toBeVisible();
-  await expect(page.getByText(/fluency/i)).toBeVisible();
+  const categories = page.getByText(/^Categories:/);
+  await expect(categories).toBeVisible();
+  await expect(categories).toContainText(/clarity/i);
+  await expect(categories).toContainText(/fluency/i);
 });

@@ -1,8 +1,8 @@
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Convex: server-side HTTP client
-import { ConvexHttpClient } from "convex/browser";
+// Convex helper
+import { makeConvex } from "../../lib/convex";
 import * as mockConvex from "../../lib/mockConvex";
 
 const corsHeaders: Record<string, string> = {
@@ -16,7 +16,7 @@ function aiApiBaseUrl() {
   return (
     process.env.AI_API_BASE_URL ||
     process.env.NEXT_PUBLIC_AI_API_BASE_URL ||
-    "http://127.0.0.1:8001"
+    "http://127.0.0.1:8000"
   );
 }
 
@@ -30,8 +30,14 @@ export async function POST(request: Request) {
 
   // Pass-through original request body (as bytes) to avoid stream issues in Node fetch
   const headers = new Headers(request.headers);
-  const requestId = headers.get("x-request-id") ||
-    ((globalThis as any).crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2));
+  const requestId = headers.get("x-request-id") || (() => {
+    try {
+      const g = globalThis as unknown as { crypto?: { randomUUID?: () => string } };
+      return g.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+    } catch {
+      return Math.random().toString(36).slice(2);
+    }
+  })();
   headers.set("X-Request-Id", requestId);
   if (!headers.has("Accept")) headers.set("Accept", "application/json");
   const bodyBytes = await request.arrayBuffer();
@@ -76,7 +82,7 @@ export async function POST(request: Request) {
       body: bodyBytes,
       signal: controller.signal,
     });
-  } catch (err) {
+  } catch {
     return new Response("Upstream unavailable", { status: 502 });
   }
   const convexUrl = process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || "http://127.0.0.1:3210";
@@ -94,8 +100,8 @@ export async function POST(request: Request) {
             rubricVersion: "v1",
           });
         } else {
-          const client = new ConvexHttpClient(convexUrl);
-          await client.mutation("assessments:createAssessmentGroup" as any, {
+          const client = makeConvex(convexUrl);
+          await client.mutation("assessments:createAssessmentGroup", {
             sessionId,
             groupId,
             rubricVersion: "v1",

@@ -1,0 +1,53 @@
+/* Global theme tokens */
+:root {
+  /* Neutrals */
+  --cu-bg: 247 247 248; /* rgb for hsl/opacity with Tailwind-like syntax */
+  --cu-fg: 31 31 31;
+  --cu-fg-muted: 82 82 91;
+
+  /* Surfaces */
+  --cu-surface: 255 255 255;
+  --cu-surface-border: 229 231 235;
+  --cu-elevated-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
+
+  /* Accents */
+  --cu-accent: 75 85 99; /* gray-600 */
+  --cu-accent-soft: 209 213 219; /* gray-300 */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --cu-bg: 15 15 16;
+    --cu-fg: 229 229 231;
+    --cu-fg-muted: 161 161 170;
+    --cu-surface: 24 24 27;
+    --cu-surface-border: 63 63 70;
+    --cu-accent: 156 163 175;
+    --cu-accent-soft: 82 82 91;
+  }
+}
+
+/* Convenience utility classes for places we don't want inline tailwind tokens */
+.cu-surface {
+  background-color: rgb(var(--cu-surface));
+  color: rgb(var(--cu-fg));
+}
+
+.cu-border {
+  border-color: rgb(var(--cu-surface-border));
+}
+
+.cu-muted {
+  color: rgb(var(--cu-fg-muted));
+}
+
+.cu-progress {
+  background-color: rgb(var(--cu-accent));
+}
+
+body {
+  background-color: rgb(var(--cu-bg));
+  color: rgb(var(--cu-fg));
+}
+
+

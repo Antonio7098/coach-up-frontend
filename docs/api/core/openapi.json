@@ -4,6 +4,385 @@
   "servers": [
     { "url": "http://localhost:3000", "description": "Local dev" }
   ],
-  "paths": {},
-  "components": {}
+  "paths": {
+    "/api/v1/skills": {
+      "get": {
+        "summary": "List skills or fetch a skill by id/category",
+        "description": "Public, read-only endpoint. When `id` is provided, returns a single skill. Otherwise returns a list of active skills or filtered by `category`.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" },
+            "description": "Skill id. If provided, returns `{ skill }` instead of `{ skills }`. Must be non-empty if present."
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" },
+            "description": "Filter skills by category when `id` is not provided."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "skills": {
+                          "type": "array",
+                          "items": { "$ref": "#/components/schemas/Skill" }
+                        }
+                      },
+                      "required": ["skills"]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "skill": { "$ref": "#/components/schemas/SkillOrNull" }
+                      },
+                      "required": ["skill"]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request (e.g., empty id)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream error (Convex query failed)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/storage/audio/presign": {
+      "post": {
+        "summary": "Generate presigned PUT URL for audio upload",
+        "description": "Returns a short‑lived presigned URL for uploading an audio object to S3‑compatible storage.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/PresignRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Presign generated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PresignResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request (e.g., unsupported contentType, size too large)",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "502": {
+            "description": "Upstream error (storage signer failure)",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      },
+      "get": {
+        "summary": "Generate presigned GET URL for audio download",
+        "description": "Returns a short‑lived presigned URL for downloading an audio object from S3‑compatible storage.",
+        "parameters": [
+          { "name": "objectKey", "in": "query", "required": true, "schema": { "type": "string" }, "description": "Object key to download" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Presign generated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PresignDownloadResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request (e.g., missing objectKey)",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "502": {
+            "description": "Upstream error (storage signer failure)",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/v1/transcripts": {
+      "get": {
+        "summary": "List transcripts by sessionId (optionally groupId)",
+        "parameters": [
+          { "name": "sessionId", "in": "query", "required": true, "schema": { "type": "string" }, "description": "Session identifier" },
+          { "name": "groupId", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Optional group filter" },
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }, "description": "Page size" },
+          { "name": "cursor", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Pagination cursor" }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of transcripts",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TranscriptListResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "502": {
+            "description": "Upstream error",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/v1/stt": {
+      "post": {
+        "summary": "Transcribe short audio clip",
+        "description": "Transcribes audio provided via URL or S3 objectKey (JSON body), or via direct upload using multipart/form-data with an 'audio' file field. Provider selection is env-driven with optional per-request override when enabled.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/STTRequest" } },
+            "multipart/form-data": { "schema": { "$ref": "#/components/schemas/STTMultipartRequest" } }
+          }
+        },
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/STTResponse" } } } },
+          "400": { "description": "Bad request", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "Unauthorized", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "413": { "description": "Payload too large (audio exceeds STT_MAX_AUDIO_BYTES)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "501": { "description": "Provider or storage not configured (e.g., missing API key or STORAGE_PROVIDER/S3 bucket)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "502": { "description": "Upstream error", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/api/v1/tts": {
+      "post": {
+        "summary": "Synthesize short text to speech",
+        "description": "Synthesizes audio for provided text. By default uploads audio to S3 when configured.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/TTSRequest" } }
+          }
+        },
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TTSResponse" } } } },
+          "400": { "description": "Bad request", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "Unauthorized", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "501": { "description": "Provider not configured (e.g., missing API key)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "502": { "description": "Upstream error", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Skill": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "levels": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/SkillLevel" }
+          },
+          "category": { "type": "string" },
+          "isActive": { "type": "boolean" },
+          "createdAt": { "type": "integer", "format": "int64", "description": "Unix ms" },
+          "updatedAt": { "type": "integer", "format": "int64", "description": "Unix ms" }
+        },
+        "required": ["id", "title", "description", "levels", "category", "isActive", "createdAt", "updatedAt"]
+      },
+      "SkillLevel": {
+        "type": "object",
+        "properties": {
+          "level": { "type": "integer", "minimum": 0, "maximum": 10 },
+          "criteria": { "type": "string" }
+        },
+        "required": ["level", "criteria"]
+      },
+      "SkillOrNull": {
+        "oneOf": [
+          { "$ref": "#/components/schemas/Skill" },
+          { "type": "null" }
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": { "type": "string" }
+        },
+        "required": ["error"]
+      },
+      "PresignRequest": {
+        "type": "object",
+        "properties": {
+          "contentType": {
+            "type": "string",
+            "enum": [
+              "audio/webm",
+              "audio/wav",
+              "audio/mpeg",
+              "audio/mp4",
+              "audio/x-m4a"
+            ]
+          },
+          "filename": { "type": "string", "description": "Optional client-provided filename" },
+          "sizeBytes": { "type": "integer", "format": "int64", "minimum": 1 }
+        },
+        "required": ["contentType", "sizeBytes"]
+      },
+      "PresignResponse": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string", "format": "uri" },
+          "method": { "type": "string", "enum": ["PUT"] },
+          "headers": {
+            "type": "object",
+            "properties": { "Content-Type": { "type": "string" } },
+            "required": ["Content-Type"],
+            "additionalProperties": false
+          },
+          "expiresAt": { "type": "integer", "format": "int64", "description": "Unix ms" },
+          "objectKey": { "type": "string" },
+          "contentType": { "type": "string" }
+        },
+        "required": ["url", "method", "headers", "expiresAt", "objectKey", "contentType"]
+      },
+      "PresignDownloadResponse": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string", "format": "uri" },
+          "method": { "type": "string", "enum": ["GET"] },
+          "headers": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "expiresAt": { "type": "integer", "format": "int64", "description": "Unix ms" },
+          "objectKey": { "type": "string" }
+        },
+        "required": ["url", "method", "headers", "expiresAt", "objectKey"]
+      },
+      "TranscriptItem": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "sessionId": { "type": "string" },
+          "groupId": { "type": "string" },
+          "text": { "type": "string" },
+          "audioUrl": { "type": "string", "format": "uri" },
+          "createdAt": { "type": "integer", "format": "int64", "description": "Unix ms" }
+        },
+        "required": ["id", "sessionId", "text", "createdAt"]
+      },
+      "TranscriptListResponse": {
+        "type": "object",
+        "properties": {
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/TranscriptItem" } },
+          "nextCursor": { "type": "string" }
+        },
+        "required": ["items"]
+      },
+      "STTRequest": {
+        "type": "object",
+        "properties": {
+          "provider": { "type": "string", "enum": ["mock", "openai"], "description": "Optional per-request provider override (honored when ALLOW_PROVIDER_OVERRIDE=1)" },
+          "audioUrl": { "type": "string", "format": "uri" },
+          "objectKey": { "type": "string", "description": "S3 object key when using presigned upload" },
+          "sessionId": { "type": "string" },
+          "groupId": { "type": "string" },
+          "languageHint": { "type": "string", "description": "Optional language hint (e.g., 'en')" }
+        },
+        "required": []
+      },
+      "STTMultipartRequest": {
+        "type": "object",
+        "properties": {
+          "audio": { "type": "string", "format": "binary", "description": "Audio file; supported types: audio/webm, audio/wav, audio/mpeg, audio/mp4, audio/x-m4a" },
+          "provider": { "type": "string", "enum": ["mock", "openai"], "description": "Optional per-request provider override (honored when ALLOW_PROVIDER_OVERRIDE=1)" },
+          "sessionId": { "type": "string" },
+          "groupId": { "type": "string" },
+          "languageHint": { "type": "string", "description": "Optional language hint (e.g., 'en')" }
+        },
+        "required": ["audio"]
+      },
+      "STTResponse": {
+        "type": "object",
+        "properties": {
+          "provider": { "type": "string", "enum": ["mock", "openai"] },
+          "text": { "type": "string" },
+          "confidence": { "type": "number" },
+          "language": { "type": "string" },
+          "sessionId": { "oneOf": [ { "type": "string" }, { "type": "null" } ] },
+          "groupId": { "oneOf": [ { "type": "string" }, { "type": "null" } ] },
+          "audioUrl": { "oneOf": [ { "type": "string", "format": "uri" }, { "type": "null" } ] },
+          "objectKey": { "oneOf": [ { "type": "string" }, { "type": "null" } ] }
+        },
+        "required": ["provider", "text"]
+      },
+      "TTSRequest": {
+        "type": "object",
+        "properties": {
+          "provider": { "type": "string", "enum": ["mock", "openai"], "description": "Optional per-request provider override (honored when ALLOW_PROVIDER_OVERRIDE=1)" },
+          "text": { "type": "string" },
+          "voiceId": { "type": "string" },
+          "format": { "type": "string", "description": "e.g., audio/mpeg" },
+          "sessionId": { "type": "string" },
+          "groupId": { "type": "string" }
+        },
+        "required": ["text"]
+      },
+      "TTSResponse": {
+        "type": "object",
+        "properties": {
+          "provider": { "type": "string", "enum": ["mock", "openai"] },
+          "text": { "type": "string" },
+          "voiceId": { "type": "string" },
+          "format": { "type": "string" },
+          "audioUrl": { "type": "string", "format": "uri" },
+          "sessionId": { "type": "string" },
+          "groupId": { "type": "string" }
+        },
+        "required": ["provider", "text", "audioUrl"]
+      }
+    }
+  }
 }

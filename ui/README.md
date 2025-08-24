@@ -39,7 +39,7 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 
 - What this does
   - Spawns both servers via Playwright:
-    - FastAPI (AI API) on `http://127.0.0.1:8001`
+    - FastAPI (AI API) on `http://127.0.0.1:8000`
     - Next.js UI on `http://localhost:3100` (fresh server per run)
   - Runs all Playwright E2E tests in Chromium with in-memory Convex mock.
 - Install once
@@ -65,8 +65,8 @@ MOCK_CONVEX=0
 CONVEX_URL=https://<your-dev>.convex.cloud
 NEXT_PUBLIC_CONVEX_URL=https://<your-dev>.convex.cloud
 # Local AI API
-AI_API_BASE_URL=http://127.0.0.1:8001
-NEXT_PUBLIC_AI_API_BASE_URL=http://127.0.0.1:8001
+AI_API_BASE_URL=http://127.0.0.1:8000
+NEXT_PUBLIC_AI_API_BASE_URL=http://127.0.0.1:8000
 ```
 
 2) Start Convex (from `coach-up-frontend/`):
@@ -83,7 +83,7 @@ npx convex deploy --deployment dev:<project-slug>
 
 ```bash
 # Terminal A (AI API)
-python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8001 --app-dir ../../coach-up-ai-api
+python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --app-dir ../../coach-up-ai-api
 
 # Terminal B (UI)
 npm run dev:wasm
@@ -101,6 +101,58 @@ Notes:
 - Convex CLI writes your dev deployment name to `.env.local` as `CONVEX_DEPLOYMENT` when you run `npx convex dev`. Do not commit `.env.local` (it is gitignored).
 - Use your Convex dashboard dev URL for `CONVEX_URL`/`NEXT_PUBLIC_CONVEX_URL`. Commit your Convex source under `convex/`, but exclude generated artifacts (e.g., `convex/_generated/`) and `.convex/` (both are gitignored).
 - Playwright will pass through `CONVEX_URL`/`NEXT_PUBLIC_CONVEX_URL` to the Next.js dev server.
+
+## Clerk Auth Quickstart
+
+Basic local setup for Clerk with optional route protection toggle.
+
+1) Create Clerk app and obtain keys
+   - NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+   - CLERK_SECRET_KEY
+
+2) Env (add to `ui/.env.local`):
+
+```bash
+# Clerk keys
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_...
+CLERK_SECRET_KEY=sk_test_...
+
+# Optional: protect all routes (except /sign-in) via middleware
+# See ui/src/middleware.ts
+CLERK_PROTECT_ALL=0 # set to 1 to require auth for all matched routes
+```
+
+3) Sign-in route
+   - Public route is `/sign-in` (see matcher in `ui/src/middleware.ts`).
+   - With `CLERK_PROTECT_ALL=1`, all other routes (including API routes matched by middleware) require auth.
+
+4) Run UI
+
+```bash
+npm run dev
+```
+
+Notes:
+- Keep `CLERK_PROTECT_ALL=0` during most local dev and E2E runs to avoid forced sign-in.
+- Enable `CLERK_PROTECT_ALL=1` to verify gating in staging/production-like flows.
+
+## Skills API Smoke Test
+
+Use this quick check to verify the UI can reach Skills API routes and (optionally) a real Convex backend.
+
+```bash
+# UI running on http://localhost:3000
+npm run smoke:skills
+
+# Verbose JSON
+VERBOSE=1 npm run smoke:skills
+
+# Different UI base URL
+UI_BASE_URL=http://localhost:3100 npm run smoke:skills
+
+# If API routes are auth-protected (CLERK_ENABLED=1)
+AUTH_BEARER="<jwt>" npm run smoke:skills
+```
 
 ## SSR-safe random values (hydration-safe pattern)
 

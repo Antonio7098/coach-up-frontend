@@ -1,8 +1,30 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 
-const AI_API_BASE_URL = process.env.NEXT_PUBLIC_AI_API_BASE_URL || "http://127.0.0.1:8001";
+const AI_API_BASE_URL = process.env.NEXT_PUBLIC_AI_API_BASE_URL || "http://127.0.0.1:8000";
+
+function safeUUID(): string {
+  try {
+    const g = globalThis as unknown as { crypto?: { randomUUID?: () => string } };
+    return g.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+  } catch {
+    return Math.random().toString(36).slice(2);
+  }
+}
+
+interface AssessmentSummary {
+  highlights?: string[];
+  recommendations?: string[];
+  rubricVersion?: string;
+  categories?: string[];
+}
+
+interface AssessmentSummaryResponse {
+  summary?: AssessmentSummary;
+  [key: string]: unknown;
+}
 
 export default function ChatPage() {
   const [status, setStatus] = useState<
@@ -19,11 +41,12 @@ export default function ChatPage() {
   const [totalMs, setTotalMs] = useState<number | null>(null);
   const [assessRunning, setAssessRunning] = useState(false);
   const [groupId, setGroupId] = useState<string | null>(null);
-  const [summary, setSummary] = useState<any | null>(null);
+  const [summary, setSummary] = useState<AssessmentSummaryResponse | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const retryRef = useRef<number>(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const assistantBufferRef = useRef<string>("");
+  const firstTokenSetRef = useRef<boolean>(false);
 
   // Generate a sessionId only on the client after mount to avoid SSR/client mismatch
   const [sessionId, setSessionId] = useState<string>("");
@@ -35,14 +58,14 @@ export default function ChatPage() {
         setSessionId(existing);
         return;
       }
-      const id = (globalThis as any).crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+      const id = safeUUID();
       setSessionId(id);
       if (typeof window !== "undefined") {
         window.sessionStorage.setItem(key, id);
       }
     } catch {
       // Fallback: still set a random id even if sessionStorage is unavailable
-      const id = (globalThis as any).crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+      const id = safeUUID();
       setSessionId(id);
     }
   }, []);
@@ -52,10 +75,7 @@ export default function ChatPage() {
   }, []);
 
   const genId = useCallback((): string => {
-    return (
-      (globalThis as any).crypto?.randomUUID?.() ??
-      Math.random().toString(36).slice(2)
-    );
+    return safeUUID();
   }, []);
 
   const ingestMessage = useCallback(
@@ -106,6 +126,7 @@ export default function ChatPage() {
     setOutput("");
     setFirstTokenMs(null);
     setTotalMs(null);
+    firstTokenSetRef.current = false;
     const t0 = Date.now();
     setStartedAt(t0);
     // Reset assistant buffer for a fresh assistant final message
@@ -125,15 +146,17 @@ export default function ChatPage() {
         const finalContent = assistantBufferRef.current;
         void ingestMessage("assistant", finalContent);
         append("\n[DONE]\n");
-        if (firstTokenMs == null) {
+        if (!firstTokenSetRef.current) {
           setFirstTokenMs(Date.now() - t0);
+          firstTokenSetRef.current = true;
         }
         setTotalMs(Date.now() - t0);
         disconnect();
         return;
       }
-      if (firstTokenMs == null) {
+      if (!firstTokenSetRef.current) {
         setFirstTokenMs(Date.now() - t0);
+        firstTokenSetRef.current = true;
       }
       append(evt.data);
       // Accumulate assistant tokens to build the final assistant message
@@ -153,7 +176,7 @@ export default function ChatPage() {
         connect();
       }, delay);
     };
-  }, [append, disconnect]);
+  }, [append, disconnect, ingestMessage]);
 
   useEffect(() => {
     return () => {
@@ -198,6 +221,11 @@ export default function ChatPage() {
     <div className="mx-auto max-w-2xl p-6 space-y-4">
       <h1 className="text-2xl font-semibold">Chat Stream (SSE)</h1>
       <p className="text-sm text-gray-500">AI API: {AI_API_BASE_URL}</p>
+      <div className="text-sm">
+        <Link href="/chat/voice" className="text-blue-600 underline">
+          Try Voice Mode →
+        </Link>
+      </div>
 
       <form
         onSubmit={(e) => {

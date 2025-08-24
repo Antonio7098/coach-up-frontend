@@ -4,6 +4,6 @@ import { test, expect } from '@playwright/test';
 // and renders expected content from src/app/page.tsx
 
 test('home page renders and shows docs link', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page.getByText('Read our docs')).toBeVisible();
 });

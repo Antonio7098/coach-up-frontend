@@ -1,13 +1,14 @@
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-import { ConvexHttpClient } from "convex/browser";
+import { makeConvex } from "../../../lib/convex";
 import * as mockConvex from "../../../lib/mockConvex";
+import { sha256Hex } from "../../../lib/hash";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-Request-Id, Authorization",
+  "Access-Control-Allow-Headers": "Content-Type, X-Request-Id, X-Tracked-Skill-Id, Authorization",
   "Access-Control-Expose-Headers": "X-Request-Id",
 };
 
@@ -66,25 +67,68 @@ export async function POST(request: Request) {
     });
   }
 
+  // Runtime validations
+  const isNonEmptyString = (v: unknown) => typeof v === 'string' && v.trim().length > 0;
+  if (!isNonEmptyString(payload.sessionId)) {
+    return new Response(JSON.stringify({ error: "sessionId must be a non-empty string" }), {
+      status: 400,
+      headers: { "content-type": "application/json; charset=utf-8", ...corsHeaders },
+    });
+  }
+  if (!isNonEmptyString(payload.groupId)) {
+    return new Response(JSON.stringify({ error: "groupId must be a non-empty string" }), {
+      status: 400,
+      headers: { "content-type": "application/json; charset=utf-8", ...corsHeaders },
+    });
+  }
+  if (payload.rubricVersion !== undefined && payload.rubricVersion !== null && !isNonEmptyString(payload.rubricVersion)) {
+    return new Response(JSON.stringify({ error: "rubricVersion, if provided, must be a non-empty string" }), {
+      status: 400,
+      headers: { "content-type": "application/json; charset=utf-8", ...corsHeaders },
+    });
+  }
+  const s = payload.summary as unknown;
+  const isStringArray = (a: unknown) => Array.isArray(a) && a.every((x) => typeof x === 'string');
+  if (
+    !s || typeof s !== 'object' || Array.isArray(s) ||
+    !isStringArray((s as { highlights: unknown }).highlights) ||
+    !isStringArray((s as { recommendations: unknown }).recommendations) ||
+    !isStringArray((s as { rubricKeyPoints: unknown }).rubricKeyPoints)
+  ) {
+    return new Response(JSON.stringify({ error: "summary must include arrays of strings for highlights, recommendations, and rubricKeyPoints" }), {
+      status: 400,
+      headers: { "content-type": "application/json; charset=utf-8", ...corsHeaders },
+    });
+  }
+
+  // Compute privacy-preserving trackedSkillId hash from header (if present)
+  const trackedSkillId = (request.headers.get("x-tracked-skill-id") || "").trim();
+  const trackedSkillIdHash = trackedSkillId ? sha256Hex(trackedSkillId) : undefined;
+
   try {
     const result = process.env.MOCK_CONVEX === '1'
-      ? await mockConvex.finalizeAssessmentSummary({
+      ? await mockConvex.persistAssessmentSummary({
           sessionId: payload.sessionId,
           groupId: payload.groupId,
-          rubricVersion: payload.rubricVersion ?? "v1",
+          rubricVersion: (payload.rubricVersion ?? "v1") as string,
           summary: payload.summary,
+          trackedSkillIdHash,
         })
-      : await new ConvexHttpClient(convexUrl).mutation("assessments:finalizeAssessmentSummary" as any, {
-          sessionId: payload.sessionId,
-          groupId: payload.groupId,
-          rubricVersion: payload.rubricVersion ?? "v1",
-          summary: payload.summary,
-        });
+      : await ((): Promise<unknown> => {
+          const client = makeConvex(convexUrl);
+          return client.mutation("assessments:persistAssessmentSummary", {
+            sessionId: payload.sessionId,
+            groupId: payload.groupId,
+            rubricVersion: payload.rubricVersion ?? "v1",
+            summary: payload.summary,
+            trackedSkillIdHash,
+          });
+        })();
     return new Response(JSON.stringify(result ?? { ok: true }), {
       status: 200,
       headers: { "content-type": "application/json; charset=utf-8", ...corsHeaders },
     });
-  } catch (err) {
+  } catch {
     return new Response(JSON.stringify({ error: "Convex mutation failed" }), {
       status: 502,
       headers: { "content-type": "application/json; charset=utf-8", ...corsHeaders },

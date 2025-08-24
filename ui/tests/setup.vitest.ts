@@ -45,3 +45,13 @@ export function setConvexMockBehavior(partial: {
   Object.assign(b, partial);
   (globalThis as any).__convexMockBehavior = b;
 }
+
+// Mock Clerk server auth to avoid server-only import issues in unit tests.
+// Default unauthenticated; tests can flip CLERK_ENABLED as needed.
+vi.mock('@clerk/nextjs/server', () => {
+  return {
+    auth: async () => ({ userId: null }),
+  };
+});
+
+// Tests can opt into MOCK_CONVEX=1 per-spec when they want to use the in-memory store.

@@ -41,7 +41,7 @@ test('contract: POST /api/messages/ingest start/end enqueues and produces summar
   expect(j2.groupId).toBe(groupId);
 
   // Poll AI API directly for summary
-  const aiBase = process.env.AI_API_BASE_URL || 'http://127.0.0.1:8001';
+  const aiBase = process.env.AI_API_BASE_URL || 'http://127.0.0.1:8000';
   const deadline = Date.now() + 12000;
   let payload: any = {};
   while (Date.now() < deadline) {

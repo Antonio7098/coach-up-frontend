@@ -12,7 +12,7 @@ function aiApiBaseUrl() {
   return (
     process.env.AI_API_BASE_URL ||
     process.env.NEXT_PUBLIC_AI_API_BASE_URL ||
-    "http://127.0.0.1:8001"
+    "http://127.0.0.1:8000"
   );
 }
 
@@ -24,8 +24,14 @@ export async function GET(request: Request) {
   const controller = new AbortController();
   const { search } = new URL(request.url);
   const upstreamUrl = `${aiApiBaseUrl()}/chat/stream${search}`;
-  const requestId = (globalThis as any).crypto?.randomUUID?.() ??
-    Math.random().toString(36).slice(2);
+  const requestId = (() => {
+    try {
+      const g = globalThis as unknown as { crypto?: { randomUUID?: () => string } };
+      return g.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+    } catch {
+      return Math.random().toString(36).slice(2);
+    }
+  })();
 
   // Propagate client abort to upstream
   request.signal.addEventListener("abort", () => controller.abort());
@@ -44,7 +50,7 @@ export async function GET(request: Request) {
       headers,
       signal: controller.signal,
     });
-  } catch (err) {
+  } catch {
     return new Response("Upstream unavailable", { status: 502 });
   }
 

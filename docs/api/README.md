@@ -42,11 +42,11 @@ This folder contains human-friendly references and machine-readable specs for bo
 
 ## Local E2E run
 - Web servers (spawned by Playwright; see `ui/playwright.config.ts`):
-  - FastAPI (uvicorn): `http://127.0.0.1:8001`
+  - FastAPI (uvicorn): `http://127.0.0.1:8000`
   - Next.js: `http://localhost:3100` with fresh server per run (`reuseExistingServer=false`)
 - Key environment variables:
   - `CSS_TRANSFORMER_WASM=1` (forces Lightning CSS WASM path)
-  - `AI_API_BASE_URL=http://127.0.0.1:8001`
+  - `AI_API_BASE_URL=http://127.0.0.1:8000`
   - `MOCK_CONVEX=1` for in-memory Convex
   - `PERSIST_ASSESSMENTS_SECRET=<any-dev-secret>`
   - If using real Convex: `MOCK_CONVEX=0`, `CONVEX_URL`, `NEXT_PUBLIC_CONVEX_URL`
@@ -69,7 +69,7 @@ This folder contains human-friendly references and machine-readable specs for bo
 - Example scrape:
 
 ```bash
-curl -s http://127.0.0.1:8001/metrics | head -n 40
+curl -s http://127.0.0.1:8000/metrics | head -n 40
 ```
 
 Emitted metrics:

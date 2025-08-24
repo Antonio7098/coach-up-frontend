@@ -1,14 +1,15 @@
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-import { ConvexHttpClient } from "convex/browser";
+import { makeConvex } from "../../../lib/convex";
 import * as mockConvex from "../../../lib/mockConvex";
 
 export async function GET(
   _request: Request,
   context: { params: Promise<{ sessionId: string }> }
 ) {
-  const { sessionId } = (await context.params) || ({ sessionId: "" } as any);
+  const params = await context.params;
+  const sessionId = params?.sessionId ?? "";
   const convexUrl = process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || "http://127.0.0.1:3210";
   if (!convexUrl) {
     return new Response(JSON.stringify({ error: "Missing CONVEX_URL" }), {
@@ -26,7 +27,10 @@ export async function GET(
   try {
     const latest = process.env.MOCK_CONVEX === '1'
       ? await mockConvex.getLatestAssessmentSummary({ sessionId })
-      : await new ConvexHttpClient(convexUrl).query("assessments:getLatestAssessmentSummary" as any, { sessionId });
+      : await ((): Promise<unknown> => {
+          const client = makeConvex(convexUrl);
+          return client.query("assessments:getLatestAssessmentSummary", { sessionId });
+        })();
     if (!latest) {
       return new Response(JSON.stringify({ sessionId, summary: null }), {
         status: 404,
@@ -37,7 +41,7 @@ export async function GET(
       status: 200,
       headers: { "content-type": "application/json; charset=utf-8" },
     });
-  } catch (err) {
+  } catch {
     return new Response(JSON.stringify({ error: "Convex query failed" }), {
       status: 502,
       headers: { "content-type": "application/json; charset=utf-8" },

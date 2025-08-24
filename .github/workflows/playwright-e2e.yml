@@ -57,7 +57,7 @@ jobs:
         working-directory: coach-up-frontend/ui
         env:
           # Ensure Next API routes point to uvicorn started by webServer
-          AI_API_BASE_URL: http://127.0.0.1:8001
+          AI_API_BASE_URL: http://127.0.0.1:8000
           # In this repo context, skip AI API contracts (API lives in a different repo)
           SKIP_AI_CONTRACTS: '1'
         run: npm run test:e2e

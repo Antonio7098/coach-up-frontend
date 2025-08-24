@@ -129,7 +129,7 @@ const summary = await res.json();
 ## OpenAPI Spec
 - FastAPI serves /openapi.json automatically.
 - Snapshot into this repo when needed for docs:
-  - Dev server example: curl http://127.0.0.1:8001/openapi.json > docs/api/ai/openapi.json
+  - Dev server example: curl http://127.0.0.1:8000/openapi.json > docs/api/ai/openapi.json
   - Default server: curl http://localhost:8000/openapi.json > docs/api/ai/openapi.json
 
 ## Changelog
