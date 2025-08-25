@@ -75,6 +75,7 @@ Frontend RUM (service: web)
 - web.vitals.ttfb_ms
 - web.sse.stalls (counter)
 - web.audio.start_ms (histogram)
+ - web.audio.bytes_downloaded (counter)
 
 Provider synthetic rollups (service: provider)
 - provider.request.count/errors/latency_ms (by provider/modelId)
@@ -509,6 +510,7 @@ Post-actions
   - `next.request.errors{route="POST /api/v1/storage/audio/presign"}` (counter)
   - `next.request.latency_ms{route="POST /api/v1/storage/audio/presign"}` (histogram)
   - Optional: `next.storage.presign.expires_s{route="POST /api/v1/storage/audio/presign"}` (histogram)
+  - Optional: `next.storage.presign.bytes_planned{route="POST /api/v1/storage/audio/presign"}` (counter) — sum of requested `contentLength` values; proxy for intended upload bytes.
 - Logs (structured JSON)
   - Include: `requestId`, `route`, `status`, `latencyMs`, `params` (whitelist: `contentType`, `contentLength`), `storage` (whitelist: `provider`, `bucket`, `region`, `expiresSeconds`)
   - Do not log raw credentials, raw object keys, or full bucket URLs. If a key prefix is used, log only the prefix hash.
@@ -595,6 +597,7 @@ Post-actions
   - `next.request.latency_ms{route="POST /api/v1/stt"}` (histogram)
   - `next.provider.latency_ms{route="POST /api/v1/stt", provider}` (histogram)
   - `next.provider.errors{route="POST /api/v1/stt", provider}` (counter)
+  - `next.audio.bytes_in{route="POST /api/v1/stt"}` (counter) — total audio bytes received (multipart) or fetched (objectKey/audioUrl).
 - Logs (structured JSON)
   - Include: `requestId`, `route`, `status`, `latencyMs`, `provider` (resolved), `source` (`audioUrl|objectKey`), `language` (if detected), `sessionIdHash`, `groupId`.
   - Do not log raw audio bytes or full object keys. Log only source type and lengths/counts as needed.
@@ -642,6 +645,8 @@ Post-actions
   - `next.request.latency_ms{route="POST /api/v1/tts"}` (histogram)
   - `next.provider.latency_ms{route="POST /api/v1/tts", provider}` (histogram)
   - `next.provider.errors{route="POST /api/v1/tts", provider}` (counter)
+  - `next.audio.bytes_out{route="POST /api/v1/tts"}` (counter) — total synthesized audio bytes returned to the client (when applicable).
+  - `next.storage.bytes_uploaded{route="POST /api/v1/tts"}` (counter) — total synthesized audio bytes uploaded to storage (when `uploaded=true`).
 - Logs (structured JSON)
   - Include: `requestId`, `route`, `status`, `latencyMs`, `provider`, `format`, `voiceId`, `uploaded` (bool), `sessionIdHash`, `groupId`.
   - Do not log raw audio or full S3 URLs. If uploaded, log bucket and region only.

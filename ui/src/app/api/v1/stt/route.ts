@@ -8,7 +8,7 @@ import { promMetrics } from "../../lib/metrics";
 import { makeConvex } from "../../lib/convex";
 import * as mockConvex from "../../lib/mockConvex";
 import { ProviderNotConfiguredError, getSttProvider } from "../../lib/speech/stt";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -189,6 +189,12 @@ export async function POST(request: Request) {
       // Persist transcript
       persistInteraction({ sessionId, groupId, requestId, text: result.text ?? null, audioUrl: uploaded.audioUrl ?? null, objectKey: uploaded.objectKey }).catch(() => {});
 
+      // Metrics: audio bytes in (multipart path)
+      try {
+        const labels = { route: routePath, method, status: "200", mode } as const;
+        promMetrics.audioBytesIn.labels(labels.route, labels.method, labels.status, labels.mode).inc(size);
+      } catch {}
+
       console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, mode, sessionId, groupId, multipart: true, size, mime, latencyMs: Date.now() - started }));
       return respond(200, payload);
     } catch (err: any) {
@@ -244,6 +250,26 @@ export async function POST(request: Request) {
 
     // Fire-and-forget persistence of interaction row (user role)
     persistInteraction({ sessionId, groupId, requestId, text: result.text ?? null, audioUrl: audioUrl ?? null, objectKey: objectKey ?? null }).catch(() => {});
+
+    // Metrics: audio bytes in (best-effort for server-side fetch when objectKey is provided)
+    try {
+      if (objectKey) {
+        const provider = (process.env.STORAGE_PROVIDER || "s3").toLowerCase();
+        const bucket = process.env.S3_BUCKET_AUDIO || "";
+        if (provider === "s3" && bucket) {
+          const region = process.env.S3_REGION || "us-east-1";
+          const endpoint = process.env.S3_ENDPOINT_URL || undefined;
+          const forcePathStyle = process.env.S3_FORCE_PATH_STYLE === "1";
+          const s3 = new S3Client({ region, endpoint, forcePathStyle });
+          const head = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: objectKey } as any));
+          const bytes = Number(head.ContentLength || 0);
+          if (bytes > 0) {
+            const labels = { route: routePath, method, status: "200", mode } as const;
+            promMetrics.audioBytesIn.labels(labels.route, labels.method, labels.status, labels.mode).inc(bytes);
+          }
+        }
+      }
+    } catch {}
 
     console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, mode, sessionId, groupId, hasAudioUrl: !!audioUrl, hasObjectKey: !!objectKey, latencyMs: Date.now() - started }));
     return respond(200, payload);

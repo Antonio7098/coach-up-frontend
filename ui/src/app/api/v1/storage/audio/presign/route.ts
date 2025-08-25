@@ -211,6 +211,11 @@ export async function POST(request: Request) {
         objectKey,
         contentType,
       } as const;
+      // Metrics: planned upload bytes (documented as next.storage.presign.bytes_planned)
+      try {
+        const labels = { route: routePath, method, status: "200", mode } as const;
+        promMetrics.storagePresignBytesPlanned.labels(labels.route, labels.method, labels.status, labels.mode).inc(sizeBytes);
+      } catch {}
       console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, mode, objectKey, bucket, region, endpoint: endpoint ? true : false, forcePathStyle, latencyMs: Date.now() - started }));
       return respond(200, payload);
     } catch (err: any) {
@@ -230,6 +235,11 @@ export async function POST(request: Request) {
     objectKey,
     contentType,
   } as const;
+  // Metrics: planned upload bytes for mock path as well
+  try {
+    const labels = { route: routePath, method, status: "200", mode } as const;
+    promMetrics.storagePresignBytesPlanned.labels(labels.route, labels.method, labels.status, labels.mode).inc(sizeBytes);
+  } catch {}
   console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, mode, objectKey, latencyMs: Date.now() - started }));
   return respond(200, payload);
 }

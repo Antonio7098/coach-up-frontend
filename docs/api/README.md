@@ -23,6 +23,25 @@ This folder contains human-friendly references and machine-readable specs for bo
 - Streaming: `text/event-stream` for SSE endpoints.
 - Errors: consistent JSON envelope.
 
+## Operational hygiene
+
+- Environment variables (see `.env.example` in repo root and `ui/`):
+  - Storage: `STORAGE_PROVIDER`, `S3_BUCKET_AUDIO`, `S3_REGION`, `S3_ENDPOINT_URL` (LocalStack/MinIO), `S3_FORCE_PATH_STYLE`
+  - Speech: `STT_PROVIDER`, `TTS_PROVIDER`, `SPEECH_PROFILE`, `ALLOW_PROVIDER_OVERRIDE`, `OPENAI_API_KEY`, `OPENAI_STT_MODEL`, `OPENAI_TTS_MODEL`, `TTS_VOICE_ID`, `STT_MAX_AUDIO_BYTES`
+  - Voice UI: `NEXT_PUBLIC_ENABLE_VOICE`, `NEXT_PUBLIC_VOICE_MAX_UTTERANCE_MS`
+  - Chat (AI API): `AI_CHAT_ENABLED`, `AI_PROVIDER_CHAT`, `AI_CHAT_MODEL`, `GOOGLE_API_KEY`, `OPENROUTER_API_KEY`
+- IAM (S3 least-privilege):
+  - Allow `s3:PutObject` and `s3:GetObject` on `arn:aws:s3:::<bucket>/<prefix>/*`
+  - Optional `s3:ListBucket` constrained by `s3:prefix` on the same `<prefix>/`
+  - Server-side encryption recommended; block public access
+- Lifecycle policies:
+  - Raw audio retention 7–30 days (per privacy policy); transcripts retained longer
+  - Optional transition to IA/Glacier for synthesized TTS assets
+- Request ID propagation:
+  - Always include/forward `X-Request-Id` across hops; see `docs/api/shared/headers.md`
+  - Logs include `requestId`, provider/model, latency; sampling rules documented in ops
+- Monitoring & runbooks: see `docs/ops/monitoring.md` for dashboards, metrics, and troubleshooting playbooks
+
 ## Maintaining the specs
 - Update schemas close to code (Zod/Pydantic) and regenerate OpenAPI on change.
 - Keep reference.md examples up to date in the same PR as code changes.

@@ -106,7 +106,8 @@ export async function POST(request: Request) {
   }
 
   const text = typeof body?.text === 'string' ? body.text : undefined;
-  const voiceId = typeof body?.voiceId === 'string' ? body.voiceId : (process.env.TTS_VOICE_ID || 'voice_mock');
+  // Let providers apply their own default voice when none is passed
+  const voiceId = typeof body?.voiceId === 'string' ? body.voiceId : undefined;
   const format = typeof body?.format === 'string' ? body.format : (process.env.TTS_FORMAT || 'audio/mpeg');
   const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : undefined;
   const groupId = typeof body?.groupId === 'string' ? body.groupId : undefined;
@@ -131,6 +132,20 @@ export async function POST(request: Request) {
 
     // Fire-and-forget persistence of assistant interaction row
     persistInteraction({ sessionId, groupId, text, audioUrl: result.audioUrl }).catch(() => {});
+
+    // Metrics: audio bytes out and storage uploaded bytes
+    try {
+      const bytesOut = Number(result.sizeBytes || 0);
+      if (bytesOut > 0) {
+        const labels = { route: routePath, method, status: "200", mode } as const;
+        promMetrics.audioBytesOut.labels(labels.route, labels.method, labels.status, labels.mode).inc(bytesOut);
+      }
+      const uploaded = Number(result.uploadedBytes || 0);
+      if (result.uploadedToStorage && uploaded > 0) {
+        const labels = { route: routePath, method, status: "200", mode } as const;
+        promMetrics.storageBytesUploaded.labels(labels.route, labels.method, labels.status, labels.mode).inc(uploaded);
+      }
+    } catch {}
 
     console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, mode, sessionId, groupId, voiceId: payload.voiceId, format: payload.format, latencyMs: Date.now() - started }));
     return respond(200, payload);

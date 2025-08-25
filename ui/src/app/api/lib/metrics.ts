@@ -9,6 +9,10 @@ const g = globalThis as unknown as {
       requestsTotal: client.Counter<string>;
       requestErrorsTotal: client.Counter<string>;
       requestDurationSeconds: client.Histogram<string>;
+      audioBytesIn: client.Counter<string>;
+      audioBytesOut: client.Counter<string>;
+      storageBytesUploaded: client.Counter<string>;
+      storagePresignBytesPlanned: client.Counter<string>;
     };
   };
 };
@@ -41,9 +45,42 @@ function createMetrics() {
     registers: [registry],
   });
 
+  // Byte counters (map to docs logical metrics):
+  // - docs: next.audio.bytes_in -> prom: coachup_ui_audio_bytes_in_total
+  const audioBytesIn = new client.Counter({
+    name: "coachup_ui_audio_bytes_in_total",
+    help: "Total audio bytes received or fetched for STT",
+    labelNames: labelNames as unknown as string[],
+    registers: [registry],
+  });
+
+  // - docs: next.audio.bytes_out -> prom: coachup_ui_audio_bytes_out_total
+  const audioBytesOut = new client.Counter({
+    name: "coachup_ui_audio_bytes_out_total",
+    help: "Total synthesized audio bytes returned to clients",
+    labelNames: labelNames as unknown as string[],
+    registers: [registry],
+  });
+
+  // - docs: next.storage.bytes_uploaded -> prom: coachup_ui_storage_bytes_uploaded_total
+  const storageBytesUploaded = new client.Counter({
+    name: "coachup_ui_storage_bytes_uploaded_total",
+    help: "Total bytes of audio uploaded to storage by the API",
+    labelNames: labelNames as unknown as string[],
+    registers: [registry],
+  });
+
+  // - docs: next.storage.presign.bytes_planned -> prom: coachup_ui_storage_presign_bytes_planned_total
+  const storagePresignBytesPlanned = new client.Counter({
+    name: "coachup_ui_storage_presign_bytes_planned_total",
+    help: "Sum of requested content length for presigned uploads (planned bytes)",
+    labelNames: labelNames as unknown as string[],
+    registers: [registry],
+  });
+
   return {
     registry,
-    metrics: { requestsTotal, requestErrorsTotal, requestDurationSeconds },
+    metrics: { requestsTotal, requestErrorsTotal, requestDurationSeconds, audioBytesIn, audioBytesOut, storageBytesUploaded, storagePresignBytesPlanned },
   } as const;
 }
 

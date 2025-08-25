@@ -126,6 +126,63 @@ const summary = await res.json();
 ### GET /health
 - Summary: healthcheck endpoint.
 
+## Voice Mode usage (end-to-end)
+
+- Record mic audio in the browser (e.g., `MediaRecorder`) with client-side silence detection to auto-stop after speech ends.
+- Upload audio via Core API multipart STT: `POST /api/v1/stt` (stores to S3 and transcribes in one request).
+  - See Core reference: `docs/api/core/reference.md#post-apiv1stt` and `#multipart-upload-direct-file`.
+- Stream an assistant reply from the AI API: `GET /chat/stream` (SSE).
+- Synthesize audio incrementally via Core API TTS: `POST /api/v1/tts` (returns `audioUrl` per segment or final text).
+  - See Core reference: `docs/api/core/reference.md#post-apiv1tts`.
+- Play TTS segments using a stable, always-mounted `<audio>` element with a small playback queue and barge-in support.
+
+Minimal TS playback queue (single hidden `<audio>`, queue, barge-in):
+
+```ts
+// A single, stable audio element avoids re-render interruptions
+const audioEl = new Audio();
+audioEl.preload = 'auto';
+audioEl.hidden = true; // keep it mounted
+document.body.appendChild(audioEl);
+
+const queue: string[] = [];
+let playing = false;
+
+function playNext() {
+  if (playing) return;
+  const url = queue.shift();
+  if (!url) return;
+  playing = true;
+  audioEl.onended = () => {
+    playing = false;
+    playNext();
+  };
+  audioEl.onerror = () => {
+    playing = false;
+    playNext();
+  };
+  audioEl.src = url;
+  audioEl.play().catch(() => {
+    // Autoplay may require a user gesture depending on browser settings
+  });
+}
+
+export function enqueueTts(url: string) {
+  queue.push(url);
+  if (!playing) playNext();
+}
+
+export function bargeIn() {
+  queue.length = 0; // clear pending segments
+  try { audioEl.pause(); } catch {}
+  playing = false;
+}
+```
+
+Notes
+- Call `bargeIn()` when new user speech starts to cancel current playback and clear the queue.
+- The browser recording + silence detection example lives in `ui/src/app/chat/voice/page.tsx`.
+
 ## OpenAPI Spec
 - FastAPI serves /openapi.json automatically.
 - Snapshot into this repo when needed for docs:

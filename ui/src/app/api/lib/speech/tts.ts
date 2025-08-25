@@ -52,14 +52,14 @@ const awsTts: TtsProvider = {
     )
 
     const u8 = await toUint8(out.AudioStream)
-
+    const bytes = u8.byteLength
     const s3Url = await uploadToS3(u8, contentType)
     if (s3Url) {
-      return { provider: 'aws', audioUrl: s3Url, format: contentType, voiceId }
+      return { provider: 'aws', audioUrl: s3Url, format: contentType, voiceId, sizeBytes: bytes, uploadedToStorage: true, uploadedBytes: bytes }
     }
     const b64 = Buffer.from(u8).toString('base64')
     const dataUrl = `data:${contentType};base64,${b64}`
-    return { provider: 'aws', audioUrl: dataUrl, format: contentType, voiceId }
+    return { provider: 'aws', audioUrl: dataUrl, format: contentType, voiceId, sizeBytes: bytes }
   },
 }
 
@@ -83,6 +83,11 @@ export type TtsResult = {
   format: string
   voiceId?: string
   note?: string
+  // Size of synthesized audio in bytes (before any base64 encoding)
+  sizeBytes?: number
+  // If audio was uploaded to object storage by the provider, mark and include byte count
+  uploadedToStorage?: boolean
+  uploadedBytes?: number
 }
 
 export class ProviderNotConfiguredError extends Error {
@@ -111,6 +116,9 @@ const mockTts: TtsProvider = {
       format: fmt,
       voiceId: input.voiceId ?? undefined,
       note: 'mock provider — no real audio produced',
+      sizeBytes: 0,
+      uploadedToStorage: false,
+      uploadedBytes: 0,
     }
   },
 }
@@ -139,9 +147,8 @@ const googleTts: TtsProvider = {
       throw new Error(`Unsupported TTS format for Google: ${contentType}`)
     }
 
-    // Lazy-load SDK to avoid bundling when not used
-    const pkg = '@google-cloud/text-to-speech'
-    const mod: any = await import(pkg as string)
+    // Lazy-load SDK to avoid bundling when not used (use static literal for Next.js tracing)
+    const mod: any = await import('@google-cloud/text-to-speech')
     const TextToSpeechClient = mod.TextToSpeechClient || mod.default?.TextToSpeechClient
     if (!TextToSpeechClient) throw new Error('Google TTS SDK not available')
     const client = new TextToSpeechClient()
@@ -160,14 +167,14 @@ const googleTts: TtsProvider = {
     })
     const buf = resp.audioContent instanceof Buffer ? resp.audioContent : Buffer.from(resp.audioContent as any)
     const u8 = new Uint8Array(buf)
-
+    const bytes = u8.byteLength
     const s3Url = await uploadToS3(u8, contentType)
     if (s3Url) {
-      return { provider: 'google', audioUrl: s3Url, format: contentType, voiceId: voiceName }
+      return { provider: 'google', audioUrl: s3Url, format: contentType, voiceId: voiceName, sizeBytes: bytes, uploadedToStorage: true, uploadedBytes: bytes }
     }
     const b64 = Buffer.from(u8).toString('base64')
     const dataUrl = `data:${contentType};base64,${b64}`
-    return { provider: 'google', audioUrl: dataUrl, format: contentType, voiceId: voiceName }
+    return { provider: 'google', audioUrl: dataUrl, format: contentType, voiceId: voiceName, sizeBytes: bytes }
   },
 }
 
@@ -220,14 +227,14 @@ const azureTts: TtsProvider = {
     }
     const ab = await res.arrayBuffer()
     const u8 = new Uint8Array(ab)
-
+    const bytes = u8.byteLength
     const s3Url = await uploadToS3(u8, contentType)
     if (s3Url) {
-      return { provider: 'azure', audioUrl: s3Url, format: contentType, voiceId: voiceName }
+      return { provider: 'azure', audioUrl: s3Url, format: contentType, voiceId: voiceName, sizeBytes: bytes, uploadedToStorage: true, uploadedBytes: bytes }
     }
     const b64 = Buffer.from(u8).toString('base64')
     const dataUrl = `data:${contentType};base64,${b64}`
-    return { provider: 'azure', audioUrl: dataUrl, format: contentType, voiceId: voiceName }
+    return { provider: 'azure', audioUrl: dataUrl, format: contentType, voiceId: voiceName, sizeBytes: bytes }
   },
 }
 
@@ -301,14 +308,15 @@ const openaiTts: TtsProvider = {
     const u8 = new Uint8Array(ab)
 
     // Try S3 upload when configured
+    const bytes = u8.byteLength
     const s3Url = await uploadToS3(u8, contentType)
     if (s3Url) {
-      return { provider: 'openai', audioUrl: s3Url, format: contentType, voiceId: voice }
+      return { provider: 'openai', audioUrl: s3Url, format: contentType, voiceId: voice, sizeBytes: bytes, uploadedToStorage: true, uploadedBytes: bytes }
     }
     // Fallback to data URL
     const b64 = Buffer.from(u8).toString('base64')
     const dataUrl = `data:${contentType};base64,${b64}`
-    return { provider: 'openai', audioUrl: dataUrl, format: contentType, voiceId: voice }
+    return { provider: 'openai', audioUrl: dataUrl, format: contentType, voiceId: voice, sizeBytes: bytes }
   },
 }
 

@@ -26,13 +26,13 @@
     "smoke:tts": "node scripts/tts-smoke.mjs"
   },
   "dependencies": {
-    "@google-cloud/speech": "^6.6.0",
-    "@google-cloud/text-to-speech": "^5.8.0",
     "@aws-sdk/client-polly": "^3.873.0",
-    "@aws-sdk/client-transcribe": "^3.873.0",
     "@aws-sdk/client-s3": "^3.873.0",
+    "@aws-sdk/client-transcribe": "^3.873.0",
     "@aws-sdk/s3-request-presigner": "^3.873.0",
     "@clerk/nextjs": "^6.31.4",
+    "@google-cloud/speech": "^6.7.1",
+    "@google-cloud/text-to-speech": "^5.8.1",
     "convex": "^1.25.4",
     "next": "15.4.7",
     "prom-client": "^15.1.3",

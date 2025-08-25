@@ -230,8 +230,7 @@ const googleStt: SttProvider = {
     const languageCode = input.languageHint || process.env.GOOGLE_SPEECH_LANGUAGE || 'en-US'
 
     // Lazy-load SDK to avoid bundling and type resolution when unused
-    const pkg = '@google-cloud/speech'
-    const loaded = (await import(pkg as string)) as unknown
+    const loaded = (await import('@google-cloud/speech')) as unknown
     type RecognizeRequest = {
       audio: { content: string }
       config: {
@@ -239,6 +238,8 @@ const googleStt: SttProvider = {
         encoding?: Encoding
         enableAutomaticPunctuation?: boolean
         useEnhanced?: boolean
+        sampleRateHertz?: number
+        audioChannelCount?: number
       }
     }
     type RecognizeAlt = { transcript?: string }
@@ -252,6 +253,14 @@ const googleStt: SttProvider = {
     const { SpeechClient } = loaded as GoogleSpeechModule
     if (!SpeechClient) throw new Error('Google Speech SDK not available')
     const client = new SpeechClient()
+    // For WEBM_OPUS, explicitly set 48kHz and mono to avoid sample rate detection issues
+    let sampleRateHertz: number | undefined
+    let audioChannelCount: number | undefined
+    if (encoding === 'WEBM_OPUS') {
+      sampleRateHertz = 48000
+      audioChannelCount = 1
+    }
+
     const req: RecognizeRequest = {
       audio: { content },
       config: {
@@ -261,6 +270,8 @@ const googleStt: SttProvider = {
         enableAutomaticPunctuation: true,
         // Use enhanced model when available
         useEnhanced: true,
+        sampleRateHertz,
+        audioChannelCount,
       },
     }
     const [resp] = await client.recognize(req)
