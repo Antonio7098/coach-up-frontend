@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 
 type Skill = {
   id: string;
@@ -28,6 +29,7 @@ type TrackedSkill = {
 };
 
 export default function SkillsPage() {
+  const router = useRouter();
   const [skills, setSkills] = useState<Skill[]>([]);
   const [tracked, setTracked] = useState<TrackedSkill[]>([]);
   const [loading, setLoading] = useState(true);
@@ -121,89 +123,102 @@ export default function SkillsPage() {
   }
 
   return (
-    <div className="min-h-screen p-8 sm:p-12 font-sans">
-      <h1 className="text-2xl font-semibold mb-4">Skills</h1>
-      <p data-testid="skills-count" className="text-sm text-gray-600 mb-2">
-        {loading ? "Loading..." : `${skills.length} skills total`}
-      </p>
-      <p className="text-xs text-gray-600 mb-4">Tracked: {tracked.length}/{trackedMax}</p>
-      {error && (
-        <div role="alert" className="mb-4 text-red-600">
-          {error}
-        </div>
-      )}
-      {actionError && (
-        <div role="alert" className="mb-4 text-red-600">
-          {actionError}
-        </div>
-      )}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        <section>
-          <h2 className="text-lg font-semibold mb-2">Tracked ({tracked.length}/{trackedMax})</h2>
-          <ul className="space-y-3" data-testid="tracked-list">
-            {tracked.length === 0 && <li className="text-sm text-gray-500">No tracked skills yet.</li>}
-            {[...tracked]
-              .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-              .map((t) => {
-                const s = t.skill ?? skills.find((x) => x.id === t.skillId) ?? { id: t.skillId, title: t.skillId } as Skill;
-                return (
-                  <li key={t.skillId} className="border rounded p-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <div className="font-medium">{s.title}</div>
-                        {s.category && <div className="text-xs text-gray-500">Category: {s.category}</div>}
-                        {s.description && <p className="text-xs mt-1 text-gray-700">{s.description}</p>}
-                        <div className="mt-1 text-xs text-gray-700">
-                          <span className="font-medium">Current level:</span>{" "}
-                          <span data-testid={`tracked-current-level-${s.id}`}>{t.currentLevel}</span>
+    <div className="min-h-screen bg-neutral-50 text-neutral-800 font-sans p-4">
+      <div className="max-w-md mx-auto">
+        <button
+          type="button"
+          onClick={() => router.back()}
+          className="text-sm text-neutral-700 hover:text-neutral-900 mb-2"
+          aria-label="Go back"
+        >
+          &larr; Back
+        </button>
+        <h1 className="text-xl md:text-2xl uppercase tracking-wide text-neutral-500 font-medium mb-4 text-center">Skills</h1>
+
+        {error && (
+          <div role="alert" className="mb-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">{error}</div>
+        )}
+        {actionError && (
+          <div role="alert" className="mb-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">{actionError}</div>
+        )}
+
+        <section className="mb-8">
+          <div className="text-sm uppercase tracking-wide text-neutral-500 font-medium mb-3">Tracked</div>
+          <div className="-mx-2 px-2 overflow-x-auto">
+            <ul className="flex gap-3 snap-x snap-mandatory justify-center mx-auto w-full" data-testid="tracked-list" role="list">
+              {tracked.length === 0 && <li className="text-sm text-neutral-500">No tracked skills yet.</li>}
+              {[...tracked]
+                .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+                .map((t) => {
+                  const s = t.skill ?? skills.find((x) => x.id === t.skillId) ?? ({ id: t.skillId, title: t.skillId } as Skill);
+                  return (
+                    <li
+                      key={t.skillId}
+                      className="relative w-[160px] min-w-[160px] h-28 snap-start border border-neutral-200 rounded-2xl p-4 bg-white shadow-sm cursor-pointer hover:bg-neutral-50"
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => router.push(`/skills/${encodeURIComponent(t.skillId)}`)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); router.push(`/skills/${encodeURIComponent(t.skillId)}`); } }}
+                    >
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onUntrack(t.skillId); }}
+                        className="absolute top-2 right-2 text-neutral-500 hover:text-neutral-800 active:scale-95 transition text-lg leading-none px-1"
+                        aria-label={`Untrack ${s.title}`}
+                        title="Untrack"
+                      >
+                        -
+                      </button>
+                      <div className="h-full flex flex-col">
+                        <div className="text-sm font-semibold text-neutral-800 mb-3 pr-6">{s.title}</div>
+                        <div className="flex-1 flex items-center justify-center">
+                          <div className="text-3xl font-semibold text-neutral-800 text-center">
+                            <span data-testid={`tracked-current-level-${s.id}`}>{t.currentLevel}</span>
+                          </div>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="inline-flex items-center rounded bg-blue-50 text-blue-700 px-2 py-0.5 text-xs font-semibold">Order {t.order}</span>
-                        <button
-                          onClick={() => onUntrack(t.skillId)}
-                          className="text-xs rounded border border-gray-300 px-3 py-1 hover:bg-gray-50"
-                          aria-label={`Untrack ${s.title}`}
-                        >
-                          Untrack
-                        </button>
-                      </div>
-                    </div>
-                  </li>
-                );
-              })}
-          </ul>
+                    </li>
+                  );
+                })}
+            </ul>
+          </div>
         </section>
 
         <section>
-          <h2 className="text-lg font-semibold mb-2">Untracked</h2>
-          <ul className="space-y-3" data-testid="untracked-list">
-            {untrackedSkills.length === 0 && <li className="text-sm text-gray-500">All skills are tracked.</li>}
-            {untrackedSkills.map((s) => (
-              <li key={s.id} className="border rounded p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="font-medium">{s.title}</div>
-                    {s.category && <div className="text-xs text-gray-500">Category: {s.category}</div>}
-                    {s.description && <p className="text-xs mt-1 text-gray-700">{s.description}</p>}
+          <div className="text-sm uppercase tracking-wide text-neutral-500 font-medium mb-3">Untracked</div>
+          <ul className="flex flex-wrap gap-3 justify-center" data-testid="untracked-list" role="list">
+            {untrackedSkills.length === 0 && <li className="text-sm text-neutral-500">All skills are tracked.</li>}
+            {untrackedSkills.map((s) => {
+              const disabled = tracked.length >= trackedMax;
+              return (
+                <li
+                  key={s.id}
+                  className={[
+                    "w-[160px] min-w-[160px] h-28 border border-neutral-200 rounded-2xl p-4 bg-white shadow-sm",
+                    disabled ? "opacity-60 cursor-not-allowed" : "cursor-pointer hover:bg-neutral-50",
+                  ].join(" ")}
+                  role="button"
+                  aria-disabled={disabled}
+                  tabIndex={disabled ? -1 : 0}
+                  onClick={() => { if (!disabled) onTrack(s.id); }}
+                  onKeyDown={(e) => { if (!disabled && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onTrack(s.id); } }}
+                  aria-label={`Track ${s.title}`}
+                >
+                  <div className="h-full flex flex-col">
+                    <div className="text-sm font-semibold text-neutral-800 mb-3 truncate">{s.title}</div>
+                    <div className="flex-1 flex items-center justify-center">
+                      <div className="text-3xl font-semibold text-neutral-800 text-center">0</div>
+                    </div>
                   </div>
-                  <button
-                    onClick={() => onTrack(s.id)}
-                    disabled={tracked.length >= trackedMax}
-                    className="text-xs rounded border border-blue-600 text-blue-700 px-3 py-1 hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                    aria-label={`Track ${s.title}`}
-                  >
-                    Track
-                  </button>
-                </div>
-              </li>
-            ))}
+                </li>
+              );
+            })}
           </ul>
         </section>
+
+        {!loading && skills.length === 0 && !error && (
+          <div className="text-sm text-neutral-500 mt-4">No skills found.</div>
+        )}
       </div>
-      {!loading && skills.length === 0 && !error && (
-        <div className="text-sm text-gray-500 mt-4">No skills found.</div>
-      )}
     </div>
   );
 }

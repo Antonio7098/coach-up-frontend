@@ -311,8 +311,82 @@ export function __devSeedDefaultSkills() {
       createdAt: now,
       updatedAt: now,
     },
+    {
+      id: 'storytelling',
+      title: 'Storytelling',
+      description: 'Use narrative to engage and persuade.',
+      levels: [
+        { level: 0, criteria: 'Basic chronological narration' },
+        { level: 5, criteria: 'Clear structure with tension and resolution' },
+        { level: 10, criteria: 'Compelling, memorable storytelling' },
+      ],
+      category: 'delivery',
+      isActive: true,
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: 'questioning',
+      title: 'Questioning',
+      description: 'Ask effective questions to uncover needs.',
+      levels: [
+        { level: 0, criteria: 'Asks closed questions' },
+        { level: 5, criteria: 'Mixes open and probing questions' },
+        { level: 10, criteria: 'Strategic questioning that reveals key insights' },
+      ],
+      category: 'communication',
+      isActive: true,
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: 'empathy',
+      title: 'Empathy',
+      description: 'Demonstrate understanding and care for others’ perspectives.',
+      levels: [
+        { level: 0, criteria: 'Acknowledges feelings occasionally' },
+        { level: 5, criteria: 'Reflects emotions and validates regularly' },
+        { level: 10, criteria: 'Consistently anticipates and responds with empathy' },
+      ],
+      category: 'communication',
+      isActive: true,
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: 'confidence',
+      title: 'Confidence',
+      description: 'Project confidence and credibility.',
+      levels: [
+        { level: 0, criteria: 'Inconsistent tone and posture' },
+        { level: 5, criteria: 'Steady tone and confident delivery' },
+        { level: 10, criteria: 'Authoritative and inspiring presence' },
+      ],
+      category: 'delivery',
+      isActive: true,
+      createdAt: now,
+      updatedAt: now,
+    },
   ];
   for (const s of defaults) _skills.push(s);
+}
+
+// Dev-only: ensure up to 2 tracked skills exist for a user (idempotent)
+export function __devEnsureTrackedForUser(args: { userId: string }) {
+  const userId = args.userId;
+  // Seed skills if empty
+  if (_skills.length === 0) __devSeedDefaultSkills();
+  const existing = _tracked.filter((t) => t.userId === userId);
+  if (existing.length >= 2) return;
+  const picked = new Set(existing.map((t) => t.skillId));
+  const now = Date.now();
+  for (const s of _skills) {
+    if (existing.length >= 2) break;
+    if (picked.has(s.id)) continue;
+    const ord = existing.length + 1; // 1..2
+    _tracked.push({ userId, skillId: s.id, currentLevel: 0, order: ord, createdAt: now, updatedAt: now });
+    existing.push({ userId, skillId: s.id, currentLevel: 0, order: ord, createdAt: now, updatedAt: now });
+  }
 }
 
 // Test-only helper to reset in-memory state between tests

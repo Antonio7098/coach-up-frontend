@@ -66,6 +66,7 @@ export async function GET(request: Request) {
   try {
     if (process.env.MOCK_CONVEX === '1') {
       try { mockConvex.__devSeedDefaultSkills(); } catch {}
+      try { mockConvex.__devEnsureTrackedForUser({ userId: effectiveUserId }); } catch {}
       const rows = await mockConvex.listTrackedSkillsForUser({ userId: effectiveUserId });
       const payload = { tracked: Array.isArray(rows) ? rows : [] };
       console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, itemsReturned: payload.tracked.length, mode, latencyMs: Date.now() - started }));

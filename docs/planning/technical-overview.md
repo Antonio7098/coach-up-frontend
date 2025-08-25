@@ -323,6 +323,7 @@ flowchart LR
 
 - Next.js → FastAPI: verify Clerk JWT in FastAPI (issuer, audience, JWKS cache).
 - Propagate a requestId header from client → Next.js → FastAPI; include in all logs with userId/sessionId/trackedSkillId/groupId (hashed if needed).
+- Provider assess calls attach skill tracing headers: `X-Tracked-Skill-Id` and `X-Tracked-Skill-Id-Hash` (SHA-256 of the ID). Logs include `trackedSkillIdHash`; raw IDs should be avoided in logs.
 - Allow anonymous read-only health checks; require auth for AI/chat endpoints.
 
 ### 9.2 Observability & Tracing
@@ -337,6 +338,7 @@ flowchart LR
 - Additional voice-mode guardrails (MVP): max utterance duration, max concurrent mic streams per user.
 - Client-visible 429 with retry-after; exponential backoff for transient provider errors.
 - Guardrails on audio upload size/type and maximum session duration.
+
 ### 9.4 Vendor Abstraction & Reproducibility
 
 - Define thin interfaces: `ChatProvider`, `STTProvider`, `TTSProvider` with `provider` and `modelId`.
@@ -395,6 +397,7 @@ See Monitoring doc for headers, metrics, and log formats: [Monitoring & Observab
   - provider.request.count/errors/latency_ms, tokens.in/out, cost.cents
 - FastAPI (AI service)
   - mirror provider metrics; upstream_latency_ms; retries/backoff.count
+  - assessment per-skill metrics: `coachup_assessment_skill_seconds` (histogram; labels: provider, model, rubric_version) and `coachup_assessment_skill_errors_total` (counter; labels: provider, model, reason)
   - stt.request.count/errors, stt.latency_ms (hist), stt.transcript_confidence (avg), stt.stream.partial_updates
   - tts.request.count/errors, tts.latency_ms (hist), tts.audio_start_ms (hist)
 - Convex
@@ -471,5 +474,14 @@ See the detailed guide: [Benchmarking & LLM Provider Evaluation](../ops/benchmar
 - Persistence callback (AI API):
   - `PERSIST_ASSESSMENTS_URL` can point to `http://localhost:3100/api/assessments/convex/finalize`
   - `PERSIST_ASSESSMENTS_SECRET` should match the UI server env; in mock mode the UI route skips auth.
+  - Payload includes the latest summary; when tracked skills are present, `summary.skillAssessments` is included in full for downstream storage.
 
 For detailed steps and troubleshooting, see `docs/api/README.md`.
+
+### Skill-aligned Assessment Output (interim)
+
+- When tracked skills are present for a session, background assessment summaries now include `skillAssessments[]`.
+- Shape (interim, subject to change with model migration):
+  - `skillAssessments: [{ skill: { id, name, category }, result: { rubricVersion, categories[], scores{}, highlights[], recommendations[], meta{} } }]`
+- Aggregation: category `scores` in the top-level summary are averaged across successful per-skill results. Partial failures are excluded from aggregation and logged.
+- Persistence: this array is included in the finalize payload for downstream storage/processing.

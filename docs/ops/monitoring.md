@@ -63,6 +63,9 @@ FastAPI (service: py)
 - py.upstream.latency_ms, py.upstream.errors
 - py.retries.count, py.backoff.count
 - py.provider.tokens_in/out, py.provider.cost_cents
+- Per-skill assessments:
+  - coachup_assessment_skill_seconds (histogram; labels: provider, model, rubric_version)
+  - coachup_assessment_skill_errors_total (counter; labels: provider, model, reason)
 
 Convex (service: convex)
 - convex.function.latency_ms (histogram)
@@ -201,10 +204,26 @@ These are emitted by `coach-up-ai-api` in `app/main.py` during background assess
 {
   "event": "assessments_dequeue",
   "requestId": "r-123",
+  "trackedSkillIdHash": "ts:aa31…",
   "sessionId": "s-abc",
   "groupId": "g-xyz",
   "workerIndex": 0,
-  "queueDepth": 2
+  "queueDepth": 2,
+  "enqueueLatencyMs": 120
+}
+```
+
+SQS variant
+```json
+{
+  "event": "assessments_dequeue",
+  "requestId": "r-123",
+  "trackedSkillIdHash": "ts:aa31…",
+  "sessionId": "s-abc",
+  "groupId": "g-xyz",
+  "workerIndex": 0,
+  "provider": "sqs",
+  "enqueueLatencyMs": 120
 }
 ```
 
@@ -213,6 +232,7 @@ These are emitted by `coach-up-ai-api` in `app/main.py` during background assess
 {
   "event": "assessments_retry",
   "requestId": "r-123",
+  "trackedSkillIdHash": "ts:aa31…",
   "sessionId": "s-abc",
   "groupId": "g-xyz",
   "attempt": 2,
@@ -225,6 +245,7 @@ These are emitted by `coach-up-ai-api` in `app/main.py` during background assess
 {
   "event": "assessments_job_start",
   "requestId": "r-123",
+  "trackedSkillIdHash": "ts:aa31…",
   "sessionId": "s-abc",
   "groupId": "g-xyz",
   "rubricVersion": "v1"
@@ -236,10 +257,12 @@ These are emitted by `coach-up-ai-api` in `app/main.py` during background assess
 {
   "event": "assessments_scores",
   "requestId": "r-123",
+  "trackedSkillIdHash": "ts:aa31…",
   "sessionId": "s-abc",
   "groupId": "g-xyz",
   "rubricVersion": "v1",
-  "scores": { "correctness": 0.71, "clarity": 0.62, "conciseness": 0.55, "fluency": 0.77 }
+  "scores": { "correctness": 0.71, "clarity": 0.62, "conciseness": 0.55, "fluency": 0.77 },
+  "span": { "start_index": 0, "end_index": 12 }
 }
 ```
 
@@ -248,10 +271,39 @@ These are emitted by `coach-up-ai-api` in `app/main.py` during background assess
 {
   "event": "assessments_job_complete",
   "requestId": "r-123",
+  "trackedSkillIdHash": "ts:aa31…",
   "sessionId": "s-abc",
   "groupId": "g-xyz",
   "rubricVersion": "v1",
   "total_ms": 430
+}
+```
+
+6) Per-skill success
+```json
+{
+  "event": "assessment_skill_complete",
+  "requestId": "r-123",
+  "trackedSkillIdHash": "ts:aa31…",
+  "sessionId": "s-abc",
+  "groupId": "g-xyz",
+  "skillId": "skill-123",
+  "skillHash": "e3b0c442…",
+  "latency_ms": 142
+}
+```
+
+7) Per-skill error
+```json
+{
+  "event": "assessment_skill_error",
+  "requestId": "r-123",
+  "trackedSkillIdHash": "ts:aa31…",
+  "sessionId": "s-abc",
+  "groupId": "g-xyz",
+  "skillId": "skill-123",
+  "skillHash": "e3b0c442…",
+  "error": "timeout"
 }
 ```
 
