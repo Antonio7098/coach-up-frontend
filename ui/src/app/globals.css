@@ -19,8 +19,104 @@
   }
 }
 
+/* Exit animation: slide out to the left */
+@keyframes slide-out-left {
+  from {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(-120px);
+    opacity: 0.001;
+  }
+}
+
+.slide-out-left {
+  animation: slide-out-left 650ms ease-in both;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .slide-out-left {
+    animation: none;
+  }
+}
+
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Shimmer skeleton loader */
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(90deg, #e5e7eb 25%, #f3f4f6 37%, #e5e7eb 63%);
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+.skeleton-rounded {
+  border-radius: 1rem;
+}
+
+.skeleton-text {
+  height: 0.9rem;
+  border-radius: 0.25rem;
+}
+
+/* Simple slide-in from the right for page sections */
+@keyframes slide-in-right {
+  from {
+    transform: translateX(120px);
+    opacity: 0.001;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.slide-in-right {
+  animation: slide-in-right 650ms ease-out both;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .slide-in-right {
+    animation: none;
+  }
+}
+
+/* Exit animation: slide out to the right */
+@keyframes slide-out-right {
+  from {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(120px);
+    opacity: 0.001;
+  }
+}
+
+.slide-out-right {
+  animation: slide-out-right 650ms ease-in both;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .slide-out-right {
+    animation: none;
+  }
 }

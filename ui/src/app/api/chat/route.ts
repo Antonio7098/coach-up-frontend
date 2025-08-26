@@ -22,7 +22,13 @@ export async function OPTIONS() {
 
 export async function GET(request: Request) {
   const controller = new AbortController();
-  const { search } = new URL(request.url);
+  const url = new URL(request.url);
+  const { search } = url;
+  const promptParam = url.searchParams.get("prompt") || "";
+  try {
+    const prev = promptParam.slice(0, 200).replace(/\n/g, " \\n ");
+    console.log(`[ui/api/chat] promptLen=%d preview="%s"`, promptParam.length, prev);
+  } catch {}
   const upstreamUrl = `${aiApiBaseUrl()}/chat/stream${search}`;
   const requestId = (() => {
     try {
@@ -40,6 +46,7 @@ export async function GET(request: Request) {
   try {
     const incoming = new Headers(request.headers);
     const trackedSkillId = incoming.get("x-tracked-skill-id");
+    try { console.log(`[ui/api/chat] x-tracked-skill-id=%s requestId=%s`, trackedSkillId || "-", requestId); } catch {}
     const headers = new Headers({
       Accept: "text/event-stream",
       "X-Request-Id": requestId,

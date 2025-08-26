@@ -5,6 +5,13 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 // Public flags (baked at build time)
 const VOICE_ENABLED = (process.env.NEXT_PUBLIC_ENABLE_VOICE || "1") !== "0";
 const MAX_UTTER_MS = Number(process.env.NEXT_PUBLIC_VOICE_MAX_UTTERANCE_MS || "15000");
+// Tunable VAD / barge-in thresholds (defaults mirror coach page behavior)
+const VAD_THRESHOLD = Number(process.env.NEXT_PUBLIC_VOICE_VAD_THRESHOLD || "0.02");
+const BARGE_RMS_THRESHOLD = Number(
+  process.env.NEXT_PUBLIC_BARGE_RMS_THRESHOLD || String(Math.max(2.5 * VAD_THRESHOLD, 0.05))
+);
+const BARGE_MIN_FRAMES = Number(process.env.NEXT_PUBLIC_BARGE_MIN_FRAMES || "5"); // ~500ms at 100ms hops
+const VAD_MAX_SILENCE_MS = Number(process.env.NEXT_PUBLIC_VOICE_VAD_MAX_SILENCE_MS || "900");
 
 function safeUUID(): string {
   try {
@@ -43,6 +50,10 @@ export default function VoiceChatPage() {
   const audioPlayingRef = useRef<boolean>(false);
   const ttsTextQueueRef = useRef<string[]>([]); // queued text segments awaiting TTS
   const ttsProcessingRef = useRef<boolean>(false);
+  // Barge-in state: arm on mic start; trigger only after sustained louder speech
+  const bargeArmedRef = useRef<boolean>(false);
+  const bargeFramesRef = useRef<number>(0);
+  const bargeTriggeredRef = useRef<boolean>(false);
 
   const [busy, setBusy] = useState<"idle" | "presign" | "upload" | "stt" | "chat" | "tts">("idle");
   const [error, setError] = useState<string>("");
@@ -128,9 +139,13 @@ export default function VoiceChatPage() {
     setObjectKey(null);
     setBlob(null);
     // reset any prior state
-    // barge-in: stop any ongoing playback and clear queues
-    try { stopPlaybackAndClear(); } catch {}
+    // Arm barge-in but do not immediately stop playback to avoid false triggers
     try { ttsTextQueueRef.current = []; ttsProcessingRef.current = false; } catch {}
+    // Ensure no ongoing chat stream continues to enqueue segments
+    try { chatEsRef.current?.close(); chatEsRef.current = null; } catch {}
+    bargeArmedRef.current = true;
+    bargeFramesRef.current = 0;
+    bargeTriggeredRef.current = false;
 
     if (!mediaSupported) {
       setError("MediaRecorder not supported in this browser");
@@ -138,7 +153,13 @@ export default function VoiceChatPage() {
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }
+      });
       const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : (MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "");
       const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
       mediaRef.current = rec;
@@ -176,7 +197,7 @@ export default function VoiceChatPage() {
       // Guardrail: auto-stop after max duration
       stopTimerRef.current = setTimeout(() => stopRecording(), Math.max(1000, MAX_UTTER_MS));
 
-      // Start lightweight silence detection to auto-stop shortly after you finish speaking
+      // Start lightweight VAD: auto-stop after silence and trigger barge-in on sustained louder speech
       try {
         const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
         const src = ctx.createMediaStreamSource(stream);
@@ -186,9 +207,7 @@ export default function VoiceChatPage() {
         const buffer = new Uint8Array(analyser.fftSize);
         const started = Date.now();
         let lastSpoke = Date.now();
-        const SILENCE_RMS = 0.02; // ~2% amplitude
-        const MIN_SPEECH_MS = 300; // ignore early noise
-        const SILENCE_HOLD_MS = 600; // stop if silence sustained this long
+        const MIN_SPEECH_MS = 300; // ignore early noise before considering silence
         const tick = () => {
           analyser.getByteTimeDomainData(buffer);
           // compute RMS deviation from midpoint 128
@@ -199,12 +218,33 @@ export default function VoiceChatPage() {
           }
           const rms = Math.sqrt(sum / buffer.length);
           const now = Date.now();
-          if (rms > SILENCE_RMS) {
+          // Speech detection for silence tracking
+          if (rms > VAD_THRESHOLD) {
             lastSpoke = now;
+          }
+          // Barge-in detection: require sustained louder speech
+          if (bargeArmedRef.current && !bargeTriggeredRef.current) {
+            if (rms > BARGE_RMS_THRESHOLD) {
+              bargeFramesRef.current += 1;
+              if (bargeFramesRef.current >= BARGE_MIN_FRAMES) {
+                // Trigger barge-in: stop ongoing playback and clear queues
+                try { stopPlaybackAndClear(); } catch {}
+                // Stop any active chat stream to prevent further TTS segments
+                try { chatEsRef.current?.close(); chatEsRef.current = null; } catch {}
+                // Clear pending TTS text segments and halt processing
+                try { ttsTextQueueRef.current = []; ttsProcessingRef.current = false; } catch {}
+                bargeTriggeredRef.current = true;
+                bargeArmedRef.current = false;
+              }
+            } else {
+              bargeFramesRef.current = 0;
+            }
           }
           const spokeFor = lastSpoke - started;
           const silentFor = now - lastSpoke;
-          if (spokeFor > MIN_SPEECH_MS && silentFor > SILENCE_HOLD_MS) {
+          // Do not auto-stop on silence if TTS playback is active or queued
+          const ttsActive = audioPlayingRef.current || audioQueueRef.current.length > 0 || ttsProcessingRef.current;
+          if (!ttsActive && spokeFor > MIN_SPEECH_MS && silentFor > VAD_MAX_SILENCE_MS) {
             log("info", `Auto-stop on silence (silent ${silentFor} ms)`);
             stopRecording();
             return;
@@ -483,11 +523,14 @@ export default function VoiceChatPage() {
         const cleanup = () => {
           el!.removeEventListener("ended", onEnded);
           el!.removeEventListener("error", onErr);
+          el!.removeEventListener("pause", onPause);
         };
         const onEnded = () => { cleanup(); resolve(); };
         const onErr = () => { cleanup(); resolve(); };
+        const onPause = () => { cleanup(); resolve(); };
         el!.addEventListener("ended", onEnded, { once: true });
         el!.addEventListener("error", onErr, { once: true });
+        el!.addEventListener("pause", onPause, { once: true });
       });
     } catch {
       // ignore playback errors in loop mode
@@ -520,6 +563,8 @@ export default function VoiceChatPage() {
 
   function enqueueAudio(url: string) {
     if (!url) return;
+    // If barge-in was triggered, do not enqueue audio during this utterance
+    if (bargeTriggeredRef.current) return;
     audioQueueRef.current.push(url);
     void ensureAudioWorker();
   }
@@ -530,6 +575,11 @@ export default function VoiceChatPage() {
     ttsProcessingRef.current = true;
     try {
       while (ttsTextQueueRef.current.length > 0) {
+        if (bargeTriggeredRef.current) {
+          // Drop remaining segments once barge-in has occurred
+          ttsTextQueueRef.current = [];
+          break;
+        }
         const text = ttsTextQueueRef.current.shift()!;
         const url = await callTTSChunk(text);
         if (url) {

@@ -35,6 +35,9 @@ export default function SkillsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // No entry gating; show content immediately so skeletons are visible
+  const [leaving, setLeaving] = useState(false);
+  const [leavingDir, setLeavingDir] = useState<"left" | "right">("left");
 
   useEffect(() => {
     let cancelled = false;
@@ -64,6 +67,12 @@ export default function SkillsPage() {
       cancelled = true;
     };
   }, []);
+
+  // Entry transition handled by route layout (app/skills/layout.tsx)
+
+  // Removed entry animation gating to avoid blank page during initial render
+
+  // Entry animation is handled by app/skills/layout.tsx to avoid double transforms
 
   const trackedIds = new Set(tracked.map((t) => t.skillId));
   const untrackedSkills = skills.filter((s) => !trackedIds.has(s.id));
@@ -122,12 +131,51 @@ export default function SkillsPage() {
     }
   }
 
+  function handleBack() {
+    try {
+      const reduce = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (reduce) {
+        router.back();
+        return;
+      }
+      if (!leaving) {
+        try { window.sessionStorage.setItem('navDir', 'back'); } catch {}
+        setLeavingDir('right');
+        setLeaving(true);
+        setTimeout(() => router.back(), 650);
+      }
+    } catch {
+      router.back();
+    }
+  }
+
+  // Forward navigation helper: slide out left, next page enters from right
+  function navigateForward(url: string) {
+    const reduce = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduce) {
+      router.push(url);
+      return;
+    }
+    try { window.sessionStorage.setItem('navDir', 'forward'); } catch {}
+    try { router.prefetch(url); } catch {}
+    setLeavingDir('left');
+    setLeaving(true);
+    setTimeout(() => router.push(url), 650);
+  }
+
   return (
-    <div className="min-h-screen bg-neutral-50 text-neutral-800 font-sans p-4">
-      <div className="max-w-md mx-auto">
+    <div
+      className="min-h-screen bg-neutral-50 text-neutral-800 font-sans p-4 overflow-x-hidden transform-gpu will-change-transform transition-transform duration-700 ease-in-out"
+      style={{
+        transform: leaving
+          ? (leavingDir === 'left' ? 'translateX(-120vw)' : 'translateX(120vw)')
+          : 'translateX(0)'
+      }}
+    >
+      <div className={"max-w-md mx-auto"}>
         <button
           type="button"
-          onClick={() => router.back()}
+          onClick={handleBack}
           className="text-sm text-neutral-700 hover:text-neutral-900 mb-2"
           aria-label="Go back"
         >
@@ -146,39 +194,48 @@ export default function SkillsPage() {
           <div className="text-sm uppercase tracking-wide text-neutral-500 font-medium mb-3">Tracked</div>
           <div className="-mx-2 px-2 overflow-x-auto">
             <ul className="flex gap-3 snap-x snap-mandatory justify-center mx-auto w-full" data-testid="tracked-list" role="list">
-              {tracked.length === 0 && <li className="text-sm text-neutral-500">No tracked skills yet.</li>}
-              {[...tracked]
-                .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-                .map((t) => {
-                  const s = t.skill ?? skills.find((x) => x.id === t.skillId) ?? ({ id: t.skillId, title: t.skillId } as Skill);
-                  return (
-                    <li
-                      key={t.skillId}
-                      className="relative w-[160px] min-w-[160px] h-28 snap-start border border-neutral-200 rounded-2xl p-4 bg-white shadow-sm cursor-pointer hover:bg-neutral-50"
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => router.push(`/skills/${encodeURIComponent(t.skillId)}`)}
-                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); router.push(`/skills/${encodeURIComponent(t.skillId)}`); } }}
-                    >
-                      <button
-                        onClick={(e) => { e.stopPropagation(); onUntrack(t.skillId); }}
-                        className="absolute top-2 right-2 text-neutral-500 hover:text-neutral-800 active:scale-95 transition text-lg leading-none px-1"
-                        aria-label={`Untrack ${s.title}`}
-                        title="Untrack"
-                      >
-                        -
-                      </button>
-                      <div className="h-full flex flex-col">
-                        <div className="text-sm font-semibold text-neutral-800 mb-3 pr-6">{s.title}</div>
-                        <div className="flex-1 flex items-center justify-center">
-                          <div className="text-3xl font-semibold text-neutral-800 text-center">
-                            <span data-testid={`tracked-current-level-${s.id}`}>{t.currentLevel}</span>
+              {loading ? (
+                <>
+                  <li className="min-w-[160px] w-[160px] h-28 snap-start skeleton skeleton-rounded border border-neutral-200" />
+                  <li className="min-w-[160px] w-[160px] h-28 snap-start skeleton skeleton-rounded border border-neutral-200" />
+                </>
+              ) : (
+                <>
+                  {tracked.length === 0 && <li className="text-sm text-neutral-500">No tracked skills yet.</li>}
+                  {[...tracked]
+                    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+                    .map((t) => {
+                      const s = t.skill ?? skills.find((x) => x.id === t.skillId) ?? ({ id: t.skillId, title: t.skillId } as Skill);
+                      return (
+                        <li
+                          key={t.skillId}
+                          className="relative w-[160px] min-w-[160px] h-28 snap-start border border-neutral-200 rounded-2xl p-4 bg-white shadow-sm cursor-pointer hover:bg-neutral-50"
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => navigateForward(`/skills/${encodeURIComponent(t.skillId)}`)}
+                          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigateForward(`/skills/${encodeURIComponent(t.skillId)}`); } }}
+                        >
+                          <button
+                            onClick={(e) => { e.stopPropagation(); onUntrack(t.skillId); }}
+                            className="absolute top-2 right-2 text-neutral-500 hover:text-neutral-800 active:scale-95 transition text-lg leading-none px-1"
+                            aria-label={`Untrack ${s.title}`}
+                            title="Untrack"
+                          >
+                            -
+                          </button>
+                          <div className="h-full flex flex-col">
+                            <div className="text-sm font-semibold text-neutral-800 mb-3 pr-6">{s.title}</div>
+                            <div className="flex-1 flex items-center justify-center">
+                              <div className="text-3xl font-semibold text-neutral-800 text-center">
+                                <span data-testid={`tracked-current-level-${s.id}`}>{t.currentLevel}</span>
+                              </div>
+                            </div>
                           </div>
-                        </div>
-                      </div>
-                    </li>
-                  );
-                })}
+                        </li>
+                      );
+                    })}
+                </>
+              )}
             </ul>
           </div>
         </section>
@@ -186,14 +243,22 @@ export default function SkillsPage() {
         <section>
           <div className="text-sm uppercase tracking-wide text-neutral-500 font-medium mb-3">Untracked</div>
           <ul className="flex flex-wrap gap-3 justify-center" data-testid="untracked-list" role="list">
-            {untrackedSkills.length === 0 && <li className="text-sm text-neutral-500">All skills are tracked.</li>}
-            {untrackedSkills.map((s) => {
+            {loading ? (
+              <>
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <li key={i} className="w-[160px] min-w-[160px] h-28 skeleton skeleton-rounded border border-neutral-200" />
+                ))}
+              </>
+            ) : (
+              <>
+                {untrackedSkills.length === 0 && <li className="text-sm text-neutral-500">All skills are tracked.</li>}
+                {untrackedSkills.map((s) => {
               const disabled = tracked.length >= trackedMax;
               return (
                 <li
                   key={s.id}
                   className={[
-                    "w-[160px] min-w-[160px] h-28 border border-neutral-200 rounded-2xl p-4 bg-white shadow-sm",
+                    "relative w-[160px] min-w-[160px] h-28 border border-neutral-200 rounded-2xl p-4 bg-white shadow-sm",
                     disabled ? "opacity-60 cursor-not-allowed" : "cursor-pointer hover:bg-neutral-50",
                   ].join(" ")}
                   role="button"
@@ -203,6 +268,15 @@ export default function SkillsPage() {
                   onKeyDown={(e) => { if (!disabled && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onTrack(s.id); } }}
                   aria-label={`Track ${s.title}`}
                 >
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); navigateForward(`/skills/${encodeURIComponent(s.id)}`); }}
+                    className="absolute top-2 right-2 text-neutral-500 hover:text-neutral-800 active:scale-95 transition text-lg leading-none px-1 cursor-pointer"
+                    aria-label={`View ${s.title} details`}
+                    title="Open details"
+                  >
+                    ↗
+                  </button>
                   <div className="h-full flex flex-col">
                     <div className="text-sm font-semibold text-neutral-800 mb-3 truncate">{s.title}</div>
                     <div className="flex-1 flex items-center justify-center">
@@ -212,6 +286,8 @@ export default function SkillsPage() {
                 </li>
               );
             })}
+              </>
+            )}
           </ul>
         </section>
 

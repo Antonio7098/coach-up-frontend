@@ -187,12 +187,22 @@ export default function ChatPage() {
 
   const fetchSummary = useCallback(async () => {
     try {
+      console.debug("[assess] fetch summary start", { sessionId });
       const res = await fetch(`/api/assessments/${encodeURIComponent(sessionId)}`);
       if (!res.ok) throw new Error(`get failed: ${res.status}`);
       const data = await res.json();
       setSummary(data);
+      try {
+        const count = Array.isArray((data as any)?.summary?.skillAssessments)
+          ? ((data as any)?.summary?.skillAssessments as any[]).length
+          : Array.isArray((data as any)?.skillAssessments)
+          ? ((data as any)?.skillAssessments as any[]).length
+          : 0;
+        const reqId = res.headers.get("x-request-id") || undefined;
+        console.debug("[assess] fetch summary ok", { sessionId, count, hasSummary: !!(data as any)?.summary, requestId: reqId });
+      } catch {}
     } catch (e) {
-      console.error(e);
+      console.error("[assess] fetch summary error", e);
     }
   }, [sessionId]);
 
@@ -200,18 +210,23 @@ export default function ChatPage() {
     try {
       setAssessRunning(true);
       setSummary(null);
+      console.debug("[assess] queue start", { sessionId });
       const res = await fetch("/api/assessments/run", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ sessionId }),
       });
       if (!res.ok) throw new Error(`run failed: ${res.status}`);
+      const reqId = res.headers.get("x-request-id") || undefined;
       const data = await res.json();
       setGroupId(data.groupId ?? null);
+      try {
+        console.debug("[assess] queue done", { sessionId, groupId: data.groupId, requestId: reqId });
+      } catch {}
       // Immediately fetch summary (stubbed in API for now)
       await fetchSummary();
     } catch (e) {
-      console.error(e);
+      console.error("[assess] queue error", e);
     } finally {
       setAssessRunning(false);
     }

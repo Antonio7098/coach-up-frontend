@@ -10,6 +10,8 @@ import {
 } from "@clerk/nextjs";
 import "./globals.css";
 import "../styles/theme.css";
+import { ChatProvider } from "../context/ChatContext";
+import NavDirListener from "./NavDirListener";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -38,7 +40,11 @@ export default function RootLayout({
           className={`${geistSans.variable} ${geistMono.variable} antialiased`}
         >
 
-          {children}
+          <ChatProvider>
+            {/* Global listener to mark popstate as 'back' for entry animations */}
+            <NavDirListener />
+            {children}
+          </ChatProvider>
         </body>
       </html>
     </ClerkProvider>

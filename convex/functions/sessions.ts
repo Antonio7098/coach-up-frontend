@@ -3,7 +3,7 @@
 // Update minimal session state and last activity timestamp.
 
 import { v } from "convex/values";
-import { mutation } from "../_generated/server";
+import { mutation, query } from "../_generated/server";
 
 export const updateSessionState = mutation({
   args: {
@@ -50,5 +50,16 @@ export const updateSessionState = mutation({
       lastActivityAt: now,
     });
     return { created: false, id: existing._id } as const;
+  },
+});
+
+export const getBySessionId = query({
+  args: { sessionId: v.string() },
+  handler: async (ctx, { sessionId }) => {
+    const existing = await ctx.db
+      .query("sessions")
+      .withIndex("by_sessionId", (q) => q.eq("sessionId", sessionId))
+      .unique();
+    return existing ?? null;
   },
 });
