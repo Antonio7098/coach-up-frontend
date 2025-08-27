@@ -1,61 +1,75 @@
-// @ts-nocheck
-// Convex Schema — Assessments v1 (SPR-002)
-// NOTE: This file is a planning/implementation artifact and is not imported by the app build yet.
-// It can be activated later by installing Convex and running the dev server.
+// Convex Schema — Assessments v2 (SPR-007)
+// Supports v2-only finalize with per-skill persistence and level progression
 
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 export default defineSchema({
-  // Assessments — includes optional trackedSkillIdHash for privacy-preserving correlations
+  // Assessments — v2-only with per-skill rows and skillHash
   assessments: defineTable({
     userId: v.string(),
     sessionId: v.string(),
-    trackedSkillIdHash: v.optional(v.string()),
-    interactionId: v.optional(v.string()),
     groupId: v.optional(v.string()),
+    skillHash: v.string(), // required for kind="skill_assessment"
     kind: v.union(
-      v.literal("per_interaction"),
-      v.literal("multi_turn"),
+      v.literal("skill_assessment"),
       v.literal("summary"),
     ),
-    category: v.string(),
-    score: v.number(), // 0..1
-    errors: v.array(v.string()),
-    tags: v.array(v.string()),
-    rubricVersion: v.string(),
+    level: v.optional(v.number()), // 0..10 for per-skill rows
+    rubricVersion: v.literal("v2"),
     summary: v.optional(
       v.object({
         highlights: v.array(v.string()),
         recommendations: v.array(v.string()),
         rubricKeyPoints: v.array(v.string()),
-        categories: v.optional(v.array(v.string())),
-        // Using any for scores to allow dynamic keys per rubric category
-        scores: v.optional(v.any()),
         meta: v.optional(
           v.object({
-            messageCount: v.optional(v.number()),
-            durationMs: v.optional(v.number()),
-            slice: v.optional(
-              v.object({
-                startIndex: v.number(),
-                endIndex: v.number(),
-              })
-            ),
+            provider: v.optional(v.string()),
+            modelId: v.optional(v.string()),
+            skillsCount: v.optional(v.number()),
           })
         ),
-        rubricVersion: v.optional(v.string()),
       })
     ),
+    feedback: v.array(v.string()),
+    metCriteria: v.array(v.string()),
+    unmetCriteria: v.array(v.string()),
+    trackedSkillIdHash: v.optional(v.string()),
     createdAt: v.number(), // ms since epoch
     updatedAt: v.number(), // ms since epoch
   })
-    .index("by_user", ["userId"]) 
-    .index("by_session", ["sessionId"]) 
-    .index("by_group", ["groupId"]) 
-    .index("by_kind_category", ["kind", "category"]) 
-    .index("by_createdAt", ["createdAt"]) 
-    .index("by_tracked_hash", ["trackedSkillIdHash"]),
+    .index("by_user_skillHash", ["userId", "skillHash", "createdAt"])
+    .index("by_session", ["sessionId"])
+    .index("by_group", ["groupId"])
+    .index("by_kind", ["kind"])
+    .index("by_createdAt", ["createdAt"]),
+
+  // Finalize idempotency — prevent duplicate writes by (sessionId, groupId)
+  finalize_idempotency: defineTable({
+    sessionId: v.string(),
+    groupId: v.string(),
+    completedAt: v.number(), // ms since epoch
+    expiresAt: v.number(), // ms since epoch (24h TTL)
+  })
+    .index("by_session_group", ["sessionId", "groupId"])
+    .index("by_expiresAt", ["expiresAt"]),
+
+  // Skill level history — track level changes from v2 assessments
+  skill_level_history: defineTable({
+    userId: v.string(),
+    skillId: v.string(),
+    fromLevel: v.number(), // 0..10
+    toLevel: v.number(), // 0..10
+    reason: v.string(), // e.g., "assessment_average"
+    avgSource: v.number(), // average level used
+    sessionId: v.string(),
+    groupId: v.string(),
+    createdAt: v.number(), // ms since epoch
+  })
+    .index("by_user", ["userId"])
+    .index("by_skillId", ["skillId"])
+    .index("by_createdAt", ["createdAt"])
+    .index("by_session", ["sessionId"]),
 
   // Sessions — minimal state tracking
   sessions: defineTable({

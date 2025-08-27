@@ -29,6 +29,15 @@ vi.mock('convex/browser', () => {
   return { ConvexHttpClient: ConvexHttpClientMock };
 });
 
+// Mock Convex server codegen so convex/functions/* can be imported in unit tests without codegen
+vi.mock('../_generated/server', () => {
+  const passthrough = (def: any) => def;
+  return {
+    mutation: passthrough,
+    query: passthrough,
+  };
+});
+
 // Helper to get the latest Convex client instance
 export function getLatestConvexClientMock(): any | undefined {
   const arr = (globalThis as any).__convexMockInstances as any[] | undefined;

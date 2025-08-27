@@ -235,32 +235,116 @@ export const updateSkill = mutation({
   },
 });
 
-export const seedSkills = mutation({
-  handler: async (ctx) => {
-    const results = [];
+// V2 Functions for Assessments Migration
+export const resolveSkillIdFromHash = query({
+  args: {
+    skillHash: v.string(),
+  },
+  handler: async (ctx, { skillHash }) => {
+    const salt = process.env.SKILL_HASH_SALT;
+    if (!salt) throw new Error("SKILL_HASH_SALT not configured");
 
-    for (const skillData of ALL_PREDEFINED_SKILLS) {
-      // Check if skill already exists
-      const existing = await ctx.db
-        .query("skills")
-        .withIndex("by_skill_id", (q) => q.eq("id", skillData.id))
-        .first();
+    // Get all active skills and find matching hash
+    const skills = await ctx.db
+      .query("skills")
+      .withIndex("by_isActive", (q) => q.eq("isActive", true))
+      .collect();
 
-      if (!existing) {
-        const now = Date.now();
-        const skill = {
-          ...skillData,
-          createdAt: now,
-          updatedAt: now,
-        };
-        const id = await ctx.db.insert("skills", skill);
-        results.push({ id, skillId: skillData.id, action: "created" });
-      } else {
-        results.push({ id: existing._id, skillId: skillData.id, action: "skipped" });
+    for (const skill of skills) {
+      const expectedHash = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(skill.id + salt)
+      ).then(hash => Array.from(new Uint8Array(hash))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join(''));
+
+      if (expectedHash === skillHash) {
+        return skill.id;
       }
     }
+    return null;
+  },
+});
 
-    return results;
+export const updateLevelFromRecentAssessments = mutation({
+  args: {
+    userId: v.string(),
+    sessionId: v.string(),
+    groupId: v.string(),
+    skillHash: v.string(),
+  },
+  handler: async (ctx, { userId, sessionId, groupId, skillHash }) => {
+    const N = Number(process.env.SKILL_LEVEL_AVERAGE_COUNT) || 5;
+    const THRESH = Number(process.env.SKILL_LEVEL_INCREMENT_THRESHOLD) || 1.0;
+
+    // Resolve skillId from hash
+    const skillId = await ctx.runQuery("skills:resolveSkillIdFromHash", { skillHash });
+    if (!skillId) throw new Error("skillHash not found");
+
+    // Get current level
+    const tracked = await ctx.db
+      .query("tracked_skills")
+      .withIndex("by_user_skill", (q) => q.eq("userId", userId).eq("skillId", skillId))
+      .first();
+    if (!tracked) throw new Error("skill not tracked by user");
+    const currentLevel = tracked.currentLevel;
+
+    // Query last N assessments for this (userId, skillHash)
+    const assessments = await ctx.db
+      .query("assessments")
+      .withIndex("by_user_skillHash", (q) => q.eq("userId", userId).eq("skillHash", skillHash))
+      .take(N);
+
+    if (assessments.length === 0) return { ok: true, levelChanged: false };
+
+    // Calculate average level
+    const avg = assessments.reduce((sum, a) => sum + (a.level ?? 0), 0) / assessments.length;
+
+    if (avg < currentLevel + THRESH) {
+      return { ok: true, levelChanged: false };
+    }
+
+    // Increment level (max 10)
+    const newLevel = Math.min(10, currentLevel + 1);
+
+    // Update tracked_skills
+    const now = Date.now();
+    await ctx.db.replace(tracked._id, {
+      ...tracked,
+      currentLevel: newLevel,
+      updatedAt: now,
+    });
+
+    // Write skill_level_history
+    await ctx.db.insert("skill_level_history", {
+      userId,
+      skillId,
+      fromLevel: currentLevel,
+      toLevel: newLevel,
+      reason: "assessment_average",
+      avgSource: avg,
+      sessionId,
+      groupId,
+      createdAt: now,
+    });
+
+    // Emit analytics event
+    await ctx.db.insert("events", {
+      userId,
+      sessionId,
+      groupId,
+      kind: "skill_level_up",
+      payload: {
+        skillId,
+        fromLevel: currentLevel,
+        toLevel: newLevel,
+        avgSource: avg,
+        assessmentCount: assessments.length,
+      },
+      createdAt: now,
+    });
+
+    return { ok: true, levelChanged: true, newLevel };
   },
 });
 

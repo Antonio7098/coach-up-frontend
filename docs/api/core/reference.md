@@ -158,7 +158,7 @@ Overview of product/domain endpoints exposed via Next.js API routes.
 ## Assessments (Convex-backed)
 - POST `/api/assessments/run` — proxies AI API to start an assessment job; also persists Convex baseline (mocked when `MOCK_CONVEX=1`).
 - GET  `/api/assessments/[sessionId]` — proxies AI API to fetch latest summary for a session.
-- POST `/api/assessments/convex/finalize` — persists summary document to Convex (mock when `MOCK_CONVEX=1`).
+- POST `/api/assessments/convex/finalize` — v2-only assessment persistence with per-skill rows and level updates (mock when `MOCK_CONVEX=1`).
 - GET  `/api/assessments/convex/[sessionId]` — fetches latest Convex summary/baseline for a session.
 
 Notes:
