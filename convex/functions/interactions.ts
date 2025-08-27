@@ -8,7 +8,7 @@ import { mutation, query } from "../_generated/server";
 export const appendInteraction = mutation({
   args: {
     sessionId: v.string(),
-    groupId: v.string(),
+    groupId: v.optional(v.string()),
     messageId: v.string(),
     role: v.union(v.literal("user"), v.literal("assistant")),
     contentHash: v.string(),
@@ -20,7 +20,6 @@ export const appendInteraction = mutation({
     // Runtime guards to complement v validators
     const nonEmpty = (s: unknown) => typeof s === 'string' && s.trim().length > 0;
     if (!nonEmpty(args.sessionId)) throw new Error('sessionId required');
-    if (!nonEmpty(args.groupId)) throw new Error('groupId required');
     if (!nonEmpty(args.messageId)) throw new Error('messageId required');
     if (!nonEmpty(args.contentHash)) throw new Error('contentHash required');
     if (!Number.isFinite(args.ts) || args.ts <= 0) throw new Error('ts must be > 0');

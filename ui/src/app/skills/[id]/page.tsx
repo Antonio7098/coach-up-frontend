@@ -226,23 +226,23 @@ export default function SkillDetailPage() {
     try {
       const reduce = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
       if (reduce) {
-        router.back();
+        router.push('/coach');
         return;
       }
       if (!leaving) {
         try { window.sessionStorage.setItem('navDir', 'back'); } catch {}
         setLeavingDir('right');
         setLeaving(true);
-        setTimeout(() => router.back(), 650);
+        setTimeout(() => router.push('/coach'), 650);
       }
     } catch {
-      router.back();
+      router.push('/coach');
     }
   }
 
   return (
     <div
-      className="min-h-screen bg-neutral-50 text-neutral-800 font-sans p-4 overflow-x-hidden transform-gpu will-change-transform transition-transform duration-700 ease-in-out"
+      className="min-h-screen bg-background text-foreground font-sans p-4 overflow-x-hidden transform-gpu will-change-transform transition-transform duration-700 ease-in-out"
       style={{
         transform: leaving
           ? (leavingDir === 'left' ? 'translateX(-120vw)' : 'translateX(120vw)')
@@ -253,7 +253,7 @@ export default function SkillDetailPage() {
         <button
           type="button"
           onClick={handleBack}
-          className="text-sm text-neutral-700 hover:text-neutral-900 mb-2"
+          className="text-sm cu-muted hover:text-foreground mb-2"
           aria-label="Go back"
         >
           &larr; Back
@@ -266,17 +266,17 @@ export default function SkillDetailPage() {
           </div>
         ) : (
           <>
-            <h1 className="text-xl md:text-2xl uppercase tracking-wide text-neutral-500 font-medium mb-1 text-center">
+            <h1 className="text-xl md:text-2xl uppercase tracking-wide cu-muted font-medium mb-1 text-center">
               {skill?.title || "Skill"}
             </h1>
             {skill?.description && (
-              <p className="text-sm text-neutral-500 text-center mb-4">{skill.description}</p>
+              <p className="text-sm cu-muted text-center mb-4">{skill.description}</p>
             )}
           </>
         )}
 
         {actionError && (
-          <div role="alert" className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3 mb-3">{actionError}</div>
+          <div role="alert" className="text-sm cu-error-text cu-error-soft-bg border cu-error-border rounded-lg p-3 mb-3">{actionError}</div>
         )}
 
         <div className="flex items-center justify-center mb-4">
@@ -285,7 +285,7 @@ export default function SkillDetailPage() {
               type="button"
               onClick={onUntrack}
               disabled={actionLoading}
-              className="rounded-lg border border-neutral-300 bg-white px-4 py-2 text-sm hover:bg-neutral-100 disabled:opacity-60"
+              className="rounded-lg border cu-border-surface cu-surface px-4 py-2 text-sm hover:opacity-90 disabled:opacity-60"
             >
               {actionLoading ? "Working…" : "Untrack"}
             </button>
@@ -294,7 +294,7 @@ export default function SkillDetailPage() {
               type="button"
               onClick={onTrack}
               disabled={!canTrackMore || actionLoading}
-              className="rounded-lg bg-blue-600 text-white px-4 py-2 text-sm hover:bg-blue-700 disabled:opacity-60"
+              className="rounded-lg cu-accent-bg px-4 py-2 text-sm hover:opacity-90 disabled:opacity-60"
             >
               {actionLoading ? "Working…" : "Track"}
             </button>
@@ -302,21 +302,21 @@ export default function SkillDetailPage() {
         </div>
 
         {loading ? (
-          <div className="rounded-2xl bg-white border border-neutral-200 shadow-sm p-4 mb-4">
+          <div className="rounded-2xl cu-surface border cu-border-surface shadow-sm p-4 mb-4">
             <div className="h-4 w-24 skeleton skeleton-text mb-3" />
             <div className="h-10 w-16 mx-auto skeleton skeleton-rounded" />
           </div>
         ) : (
-          <div className="rounded-2xl bg-white border border-neutral-200 shadow-sm p-4 mb-4">
-            <div className="text-xs uppercase tracking-wide text-neutral-500 mb-1">Current level</div>
-            <div className="text-4xl font-semibold text-neutral-800 text-center" data-testid="skill-current-level">
+          <div className="rounded-2xl cu-surface border cu-border-surface shadow-sm p-4 mb-4">
+            <div className="text-xs uppercase tracking-wide cu-muted mb-1">Current level</div>
+            <div className="text-4xl font-semibold text-foreground text-center" data-testid="skill-current-level">
               {currentLevel}
             </div>
           </div>
         )}
 
         {loading ? (
-          <div className="rounded-2xl bg-white border border-neutral-200 shadow-sm p-4 mb-4">
+          <div className="rounded-2xl cu-surface border cu-border-surface shadow-sm p-4 mb-4">
             <div className="h-4 w-24 skeleton skeleton-text mb-3" />
             <div className="space-y-2">
               <div className="h-4 w-full skeleton skeleton-text" />
@@ -325,25 +325,25 @@ export default function SkillDetailPage() {
             </div>
           </div>
         ) : (
-          <div className="rounded-2xl bg-white border border-neutral-200 shadow-sm p-4 mb-4">
-            <div className="text-xs uppercase tracking-wide text-neutral-500 mb-2">Criteria</div>
+          <div className="rounded-2xl cu-surface border cu-border-surface shadow-sm p-4 mb-4">
+            <div className="text-xs uppercase tracking-wide cu-muted mb-2">Criteria</div>
             {nearestCriteria ? (
               <div>
-                <div className="text-sm text-neutral-800">
+                <div className="text-sm text-foreground">
                   <span className="font-medium">Level {nearestCriteria.level}:</span> {nearestCriteria.criteria}
                 </div>
                 <button
                   type="button"
                   onClick={() => setShowAllCriteria((v) => !v)}
-                  className="mt-2 text-xs text-blue-700 hover:text-blue-900 underline"
+                  className="mt-2 text-xs cu-accent-text hover:opacity-90 underline"
                 >
                   {showAllCriteria ? "Hide all criteria" : "Show all criteria"}
                 </button>
                 {showAllCriteria && (
-                  <ul className="mt-3 space-y-1 text-sm text-neutral-700">
+                  <ul className="mt-3 space-y-1 text-sm text-foreground">
                     {(skill?.levels || []).slice().sort((a, b) => a.level - b.level).map((l) => (
                       <li key={l.level} className="flex items-start gap-2">
-                        <span className="inline-block w-10 shrink-0 text-neutral-500">{l.level}</span>
+                        <span className="inline-block w-10 shrink-0 cu-muted">{l.level}</span>
                         <span>{l.criteria}</span>
                       </li>
                     ))}
@@ -351,48 +351,48 @@ export default function SkillDetailPage() {
                 )}
               </div>
             ) : (
-              <div className="text-sm text-neutral-500">No criteria available.</div>
+              <div className="text-sm cu-muted">No criteria available.</div>
             )}
           </div>
         )}
 
         <section>
-          <div className="text-sm uppercase tracking-wide text-neutral-500 font-medium mb-2">Assessments</div>
+          <div className="text-sm uppercase tracking-wide cu-muted font-medium mb-2">Assessments</div>
           {assessLoading && (
-            <div className="text-sm text-neutral-500">Loading assessments…</div>
+            <div className="text-sm cu-muted">Loading assessments…</div>
           )}
           {assessError && (
-            <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3 mb-3">{assessError}</div>
+            <div className="text-sm cu-error-text cu-error-soft-bg border cu-error-border rounded-lg p-3 mb-3">{assessError}</div>
           )}
           {!assessLoading && !assessError && (
             <div className="space-y-3">
               {v2SkillAssessments.length > 0 ? (
                 v2SkillAssessments.map((a, idx) => (
-                  <div key={idx} className="rounded-2xl bg-white border border-neutral-200 shadow-sm p-4">
-                    <div className="text-xs uppercase tracking-wide text-neutral-500 mb-1">Assessment</div>
+                  <div key={idx} className="rounded-2xl cu-surface border cu-border-surface shadow-sm p-4">
+                    <div className="text-xs uppercase tracking-wide cu-muted mb-1">Assessment</div>
                     {typeof a.level === "number" && (
-                      <div className="text-sm text-neutral-800 mb-2">Level: <span className="font-medium">{a.level}</span></div>
+                      <div className="text-sm text-foreground mb-2">Level: <span className="font-medium">{a.level}</span></div>
                     )}
                     {Array.isArray(a.metCriteria) && a.metCriteria.length > 0 && (
                       <div className="mb-2">
-                        <div className="text-xs font-medium text-emerald-700">Met</div>
-                        <ul className="list-disc ml-5 text-sm text-neutral-800">
+                        <div className="text-xs font-medium cu-success-text">Met</div>
+                        <ul className="list-disc ml-5 text-sm text-foreground">
                           {a.metCriteria.map((c, i) => (<li key={i}>{c}</li>))}
                         </ul>
                       </div>
                     )}
                     {Array.isArray(a.unmetCriteria) && a.unmetCriteria.length > 0 && (
                       <div className="mb-2">
-                        <div className="text-xs font-medium text-red-700">Unmet</div>
-                        <ul className="list-disc ml-5 text-sm text-neutral-800">
+                        <div className="text-xs font-medium cu-error-text">Unmet</div>
+                        <ul className="list-disc ml-5 text-sm text-foreground">
                           {a.unmetCriteria.map((c, i) => (<li key={i}>{c}</li>))}
                         </ul>
                       </div>
                     )}
                     {Array.isArray(a.feedback) && a.feedback.length > 0 && (
                       <div>
-                        <div className="text-xs font-medium text-neutral-700">Feedback</div>
-                        <ul className="list-disc ml-5 text-sm text-neutral-800">
+                        <div className="text-xs font-medium text-foreground">Feedback</div>
+                        <ul className="list-disc ml-5 text-sm text-foreground">
                           {a.feedback.map((c, i) => (<li key={i}>{c}</li>))}
                         </ul>
                       </div>
@@ -400,34 +400,34 @@ export default function SkillDetailPage() {
                   </div>
                 ))
               ) : assessments?.summary ? (
-                <div className="rounded-2xl bg-white border border-neutral-200 shadow-sm p-4">
-                  <div className="text-xs uppercase tracking-wide text-neutral-500 mb-1">Latest Summary</div>
-                  <div className="text-sm text-neutral-800">
+                <div className="rounded-2xl cu-surface border cu-border-surface shadow-sm p-4">
+                  <div className="text-xs uppercase tracking-wide cu-muted mb-1">Latest Summary</div>
+                  <div className="text-sm text-foreground">
                     <div className="mb-2">
-                      <div className="text-xs font-medium text-neutral-700">Highlights</div>
+                      <div className="text-xs font-medium text-foreground">Highlights</div>
                       <ul className="list-disc ml-5">
                         {(assessments.summary?.highlights || []).map((h: string, i: number) => (<li key={i}>{h}</li>))}
                       </ul>
                     </div>
                     <div className="mb-2">
-                      <div className="text-xs font-medium text-neutral-700">Recommendations</div>
+                      <div className="text-xs font-medium text-foreground">Recommendations</div>
                       <ul className="list-disc ml-5">
                         {(assessments.summary?.recommendations || []).map((h: string, i: number) => (<li key={i}>{h}</li>))}
                       </ul>
                     </div>
                     {assessments.summary?.rubricVersion && (
-                      <div className="text-xs text-neutral-500">Rubric: {assessments.summary.rubricVersion}</div>
+                      <div className="text-xs cu-muted">Rubric: {assessments.summary.rubricVersion}</div>
                     )}
                   </div>
                 </div>
               ) : (
-                <div className="text-sm text-neutral-500">No assessments available yet.</div>
+                <div className="text-sm cu-muted">No assessments available yet.</div>
               )}
               <div>
                 <button
                   type="button"
                   onClick={() => fetchAssessments()}
-                  className="rounded bg-gray-200 px-3 py-1.5 hover:bg-gray-300 text-sm"
+                  className="rounded cu-accent-soft-bg px-3 py-1.5 hover:opacity-90 text-sm"
                 >
                   Refresh
                 </button>

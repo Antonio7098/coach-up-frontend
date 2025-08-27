@@ -28,7 +28,8 @@ async function persistInteraction(opts: {
 }) {
   try {
     const { sessionId, groupId, text } = opts;
-    if (!sessionId || !groupId) return;
+    // Persist when sessionId is present; groupId is optional metadata
+    if (!sessionId) return;
     const messageId = safeUUID();
     const role = "assistant" as const;
     const ts = Date.now();

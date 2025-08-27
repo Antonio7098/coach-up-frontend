@@ -28,7 +28,7 @@ type Doc = {
 const _db: Doc[] = [];
 type InteractionDoc = {
   sessionId: string;
-  groupId: string;
+  groupId?: string;
   messageId: string;
   role: 'user' | 'assistant' | 'system';
   contentHash: string;
@@ -173,7 +173,7 @@ export async function getLatestAssessmentSummary(args: { sessionId: string }) {
 
 export async function appendInteraction(args: {
   sessionId: string;
-  groupId: string;
+  groupId?: string;
   messageId: string;
   role: 'user' | 'assistant' | 'system';
   contentHash: string;

@@ -11,7 +11,10 @@ import {
 import "./globals.css";
 import "../styles/theme.css";
 import { ChatProvider } from "../context/ChatContext";
+import { MicProvider } from "../context/MicContext";
+import GlobalMicButton from "../components/GlobalMicButton";
 import NavDirListener from "./NavDirListener";
+import { MicUIProvider } from "../context/MicUIContext";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -33,17 +36,32 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const publishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+  const signInUrl = process.env.NEXT_PUBLIC_CLERK_SIGN_IN_URL || "/sign-in";
+  const signInFallbackRedirectUrl = process.env.NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL || "/";
+  const signUpFallbackRedirectUrl = process.env.NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL || "/";
   return (
-    <ClerkProvider>
+    <ClerkProvider
+      publishableKey={publishableKey}
+      signInUrl={signInUrl}
+      signInFallbackRedirectUrl={signInFallbackRedirectUrl}
+      signUpFallbackRedirectUrl={signUpFallbackRedirectUrl}
+    >
       <html lang="en" suppressHydrationWarning>
         <body
           className={`${geistSans.variable} ${geistMono.variable} antialiased`}
         >
 
           <ChatProvider>
-            {/* Global listener to mark popstate as 'back' for entry animations */}
-            <NavDirListener />
-            {children}
+            <MicProvider>
+              <MicUIProvider>
+                {/* Global listener to mark popstate as 'back' for entry animations */}
+                <NavDirListener />
+                {children}
+                {/* Global mic renders coach-style UI when inCoach via MicUIContext */}
+                <GlobalMicButton />
+              </MicUIProvider>
+            </MicProvider>
           </ChatProvider>
         </body>
       </html>

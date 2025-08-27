@@ -72,6 +72,9 @@ Overview of product/domain endpoints exposed via Next.js API routes.
      "ts": 1692612345678
    }
    ```
+   - Notes:
+     - `groupId` is optional. When omitted, the interaction is persisted by `sessionId` alone.
+     - `role` must be `user` or `assistant`.
  - curl example:
    ```bash
    curl -s -X POST \
@@ -88,6 +91,20 @@ Overview of product/domain endpoints exposed via Next.js API routes.
      }' \
      http://localhost:3000/api/v1/interactions
    ```
+  - Without groupId (session-only persistence):
+    ```bash
+    curl -s -X POST \
+      -H 'content-type: application/json' \
+      -H 'X-Request-Id: req_123' \
+      --data-binary '{
+        "sessionId":"sess_123",
+        "messageId":"msg_002",
+        "role":"assistant",
+        "contentHash":"sha256:def...",
+        "ts":1692612346000
+      }' \
+      http://localhost:3000/api/v1/interactions
+    ```
 
 ### GET /api/v1/skills
 - Summary: List active Skills or fetch a single Skill by id.

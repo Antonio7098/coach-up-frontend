@@ -73,7 +73,7 @@ export default defineSchema({
   // Interactions — per message storage and pointers to blobs
   interactions: defineTable({
     sessionId: v.string(),
-    groupId: v.string(),
+    groupId: v.optional(v.string()),
     messageId: v.string(),
     role: v.union(v.literal("user"), v.literal("assistant")),
     contentHash: v.string(),

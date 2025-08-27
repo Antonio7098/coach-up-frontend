@@ -38,6 +38,7 @@ export default function VoiceChatPage() {
   const uiAudioRef = useRef<HTMLAudioElement | null>(null);
   const chatEsRef = useRef<EventSource | null>(null);
   const [voiceLoop, setVoiceLoop] = useState(false);
+  const historyRef = useRef<{ role: "user" | "assistant"; content: string }[]>([]);
 
   const [blob, setBlob] = useState<Blob | null>(null);
   const [objectKey, setObjectKey] = useState<string | null>(null);
@@ -67,6 +68,34 @@ export default function VoiceChatPage() {
   const log = useCallback((level: LogLevel, message: string) => {
     setLogs((prev) => [...prev.slice(-199), { ts: Date.now(), level, message }]);
   }, []);
+
+  // Persisted chat history (last 10 messages) per session
+  function historyStorageKey(sid: string) {
+    return `chatHistory:${sid}`;
+  }
+
+  function saveHistory() {
+    try {
+      if (!sessionId) return;
+      const items = historyRef.current.slice(-10);
+      localStorage.setItem(historyStorageKey(sessionId), JSON.stringify(items));
+    } catch {}
+  }
+
+  useEffect(() => {
+    if (!sessionId) return;
+    try {
+      const raw = localStorage.getItem(historyStorageKey(sessionId));
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) {
+          historyRef.current = arr
+            .filter((x: any) => x && typeof x.content === "string" && (x.role === "user" || x.role === "assistant"))
+            .slice(-10);
+        }
+      }
+    } catch {}
+  }, [sessionId]);
 
   // Direct multipart STT: uploads audio and transcribes in a single request
   async function callSTTMultipart(b: Blob): Promise<{ text: string; objectKey?: string; audioUrl?: string }> {
@@ -379,12 +408,45 @@ export default function VoiceChatPage() {
     }
   }, [sessionId]);
 
+  // Base64url encode UTF-8 strings safely (for history query param)
+  function toBase64Url(s: string): string {
+    try {
+      const bytes = new TextEncoder().encode(s);
+      let bin = "";
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      const b64 = btoa(bin);
+      return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+    } catch {
+      try {
+        const b64 = btoa(unescape(encodeURIComponent(s)));
+        return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+      } catch {
+        return "";
+      }
+    }
+  }
+
+  function buildHistoryParam(): string {
+    const maxN = 10;
+    const items = historyRef.current.slice(-maxN).map((m) => ({
+      role: m.role,
+      content: (m.content || "").slice(0, 240),
+    }));
+    try {
+      const json = JSON.stringify(items);
+      return toBase64Url(json);
+    } catch {
+      return "";
+    }
+  }
+
   async function chatWithAssistant(promptText: string, opts?: { streamTTS?: boolean }): Promise<string> {
     setBusy("chat");
     setAssistantText("");
     return new Promise<string>((resolve, reject) => {
       try {
-        const qs = `?prompt=${encodeURIComponent(promptText)}`;
+        const hist = buildHistoryParam();
+        const qs = `?prompt=${encodeURIComponent(promptText)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""}${hist ? `&history=${encodeURIComponent(hist)}` : ""}`;
         const es = new EventSource(`/api/chat${qs}`, { withCredentials: false });
         // Keep a handle so we can cancel if voiceLoop is turned off
         try { chatEsRef.current?.close(); } catch {}
@@ -428,6 +490,11 @@ export default function VoiceChatPage() {
             try { es.close(); } catch {}
             try { if (chatEsRef.current === es) chatEsRef.current = null; } catch {}
             // Fire-and-forget: record assistant final message
+            if (acc && acc.length > 0) {
+              historyRef.current.push({ role: "assistant", content: acc });
+              if (historyRef.current.length > 10) historyRef.current = historyRef.current.slice(-10);
+              saveHistory();
+            }
             void ingestMessage("assistant", acc);
             log("info", `Chat complete (${acc.length} chars, ${(Date.now() - t0)} ms)`);
             // final flush of any tail text
@@ -492,7 +559,11 @@ export default function VoiceChatPage() {
     try {
       if (!transcript) throw new Error("No transcript available");
       // Record user transcript message (best-effort)
-      void ingestMessage("user", transcript);
+      // Update local history and persist
+      historyRef.current.push({ role: "user", content: transcript });
+      if (historyRef.current.length > 10) historyRef.current = historyRef.current.slice(-10);
+      saveHistory();
+      await ingestMessage("user", transcript);
       // Get assistant reply via chat stream, then synthesize
       const reply = await chatWithAssistant(transcript);
       setAssistantText(reply);
@@ -634,7 +705,10 @@ export default function VoiceChatPage() {
       }
       setTranscript(text);
       // Record user message (best-effort)
-      void ingestMessage("user", text);
+      historyRef.current.push({ role: "user", content: text });
+      if (historyRef.current.length > 10) historyRef.current = historyRef.current.slice(-10);
+      saveHistory();
+      await ingestMessage("user", text);
       // Get assistant reply and stream TTS segments progressively
       const reply = await chatWithAssistant(text, { streamTTS: true });
       setAssistantText(reply);
@@ -669,7 +743,7 @@ export default function VoiceChatPage() {
     return (
       <div className="mx-auto max-w-2xl p-6 space-y-4">
         <h1 className="text-2xl font-semibold">Chat Voice Mode</h1>
-        <div className="rounded border p-3 bg-yellow-50 text-yellow-800 text-sm">
+        <div className="rounded border cu-border-surface p-3 cu-warning-soft-bg cu-warning-text text-sm">
           Voice Mode is disabled. Set NEXT_PUBLIC_ENABLE_VOICE=1 in .env.local to enable.
         </div>
       </div>
@@ -680,38 +754,38 @@ export default function VoiceChatPage() {
     <div className="mx-auto max-w-2xl p-6 space-y-4">
       <h1 className="text-2xl font-semibold">Chat Voice Mode</h1>
 
-      <div className="text-sm text-gray-600">
+      <div className="text-sm cu-muted">
         Session: <code className="font-mono">{sessionId || "(initializing…)"}</code>
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <label className="text-sm">
-          <span className="block text-gray-600 mb-1">Group ID (optional)</span>
-          <input className="w-full rounded border px-3 py-1.5" value={groupId} onChange={(e) => setGroupId(e.target.value)} placeholder="group-123" />
+          <span className="block cu-muted mb-1">Group ID (optional)</span>
+          <input className="w-full rounded border cu-border-surface px-3 py-1.5" value={groupId} onChange={(e) => setGroupId(e.target.value)} placeholder="group-123" />
         </label>
         <label className="text-sm">
-          <span className="block text-gray-600 mb-1">Language Hint (optional)</span>
-          <input className="w-full rounded border px-3 py-1.5" value={languageHint} onChange={(e) => setLanguageHint(e.target.value)} placeholder="en" />
+          <span className="block cu-muted mb-1">Language Hint (optional)</span>
+          <input className="w-full rounded border cu-border-surface px-3 py-1.5" value={languageHint} onChange={(e) => setLanguageHint(e.target.value)} placeholder="en" />
         </label>
       </div>
 
       {/* Stepper / Status */}
-      <div className="rounded border p-3 bg-slate-50">
+      <div className="rounded border cu-border-surface p-3 cu-surface">
         <div className="text-sm font-medium mb-2">Status</div>
         <ul className="text-sm space-y-1">
-          <li className={`${busy === "presign" ? "text-blue-700" : "text-slate-700"}`}>• Presign {busy === "presign" ? "(in progress)" : ""}</li>
-          <li className={`${busy === "upload" ? "text-blue-700" : "text-slate-700"}`}>• Upload to storage {busy === "upload" ? "(in progress)" : ""}</li>
-          <li className={`${busy === "stt" ? "text-blue-700" : "text-slate-700"}`}>• Transcribe (STT) {busy === "stt" ? "(in progress)" : ""}</li>
-          <li className={`${busy === "chat" ? "text-blue-700" : "text-slate-700"}`}>• Chat {busy === "chat" ? "(in progress)" : ""}</li>
-          <li className={`${busy === "tts" ? "text-blue-700" : "text-slate-700"}`}>• Synthesize (TTS) {busy === "tts" ? "(in progress)" : ""}</li>
-          <li className="text-slate-700">• Idle when no step is running</li>
+          <li className={`${busy === "presign" ? "cu-accent-text" : "cu-muted"}`}>• Presign {busy === "presign" ? "(in progress)" : ""}</li>
+          <li className={`${busy === "upload" ? "cu-accent-text" : "cu-muted"}`}>• Upload to storage {busy === "upload" ? "(in progress)" : ""}</li>
+          <li className={`${busy === "stt" ? "cu-accent-text" : "cu-muted"}`}>• Transcribe (STT) {busy === "stt" ? "(in progress)" : ""}</li>
+          <li className={`${busy === "chat" ? "cu-accent-text" : "cu-muted"}`}>• Chat {busy === "chat" ? "(in progress)" : ""}</li>
+          <li className={`${busy === "tts" ? "cu-accent-text" : "cu-muted"}`}>• Synthesize (TTS) {busy === "tts" ? "(in progress)" : ""}</li>
+          <li className="cu-muted">• Idle when no step is running</li>
         </ul>
         {lastPresignInfo?.urlHost && (
-          <div className="mt-2 text-xs text-gray-600">
+          <div className="mt-2 text-xs cu-muted">
             Note: Upload PUT goes directly to <code className="font-mono">{lastPresignInfo.urlHost}</code> (e.g., LocalStack). It will not appear in Next.js server logs.
           </div>
         )}
-        <div className="mt-2 text-xs text-gray-600 flex items-center gap-2">
+        <div className="mt-2 text-xs cu-muted flex items-center gap-2">
           <label className="inline-flex items-center gap-1">
             <input type="checkbox" checked={showDebug} onChange={(e) => setShowDebug(e.target.checked)} />
             Debug
@@ -726,7 +800,7 @@ export default function VoiceChatPage() {
         <button
           type="button"
           onClick={startRecording}
-          className="rounded bg-emerald-600 px-3 py-1.5 text-white hover:bg-emerald-700 disabled:opacity-50"
+          className="rounded cu-success-bg px-3 py-1.5 hover:opacity-90 disabled:opacity-50"
           disabled={!mediaSupported || recording || busy !== "idle" || voiceLoop}
         >
           {recording ? "Recording…" : "Start Recording"}
@@ -734,7 +808,7 @@ export default function VoiceChatPage() {
         <button
           type="button"
           onClick={stopRecording}
-          className="rounded bg-gray-200 px-3 py-1.5 hover:bg-gray-300 disabled:opacity-50"
+          className="rounded cu-accent-soft-bg px-3 py-1.5 hover:opacity-90 disabled:opacity-50"
           disabled={!recording}
         >
           Stop
@@ -762,18 +836,18 @@ export default function VoiceChatPage() {
               try { ttsTextQueueRef.current = []; ttsProcessingRef.current = false; } catch {}
             }
           }}
-          className={`rounded px-3 py-1.5 text-white disabled:opacity-50 ${voiceLoop ? "bg-red-600 hover:bg-red-700" : "bg-purple-600 hover:bg-purple-700"}`}
+          className={`rounded px-3 py-1.5 disabled:opacity-50 hover:opacity-90 ${voiceLoop ? "cu-error-bg" : "cu-accent-bg"}`}
           disabled={!voiceLoop && (!mediaSupported || busy !== "idle")}
         >
           {voiceLoop ? "Stop Voice Mode" : "Start Voice Mode"}
         </button>
-        <span className={`inline-flex items-center rounded px-2 py-0.5 text-xs ${recording ? "bg-red-100 text-red-700" : "bg-slate-100 text-slate-700"}`}>
+        <span className={`inline-flex items-center rounded px-2 py-0.5 text-xs ${recording ? "cu-error-soft-bg cu-error-text" : "cu-accent-soft-bg cu-muted"}`}>
           {recording ? "recording" : "idle"}
         </span>
       </div>
 
       {blob && (
-        <div className="text-sm text-gray-700">
+        <div className="text-sm text-foreground">
           Recorded: {(blob.size / 1024).toFixed(1)} KB, type: {blob.type || "(n/a)"}
         </div>
       )}
@@ -782,7 +856,7 @@ export default function VoiceChatPage() {
         <button
           type="button"
           onClick={runTranscribe}
-          className="rounded bg-blue-600 px-3 py-1.5 text-white hover:bg-blue-700 disabled:opacity-50"
+          className="rounded cu-accent-bg px-3 py-1.5 hover:opacity-90 disabled:opacity-50"
           disabled={!blob || busy !== "idle" || voiceLoop}
         >
           {busy === "presign" ? "Presigning…" : busy === "upload" ? "Uploading…" : busy === "stt" ? "Transcribing…" : "Upload + Transcribe"}
@@ -790,7 +864,7 @@ export default function VoiceChatPage() {
         <button
           type="button"
           onClick={runSynthesize}
-          className="rounded bg-indigo-600 px-3 py-1.5 text-white hover:bg-indigo-700 disabled:opacity-50"
+          className="rounded cu-accent-bg px-3 py-1.5 hover:opacity-90 disabled:opacity-50"
           disabled={!transcript || busy !== "idle" || voiceLoop}
         >
           {busy === "chat" ? "Chatting…" : busy === "tts" ? "Synthesizing…" : "Chat + TTS"}
@@ -798,28 +872,28 @@ export default function VoiceChatPage() {
       </div>
 
       {transcript && (
-        <div className="rounded border p-3 text-sm">
+        <div className="rounded border cu-border-surface p-3 text-sm cu-surface">
           <div className="font-medium mb-1">Transcript</div>
           <div className="whitespace-pre-wrap">{transcript}</div>
           {objectKey && (
-            <div className="text-xs text-gray-500 mt-2">objectKey: <code className="font-mono">{objectKey}</code></div>
+            <div className="text-xs cu-muted mt-2">objectKey: <code className="font-mono">{objectKey}</code></div>
           )}
         </div>
       )}
 
       {assistantText && (
-        <div className="rounded border p-3 text-sm">
+        <div className="rounded border cu-border-surface p-3 text-sm cu-surface">
           <div className="font-medium mb-1">Assistant</div>
           <div className="whitespace-pre-wrap">{assistantText}</div>
         </div>
       )}
 
       {ttsUrl && (
-        <div className="rounded border p-3 text-sm space-y-2">
+        <div className="rounded border cu-border-surface p-3 text-sm space-y-2 cu-surface">
           <div className="font-medium">Playback</div>
           {/* UI-only audio element; playback queue uses a hidden dedicated element */}
           <audio controls src={ttsUrl} ref={uiAudioRef} />
-          <div className="text-xs text-gray-500 break-all">audioUrl: <a href={ttsUrl} className="text-blue-600 underline">{ttsUrl}</a></div>
+          <div className="text-xs cu-muted break-all">audioUrl: <a href={ttsUrl} className="cu-accent-text underline">{ttsUrl}</a></div>
         </div>
       )}
 
@@ -827,17 +901,17 @@ export default function VoiceChatPage() {
       <audio ref={audioRef} preload="auto" className="hidden" />
 
       {error && (
-        <div className="rounded border p-3 bg-red-50 text-red-800 text-sm">{error}</div>
+        <div className="rounded border cu-border-surface p-3 cu-error-soft-bg cu-error-text text-sm">{error}</div>
       )}
 
       {/* Log panel */}
       {logs.length > 0 && (
-        <div className="rounded border p-3 bg-white text-sm">
+        <div className="rounded border cu-border-surface p-3 cu-surface text-sm">
           <div className="font-medium mb-1">Activity Log</div>
           <div className="max-h-40 overflow-auto space-y-0.5">
             {logs.slice().reverse().map((l, i) => (
-              <div key={i} className={`${l.level === 'error' ? 'text-red-700' : 'text-gray-700'}`}>
-                <span className="text-xs text-gray-500 mr-2">{new Date(l.ts).toLocaleTimeString()}</span>
+              <div key={i} className={`${l.level === 'error' ? 'cu-error-text' : 'text-foreground'}`}>
+                <span className="text-xs cu-muted mr-2">{new Date(l.ts).toLocaleTimeString()}</span>
                 {l.message}
               </div>
             ))}
@@ -845,11 +919,11 @@ export default function VoiceChatPage() {
         </div>
       )}
 
-      <div className="text-xs text-gray-500">
+      <div className="text-xs cu-muted">
         Guardrails: max utterance {MAX_UTTER_MS} ms; single active recording session.
       </div>
 
-      <div className="text-xs text-gray-400">
+      <div className="text-xs cu-muted">
         Notes: uses MediaRecorder to capture Opus-in-WebM; uploads via presigned PUT; calls STT with objectKey and TTS on resulting text.
       </div>
     </div>

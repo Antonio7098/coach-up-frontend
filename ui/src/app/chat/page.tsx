@@ -47,6 +47,7 @@ export default function ChatPage() {
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const assistantBufferRef = useRef<string>("");
   const firstTokenSetRef = useRef<boolean>(false);
+  const historyRef = useRef<{ role: "user" | "assistant"; content: string }[]>([]);
 
   // Generate a sessionId only on the client after mount to avoid SSR/client mismatch
   const [sessionId, setSessionId] = useState<string>("");
@@ -101,6 +102,70 @@ export default function ChatPage() {
     [sessionId, genId]
   );
 
+  // Base64url encode UTF-8 strings safely
+  function toBase64Url(s: string): string {
+    try {
+      const bytes = new TextEncoder().encode(s);
+      let bin = "";
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      const b64 = btoa(bin);
+      return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+    } catch {
+      // Fallback for unexpected envs
+      try {
+        // Best-effort unicode handling
+        const b64 = btoa(unescape(encodeURIComponent(s)));
+        return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+      } catch {
+        return "";
+      }
+    }
+  }
+
+  function buildHistoryParam(): string {
+    // Trim to last 10 messages, cap content to ~240 chars per message to keep URL small
+    const maxN = 10;
+    const items = historyRef.current.slice(-maxN).map((m) => ({
+      role: m.role,
+      content: (m.content || "").slice(0, 240),
+    }));
+    try {
+      const json = JSON.stringify(items);
+      return toBase64Url(json);
+    } catch {
+      return "";
+    }
+  }
+
+  // Persist history per-session in localStorage
+  function historyStorageKey(sid: string) {
+    return `chatHistory:${sid}`;
+  }
+
+  function saveHistory() {
+    try {
+      if (!sessionId) return;
+      const items = historyRef.current.slice(-10);
+      localStorage.setItem(historyStorageKey(sessionId), JSON.stringify(items));
+    } catch {}
+  }
+
+  useEffect(() => {
+    // Load any persisted history when sessionId is ready
+    if (!sessionId) return;
+    try {
+      const raw = localStorage.getItem(historyStorageKey(sessionId));
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) {
+          historyRef.current = arr
+            .filter((x: any) => x && typeof x.content === "string" && (x.role === "user" || x.role === "assistant"))
+            .slice(-10);
+        }
+      }
+    } catch {}
+  }, [sessionId]);
+
   const disconnect = useCallback(() => {
     if (retryTimerRef.current) {
       clearTimeout(retryTimerRef.current);
@@ -120,8 +185,12 @@ export default function ChatPage() {
 
     setStatus("connecting");
     // Use same-origin API proxy to avoid CORS
-    const qs = p && p.length > 0 ? `?prompt=${encodeURIComponent(p)}` : "";
-    const url = `/api/chat${qs}`;
+    const params = new URLSearchParams();
+    if (p && p.length > 0) params.set("prompt", p);
+    if (sessionId) params.set("session_id", sessionId);
+    const hist = buildHistoryParam();
+    if (hist) params.set("history", hist);
+    const url = `/api/chat?${params.toString()}`;
     // Reset output/metrics
     setOutput("");
     setFirstTokenMs(null);
@@ -144,6 +213,15 @@ export default function ChatPage() {
       if (evt.data === "[DONE]") {
         // Fire-and-forget: ingest assistant final message after SSE completion
         const finalContent = assistantBufferRef.current;
+        // Append to local history first (trim to last 10)
+        if (finalContent && finalContent.length > 0) {
+          historyRef.current.push({ role: "assistant", content: finalContent });
+          if (historyRef.current.length > 10) {
+            historyRef.current = historyRef.current.slice(-10);
+          }
+          // persist
+          saveHistory();
+        }
         void ingestMessage("assistant", finalContent);
         append("\n[DONE]\n");
         if (!firstTokenSetRef.current) {
@@ -176,7 +254,7 @@ export default function ChatPage() {
         connect();
       }, delay);
     };
-  }, [append, disconnect, ingestMessage]);
+  }, [append, disconnect, ingestMessage, sessionId]);
 
   useEffect(() => {
     return () => {
@@ -184,6 +262,30 @@ export default function ChatPage() {
       disconnect();
     };
   }, [disconnect]);
+
+  const onSubmit = useCallback(
+    async (e?: React.FormEvent<HTMLFormElement>) => {
+      if (e) e.preventDefault();
+      const p = prompt.trim();
+      if (!p || !sessionId) return;
+      // Ingest user message first, then open SSE stream
+      try {
+        // Update local history buffer with the user message (trim to last 10)
+        historyRef.current.push({ role: "user", content: p });
+        if (historyRef.current.length > 10) {
+          historyRef.current = historyRef.current.slice(-10);
+        }
+        // persist
+        saveHistory();
+        await ingestMessage("user", p);
+      } catch (err) {
+        console.error("ingest user failed", err);
+      }
+      connect(p);
+      setPrompt("");
+    },
+    [prompt, sessionId, ingestMessage, connect]
+  );
 
   const fetchSummary = useCallback(async () => {
     try {
@@ -232,142 +334,128 @@ export default function ChatPage() {
     }
   }, [sessionId, fetchSummary]);
 
-  return (
-    <div className="mx-auto max-w-2xl p-6 space-y-4">
-      <h1 className="text-2xl font-semibold">Chat Stream (SSE)</h1>
-      <p className="text-sm text-gray-500">AI API: {AI_API_BASE_URL}</p>
-      <div className="text-sm">
-        <Link href="/chat/voice" className="text-blue-600 underline">
-          Try Voice Mode →
-        </Link>
-      </div>
-
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          // Ingest the user message immediately when sending
-          void ingestMessage("user", prompt);
-          connect(prompt);
-          // Optional UX: clear input after send
-          setPrompt("");
-        }}
-        className="flex items-center gap-3"
-      >
-        <input
-          type="text"
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Type a prompt…"
-          className="flex-1 rounded border px-3 py-1.5"
-        />
-        <button
-          type="submit"
-          className="rounded bg-blue-600 px-3 py-1.5 text-white hover:bg-blue-700 disabled:opacity-50"
-          disabled={!sessionId || status === "connecting" || status === "open" || status === "retrying" || prompt.length === 0}
-        >
-          Send
-        </button>
-        <button
-          type="button"
-          onClick={disconnect}
-          className="rounded bg-gray-200 px-3 py-1.5 hover:bg-gray-300"
-        >
-          Cancel
-        </button>
-      </form>
-
-      <div className="flex items-center gap-2 text-sm">
-        <span
-          className={`inline-flex items-center rounded px-2 py-0.5 font-mono ${
-            status === "open"
-              ? "bg-green-100 text-green-700"
-              : status === "connecting"
-              ? "bg-yellow-100 text-yellow-700"
-              : status === "retrying"
-              ? "bg-orange-100 text-orange-700"
-              : status === "closed"
-              ? "bg-gray-100 text-gray-700"
-              : "bg-slate-100 text-slate-700"
-          }`}
-        >
-          {status}
-        </span>
-        <button
-          type="button"
-          onClick={() => {
-            setOutput("");
-            setFirstTokenMs(null);
-            setTotalMs(null);
-          }}
-          className="rounded bg-gray-100 px-2 py-1 hover:bg-gray-200"
-        >
-          Clear
-        </button>
-      </div>
-
-      <div>
-        <label className="mb-1 block text-sm font-medium">Output</label>
-        <textarea
-          className="h-64 w-full resize-none rounded border p-2 font-mono"
-          readOnly
-          value={output}
-        />
-      </div>
-
-      <div className="text-sm text-gray-600 space-y-1">
-        <div>
-          First token: {firstTokenMs != null ? `${firstTokenMs} ms` : "–"}
-        </div>
-        <div>
-          Total: {totalMs != null ? `${totalMs} ms` : "–"}
-        </div>
-        {startedAt != null && (
-          <div className="text-xs text-gray-400">
-            Started at: {new Date(startedAt).toLocaleTimeString()}
-          </div>
-        )}
-      </div>
-
-      <div className="text-xs text-gray-500">
-        Notes: This demo uses native EventSource, which cannot send custom headers. The server generates a request ID for logs; the client prints a final [DONE] marker when streaming ends.
-      </div>
-
-      <div className="mt-8 border-t pt-4 space-y-3">
-        <h2 className="text-lg font-semibold">Assessments (SPR-002 demo)</h2>
-        <div className="text-sm text-gray-600">
-          Session ID: <code className="font-mono">{sessionId || "(initializing…)"}</code>
-        </div>
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={runAssessment}
-            disabled={assessRunning || !sessionId}
-            className="rounded bg-emerald-600 px-3 py-1.5 text-white hover:bg-emerald-700 disabled:opacity-50"
-          >
-            {assessRunning ? "Running…" : "Run Assessment"}
-          </button>
-          <button
-            type="button"
-            onClick={fetchSummary}
-            disabled={!sessionId}
-            className="rounded bg-gray-200 px-3 py-1.5 hover:bg-gray-300"
-          >
-            Fetch Summary
-          </button>
-          {groupId && (
-            <span className="text-xs text-gray-500">groupId: <code className="font-mono">{groupId}</code></span>
-          )}
-        </div>
-        {summary && (
-          <div className="rounded border p-3 text-sm space-y-2">
-            <div className="font-medium">Summary</div>
-            <div>Highlights: {summary.summary?.highlights?.join(", ") ?? "–"}</div>
-            <div>Recommendations: {summary.summary?.recommendations?.join(", ") ?? "–"}</div>
-            <div>Rubric: {summary.summary?.rubricVersion ?? "–"}</div>
-            <div>Categories: {summary.summary?.categories?.join(", ") ?? "–"}</div>
-          </div>
-        )}
-      </div>
+return (
+  <div className="mx-auto max-w-2xl p-6 space-y-4 bg-background text-foreground">
+    <h1 className="text-2xl font-semibold">Chat Stream (SSE)</h1>
+    <p className="text-sm cu-muted">AI API: {AI_API_BASE_URL}</p>
+    <div className="text-sm">
+      <Link href="/chat/voice" className="underline cu-accent-text">
+        Try Voice Mode →
+      </Link>
     </div>
-  );
+    <form
+      onSubmit={onSubmit}
+      className="flex items-center gap-3"
+    >
+      <input
+        type="text"
+        value={prompt}
+        onChange={(e) => setPrompt(e.target.value)}
+        placeholder="Type a prompt…"
+        className="flex-1 rounded border cu-border-surface cu-surface px-3 py-1.5"
+      />
+      <button
+        type="submit"
+        className="rounded px-3 py-1.5 cu-accent-bg hover:opacity-90 disabled:opacity-50"
+        disabled={!sessionId || status === "connecting" || status === "open" || status === "retrying" || prompt.length === 0}
+      >
+        Send
+      </button>
+      <button
+        type="button"
+        onClick={disconnect}
+        className="rounded px-3 py-1.5 cu-accent-soft-bg text-foreground hover:opacity-90"
+      >
+        Cancel
+      </button>
+    </form>
+
+    <div className="flex items-center gap-2 text-sm">
+      <span
+        className={`inline-flex items-center rounded px-2 py-0.5 font-mono ${
+          status === "open"
+            ? "cu-accent-soft-bg cu-accent-text"
+            : "cu-surface border cu-border-surface cu-muted"
+        }`}
+      >
+        {status}
+      </span>
+      <button
+        type="button"
+        onClick={() => {
+          setOutput("");
+          setFirstTokenMs(null);
+          setTotalMs(null);
+        }}
+        className="rounded px-2 py-1 cu-surface border cu-border-surface hover:opacity-90"
+      >
+        Clear
+      </button>
+    </div>
+
+    <div>
+      <label className="mb-1 block text-sm font-medium">Output</label>
+      <textarea
+        className="h-64 w-full resize-none rounded border cu-border-surface cu-surface p-2 font-mono"
+        readOnly
+        value={output}
+      />
+    </div>
+
+    <div className="text-sm cu-muted space-y-1">
+      <div>
+        First token: {firstTokenMs != null ? `${firstTokenMs} ms` : "–"}
+      </div>
+      <div>
+        Total: {totalMs != null ? `${totalMs} ms` : "–"}
+      </div>
+      {startedAt != null && (
+        <div className="text-xs cu-muted">
+          Started at: {new Date(startedAt).toLocaleTimeString()}
+        </div>
+      )}
+    </div>
+
+    <div className="text-xs cu-muted">
+      Notes: This demo uses native EventSource, which cannot send custom headers. The server generates a request ID for logs; the client prints a final [DONE] marker when streaming ends.
+    </div>
+
+    <div className="mt-8 border-t cu-border-surface pt-4 space-y-3">
+      <h2 className="text-lg font-semibold">Assessments (SPR-002 demo)</h2>
+      <div className="text-sm cu-muted">
+        Session ID: <code className="font-mono">{sessionId || "(initializing…)"}</code>
+      </div>
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={runAssessment}
+          disabled={assessRunning || !sessionId}
+          className="rounded px-3 py-1.5 cu-accent-bg hover:opacity-90 disabled:opacity-50"
+        >
+          {assessRunning ? "Running…" : "Run Assessment"}
+        </button>
+        <button
+          type="button"
+          onClick={fetchSummary}
+          disabled={!sessionId}
+          className="rounded px-3 py-1.5 cu-accent-soft-bg text-foreground hover:opacity-90"
+        >
+          Fetch Summary
+        </button>
+        {groupId && (
+          <span className="text-xs cu-muted">groupId: <code className="font-mono">{groupId}</code></span>
+        )}
+      </div>
+      {summary && (
+        <div className="rounded border cu-border-surface cu-surface p-3 text-sm space-y-2">
+          <div className="font-medium">Summary</div>
+          <div>Highlights: {summary.summary?.highlights?.join(", ") ?? "–"}</div>
+          <div>Recommendations: {summary.summary?.recommendations?.join(", ") ?? "–"}</div>
+          <div>Rubric: {summary.summary?.rubricVersion ?? "–"}</div>
+          <div>Categories: {summary.summary?.categories?.join(", ") ?? "–"}</div>
+        </div>
+      )}
+    </div>
+  </div>
+);
 }

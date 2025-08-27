@@ -9,7 +9,7 @@ import { requireAuth } from "../../lib/auth";
 type InteractionRole = 'user' | 'assistant' | 'system';
 interface InteractionsBody {
   sessionId: string;
-  groupId: string;
+  groupId?: string;
   messageId: string;
   role: InteractionRole;
   contentHash: string;
@@ -131,7 +131,7 @@ export async function POST(request: Request) {
   }
 
   const obj = (json ?? {}) as Record<string, unknown>;
-  const required = ["sessionId", "groupId", "messageId", "role", "contentHash", "ts"] as const;
+  const required = ["sessionId", "messageId", "role", "contentHash", "ts"] as const;
   for (const k of required) {
     if (obj[k] === undefined || obj[k] === null) {
       return new Response(JSON.stringify({ error: `${k} required` }), {
@@ -149,8 +149,9 @@ export async function POST(request: Request) {
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
     });
   }
-  if (!isNonEmptyString(obj.groupId)) {
-    return new Response(JSON.stringify({ error: "groupId must be a non-empty string" }), {
+  // groupId is optional; if provided, must be a non-empty string
+  if (obj.groupId !== undefined && obj.groupId !== null && !isNonEmptyString(obj.groupId)) {
+    return new Response(JSON.stringify({ error: "groupId, if provided, must be a non-empty string" }), {
       status: 400,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
     });
@@ -200,7 +201,7 @@ export async function POST(request: Request) {
 
   const body: InteractionsBody = {
     sessionId: String(obj.sessionId),
-    groupId: String(obj.groupId),
+    groupId: obj.groupId !== undefined && obj.groupId !== null ? String(obj.groupId) : undefined,
     messageId: String(obj.messageId),
     role: roleStr,
     contentHash: String(obj.contentHash),

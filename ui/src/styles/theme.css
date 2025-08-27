@@ -1,8 +1,8 @@
 /* Global theme tokens */
 :root {
   /* Neutrals */
-  --cu-bg: 247 247 248; /* rgb for hsl/opacity with Tailwind-like syntax */
-  --cu-fg: 31 31 31;
+  --cu-bg: 250 250 250; /* neutral-50 */
+  --cu-fg: 38 38 38; /* neutral-800 */
   --cu-fg-muted: 82 82 91;
 
   /* Surfaces */
@@ -13,17 +13,40 @@
   /* Accents */
   --cu-accent: 75 85 99; /* gray-600 */
   --cu-accent-soft: 209 213 219; /* gray-300 */
+  /* Text color on accent/success backgrounds */
+  --cu-on-accent: 255 255 255;
+  --cu-on-success: 255 255 255;
+
+  /* Status (semantic) */
+  --cu-error: 220 38 38; /* red-600 */
+  --cu-error-soft: 254 202 202; /* red-200 */
+  --cu-on-error: 255 255 255; /* text on error bg */
+  --cu-success: 22 163 74; /* green-600 */
+  --cu-success-soft: 187 247 208; /* green-200 */
+  --cu-warning: 245 158 11; /* amber-500 */
+  --cu-warning-soft: 254 215 170; /* amber-200 */
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --cu-bg: 15 15 16;
-    --cu-fg: 229 229 231;
+    --cu-bg: 10 10 10; /* align with globals.css dark background */
+    --cu-fg: 237 237 237; /* align with globals.css dark foreground */
     --cu-fg-muted: 161 161 170;
     --cu-surface: 24 24 27;
     --cu-surface-border: 63 63 70;
     --cu-accent: 156 163 175;
     --cu-accent-soft: 82 82 91;
+    --cu-on-accent: 255 255 255;
+    --cu-on-success: 255 255 255;
+
+    /* Status (semantic) - tuned for dark */
+    --cu-error: 239 68 68; /* red-500 */
+    --cu-error-soft: 127 29 29; /* red-900-ish for soft overlays */
+    --cu-on-error: 255 255 255;
+    --cu-success: 34 197 94; /* green-500 */
+    --cu-success-soft: 20 83 45; /* green-900-ish */
+    --cu-warning: 245 158 11; /* amber-500 */
+    --cu-warning-soft: 120 53 15; /* amber-900-ish */
   }
 }
 
@@ -37,6 +60,11 @@
   border-color: rgb(var(--cu-surface-border));
 }
 
+/* Match border color to the surface background (visually removes borders) */
+.cu-border-surface {
+  border-color: rgb(var(--cu-surface));
+}
+
 .cu-muted {
   color: rgb(var(--cu-fg-muted));
 }
@@ -44,6 +72,29 @@
 .cu-progress {
   background-color: rgb(var(--cu-accent));
 }
+
+/* Semantic helpers */
+.cu-error-bg { background-color: rgb(var(--cu-error)); color: rgb(var(--cu-on-error)); }
+.cu-error-soft-bg { background-color: rgb(var(--cu-error-soft)); }
+.cu-success-text { color: rgb(var(--cu-success)); }
+.cu-warning-text { color: rgb(var(--cu-warning)); }
+.cu-error-text { color: rgb(var(--cu-error)); }
+/* Warning soft background helper, pairs with .cu-warning-text */
+.cu-warning-soft-bg { background-color: rgb(var(--cu-warning-soft)); }
+/* Accent and Success background helpers */
+.cu-accent-bg { background-color: rgb(var(--cu-accent)); color: rgb(var(--cu-on-accent)); }
+.cu-success-bg { background-color: rgb(var(--cu-success)); color: rgb(var(--cu-on-success)); }
+/* Accent soft background and text helpers */
+.cu-accent-soft-bg { background-color: rgb(var(--cu-accent-soft)); }
+.cu-accent-text { color: rgb(var(--cu-accent)); }
+/* Error border helper */
+.cu-error-border { border-color: rgb(var(--cu-error)); }
+/* Hover helpers */
+.cu-hover-accent-soft-bg:hover { background-color: rgb(var(--cu-accent-soft)); }
+
+/* Alpha helpers */
+.cu-accent-bg-20 { background-color: rgba(var(--cu-accent), 0.2); }
+.cu-bg-80 { background-color: rgba(var(--cu-bg), 0.8); }
 
 body {
   background-color: rgb(var(--cu-bg));
