@@ -1,5 +1,6 @@
 // Simple in-memory Convex mock used only in tests (MOCK_CONVEX=1)
 // Mirrors the shapes used in `convex/assessments.ts` queries/mutations.
+import { sha256Hex } from "./hash";
 
 export type Summary = {
   highlights: string[];
@@ -14,18 +15,33 @@ type Doc = {
   trackedSkillIdHash?: string;
   interactionId?: string;
   groupId?: string;
-  kind: 'per_interaction' | 'multi_turn' | 'summary';
+  kind: 'per_interaction' | 'multi_turn' | 'summary' | 'skill_assessment';
   category: string;
   score: number;
   errors: string[];
   tags: string[];
   rubricVersion: string;
   summary?: Summary;
+  // v2 fields for per-skill rows
+  skillHash?: string;
+  level?: number; // 0..10
   createdAt: number;
   updatedAt: number;
 };
 
 const _db: Doc[] = [];
+type LevelHistoryDoc = {
+  userId: string;
+  skillId: string;
+  fromLevel: number;
+  toLevel: number;
+  reason: string;
+  avgSource?: { count: number; avg: number };
+  sessionId?: string;
+  groupId?: string;
+  createdAt: number;
+};
+const _levelHistory: LevelHistoryDoc[] = [];
 type InteractionDoc = {
   sessionId: string;
   groupId?: string;
@@ -390,13 +406,14 @@ export function __devEnsureTrackedForUser(args: { userId: string }) {
 }
 
 // Test-only helper to reset in-memory state between tests
-export function __resetAllForTests() {
+export async function __resetAllForTests() {
   _db.length = 0;
   _interactions.length = 0;
   _events.length = 0;
   _sessions.length = 0;
   _skills.length = 0;
   _tracked.length = 0;
+  _levelHistory.length = 0;
 }
 
 // -------------------- Tracked Skills (mock) --------------------
@@ -450,4 +467,93 @@ export async function setSkillLevel(args: { userId: string; skillId: string; cur
   existing.currentLevel = currentLevel;
   existing.updatedAt = now;
   return { ok: true } as const;
+}
+
+// -------------------- V2 Assessments (mock) --------------------
+export async function recordSkillAssessmentV2(args: {
+  userId: string;
+  sessionId: string;
+  groupId: string;
+  skillHash: string;
+  level: number; // 0..10
+  rubricVersion: 'v2';
+  feedback: string[];
+  metCriteria: string[];
+  unmetCriteria: string[];
+  trackedSkillIdHash?: string;
+}) {
+  const now = Date.now();
+  _db.push({
+    userId: args.userId,
+    sessionId: args.sessionId,
+    trackedSkillId: undefined,
+    trackedSkillIdHash: args.trackedSkillIdHash,
+    interactionId: undefined,
+    groupId: args.groupId,
+    kind: 'skill_assessment',
+    category: 'skill',
+    score: args.level / 10,
+    errors: [],
+    tags: ['v2', 'skill_assessment', args.skillHash],
+    rubricVersion: 'v2',
+    summary: undefined,
+    skillHash: args.skillHash,
+    level: args.level,
+    createdAt: now,
+    updatedAt: now,
+  });
+  return { ok: true } as const;
+}
+
+function __resolveSkillIdFromHash(skillHash: string): string | null {
+  const salt = (process.env.SKILL_HASH_SALT || 'test_salt').trim();
+  for (const s of _skills) {
+    if (sha256Hex(`${salt}:${s.id}`) === skillHash) return s.id;
+  }
+  return null;
+}
+
+export async function updateLevelFromRecentAssessments(args: {
+  userId: string;
+  sessionId: string;
+  groupId: string;
+  skillHash: string;
+}) {
+  const userId = args.userId;
+  const skillId = __resolveSkillIdFromHash(args.skillHash) || args.skillHash; // fallback to using hash as id in tests
+  const N = Number(process.env.SKILL_LEVEL_AVERAGE_COUNT ?? 5);
+  const THRESH = Number(process.env.SKILL_LEVEL_INCREMENT_THRESHOLD ?? 1.0);
+  const rows = _db
+    .filter((d) => d.kind === 'skill_assessment' && d.userId === userId && d.skillHash === args.skillHash)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, Math.max(1, N));
+  if (rows.length === 0) return { ok: true, updated: false } as const;
+  const avg = rows.reduce((acc, r) => acc + (r.level ?? 0), 0) / rows.length;
+
+  // Ensure tracked entry exists
+  let tracked = _tracked.find((t) => t.userId === userId && t.skillId === skillId);
+  if (!tracked) {
+    const now = Date.now();
+    tracked = { userId, skillId, currentLevel: 0, order: 1, createdAt: now, updatedAt: now };
+    _tracked.push(tracked);
+  }
+  const fromLevel = tracked.currentLevel;
+  const shouldIncrement = avg >= fromLevel + THRESH && fromLevel < 10;
+  if (shouldIncrement) {
+    tracked.currentLevel = Math.min(10, tracked.currentLevel + 1);
+    tracked.updatedAt = Date.now();
+    _levelHistory.push({
+      userId,
+      skillId,
+      fromLevel,
+      toLevel: tracked.currentLevel,
+      reason: 'avg_threshold',
+      avgSource: { count: rows.length, avg },
+      sessionId: args.sessionId,
+      groupId: args.groupId,
+      createdAt: Date.now(),
+    });
+    return { ok: true, updated: true, toLevel: tracked.currentLevel } as const;
+  }
+  return { ok: true, updated: false } as const;
 }
