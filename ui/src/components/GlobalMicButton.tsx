@@ -62,7 +62,7 @@ export default function GlobalMicButton() {
       onPointerUp={onUp}
       onPointerLeave={onLeave}
       className={[
-        "fixed z-50 left-1/2 top-1/2 w-32 h-32 rounded-full flex items-center justify-center transform-gpu will-change-transform transition-transform duration-[1200ms] ease-in-out",
+        "fixed z-50 left-1/2 top-1/2 w-32 h-32 rounded-full flex items-center justify-center transform-gpu will-change-transform transition-transform duration-[400ms] ease-in-out",
         "border",
         recording ? "cu-error-bg cu-error-border shadow-lg hover:shadow-xl" : "cu-surface text-foreground cu-border-surface shadow-md hover:shadow-lg",
       ].join(" ")}

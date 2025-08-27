@@ -154,7 +154,7 @@ export default function SkillsPage() {
         try { window.sessionStorage.setItem('navDir', 'back'); } catch {}
         setLeavingDir('right');
         setLeaving(true);
-        setTimeout(() => router.push('/coach'), 400);
+        setTimeout(() => router.push('/coach'), 250);
       }
     } catch {
       router.push('/coach');
@@ -172,12 +172,12 @@ export default function SkillsPage() {
     try { router.prefetch(url); } catch {}
     setLeavingDir('left');
     setLeaving(true);
-    setTimeout(() => router.push(url), 400);
+    setTimeout(() => router.push(url), 250);
   }
 
   return (
     <div
-      className="min-h-screen bg-background text-foreground font-sans p-4 overflow-x-hidden transform-gpu will-change-transform transition-transform duration-400 ease-out"
+      className="min-h-screen bg-background text-foreground font-sans p-4 overflow-x-hidden transform-gpu will-change-transform transition-transform duration-300 ease-out"
       style={{
         transform: leaving
           ? (leavingDir === 'left' ? 'translateX(-120vw)' : 'translateX(120vw)')

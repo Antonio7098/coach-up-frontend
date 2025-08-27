@@ -149,7 +149,7 @@ export default function CoachAnalyticsPage() {
         try { window.sessionStorage.setItem("navDir", "back"); } catch {}
         setLeavingDir('right');
         setLeaving(true);
-        setTimeout(() => router.push('/coach'), 400);
+        setTimeout(() => router.push('/coach'), 250);
       }
     } catch {
       router.push('/coach');
@@ -159,7 +159,7 @@ export default function CoachAnalyticsPage() {
   return (
     <div
       ref={rootRef}
-      className="min-h-screen bg-background text-foreground font-sans overflow-x-hidden transform-gpu will-change-transform transition-transform duration-400 ease-out"
+      className="min-h-screen bg-background text-foreground font-sans overflow-x-hidden transform-gpu will-change-transform transition-transform duration-300 ease-out"
       style={{
         transform: leaving
           ? (leavingDir === "left" ? "translateX(-120vw)" : "translateX(120vw)")

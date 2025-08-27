@@ -268,9 +268,8 @@ export default function CoachPage() {
       if (!reduce && (d === "back" || d === "forward")) {
         // forward -> enter from right; back -> enter from left
         setEnterDir(d === "forward" ? "right" : "left");
-        // Use double RAF to ensure initial position is rendered before animating
+        // Use single RAF to ensure initial position is rendered before animating
         requestAnimationFrame(() => {
-          requestAnimationFrame(() => setEnterDir(null));
         });
       }
     } catch {}
@@ -316,12 +315,14 @@ export default function CoachPage() {
 
   // Forward navigation with animated exit (left)
   function navigateForward(url: string) {
+    // Hide dashboard immediately to prevent flashing during transition
+    setShowDashboard(false);
     try { window.sessionStorage.setItem("navDir", "forward"); } catch {}
     // Best-effort prefetch before we start the exit animation
     try { router.prefetch(url); } catch {}
     setLeavingDir("left");
     setLeaving(true);
-    setTimeout(() => router.push(url), 400);
+    setTimeout(() => router.push(url), 250);
   }
 
   // Auto-start mic when entering chat mode with voice loop active (use global mic)
@@ -355,7 +356,7 @@ export default function CoachPage() {
   return (
     <div
       ref={rootRef}
-      className="min-h-screen bg-background text-foreground font-sans relative overflow-x-hidden transform-gpu will-change-transform transition-transform duration-400 ease-out"
+      className="min-h-screen bg-background text-foreground font-sans relative overflow-x-hidden transform-gpu will-change-transform transition-transform duration-300 ease-out"
       style={{
         transform: leaving
           ? (leavingDir === "left" ? "translateX(-120vw)" : "translateX(120vw)")
@@ -395,7 +396,7 @@ export default function CoachPage() {
           <div ref={dashContainerRef} className="max-w-md mx-auto">
             {/* Level block (slides in first) */}
             <div
-              className={["transform-gpu will-change-transform transition-all duration-[600ms] ease-out", dashAnim ? "opacity-100" : "opacity-0"].join(" ")}
+              className={["transform-gpu will-change-transform transition-all duration-[400ms] ease-out", dashAnim ? "opacity-100" : "opacity-0"].join(" ")}
               style={{ transform: dashAnim ? "translateY(0)" : "translateY(-120vh)" }}
             >
               {/* Level header + card */}
@@ -430,7 +431,7 @@ export default function CoachPage() {
            <section
               aria-labelledby="analytics-label"
               className="mt-6 mb-6 transform-gpu will-change-transform transition-all duration-[700ms] ease-out"
-              style={{ opacity: dashAnim ? 1 : 0, transform: dashAnim ? "translateY(0)" : "translateY(-120vh)", transitionDelay: dashAnim ? "60ms" : "0ms" }}
+              style={{ opacity: dashAnim ? 1 : 0, transform: dashAnim ? "translateY(0)" : "translateY(-120vh)", transitionDelay: dashAnim ? "50ms" : "0ms" }}
             >
               <div className="flex items-center justify-between mb-2">
                 <h2 id="analytics-label" className="text-sm font-semibold uppercase tracking-wide cu-muted">Analytics</h2>
@@ -455,7 +456,7 @@ export default function CoachPage() {
             <section
               aria-labelledby="skills-label"
               className="mt-6 mb-6 transform-gpu will-change-transform transition-all duration-[700ms] ease-out"
-              style={{ opacity: dashAnim ? 1 : 0, transform: dashAnim ? "translateY(0)" : "translateY(-120vh)", transitionDelay: dashAnim ? "120ms" : "0ms" }}
+              style={{ opacity: dashAnim ? 1 : 0, transform: dashAnim ? "translateY(0)" : "translateY(-120vh)", transitionDelay: dashAnim ? "100ms" : "0ms" }}
             >
               <div className="flex items-center justify-between mb-2">
                 <button
@@ -515,8 +516,8 @@ export default function CoachPage() {
             </section>
             <section
               aria-labelledby="recent-label"
-              className="space-y-3 transform-gpu will-change-transform transition-all duration-[700ms] ease-out"
-              style={{ opacity: dashAnim ? 1 : 0, transform: dashAnim ? "translateY(0)" : "translateY(-120vh)", transitionDelay: dashAnim ? "240ms" : "0ms" }}
+              className="space-y-3 transform-gpu will-change-transform transition-all duration-[500ms] ease-out"
+              style={{ opacity: dashAnim ? 1 : 0, transform: dashAnim ? "translateY(0)" : "translateY(-120vh)", transitionDelay: dashAnim ? "150ms" : "0ms" }}
             >
               <div className="flex items-center justify-between mb-2">
                 <h2 id="recent-label" className="text-sm font-semibold uppercase tracking-wide cu-muted">Log</h2>
