@@ -59,6 +59,10 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
   const stopTimerRef = useRef<number | null>(null);
   const chatEsRef = useRef<EventSource | null>(null);
 
+  // Timing refs for detection/recording instrumentation
+  const recStartTsRef = useRef<number | null>(null);
+  const recFirstChunkTsRef = useRef<number | null>(null);
+
   // Playback/tts queues
   const audioQueueRef = useRef<string[]>([]);
   const audioPlayingRef = useRef<boolean>(false);
@@ -97,16 +101,11 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
         console.log('MicContext: Created new Audio element');
       }
       
-      // Check if URL is accessible
-      try {
-        const response = await fetch(url, { method: 'HEAD' });
-        console.log('MicContext: URL accessibility check:', response.status, response.statusText);
-        if (!response.ok) {
-          console.error('MicContext: Audio URL not accessible:', response.status, response.statusText);
-          return;
-        }
-      } catch (fetchError) {
-        console.error('MicContext: Failed to check audio URL accessibility:', fetchError);
+      // Avoid preflight/HEAD checks — many providers disallow HEAD or CORS; data/blob URLs cannot be fetched.
+      // Let the <audio> element surface load/play errors instead.
+      // If the URL is an unsupported scheme (e.g., s3://), bail out early.
+      if (!/^https?:|^data:|^blob:/i.test(url)) {
+        console.error('MicContext: Unsupported audio URL scheme:', url);
         return;
       }
       
@@ -224,6 +223,10 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
         throw new Error(data?.error || `tts failed: ${res.status}`);
       }
       const audioUrl = String(data?.audioUrl || "");
+      const ttsDurationMs = Number(data?.durationMs || 0) || undefined;
+      if (typeof ttsDurationMs === 'number') {
+        try { console.log(JSON.stringify({ type: 'voice.tts.duration', durationMs: ttsDurationMs })); } catch {}
+      }
       console.log("MicContext: TTS returned audioUrl:", audioUrl);
       return audioUrl;
     } catch (e) {
@@ -339,12 +342,14 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
   // --- STT and Chat helpers ---
   const callSTTMultipart = useCallback(async (b: Blob): Promise<{ text: string }> => {
     setBusy("stt");
+    const sttStart = Date.now();
     const form = new FormData();
     form.set("audio", b, "utterance.webm");
     if (sessionId) form.set("sessionId", sessionId);
     const res = await fetch("/api/v1/stt", { method: "POST", body: form });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data?.error || `stt failed: ${res.status}`);
+    try { console.log(JSON.stringify({ type: 'voice.stt.done', latencyMs: Date.now() - sttStart })); } catch {}
     return { text: String(data?.text || "") };
   }, [sessionId]);
 
@@ -510,6 +515,9 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
       const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
       mediaRef.current = rec;
       const chunks: BlobPart[] = [];
+      recStartTsRef.current = Date.now();
+      recFirstChunkTsRef.current = null;
+      try { console.log(JSON.stringify({ type: 'voice.record.start', t0: recStartTsRef.current })); } catch {}
       rec.ondataavailable = (ev) => {
         // Check if recording is still active before processing chunks
         if (!recordingRef.current || !mediaRef.current) {
@@ -517,7 +525,14 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
           return;
         }
         console.log("MicContext: Received audio data chunk, size:", ev.data?.size);
-        if (ev.data && ev.data.size > 0) chunks.push(ev.data);
+        if (ev.data && ev.data.size > 0) {
+          chunks.push(ev.data);
+          if (!recFirstChunkTsRef.current) {
+            recFirstChunkTsRef.current = Date.now();
+            const t0 = recStartTsRef.current || recFirstChunkTsRef.current;
+            try { console.log(JSON.stringify({ type: 'voice.record.first_chunk', t0, tFirst: recFirstChunkTsRef.current, deltaMs: recFirstChunkTsRef.current - t0 })); } catch {}
+          }
+        }
       };
 
       rec.onstop = async () => {
@@ -543,6 +558,12 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
           const outType = mime && mime.startsWith("audio/webm") ? "audio/webm" : (mime || "audio/webm");
           const b = new Blob(chunks, { type: outType });
           console.log("MicContext: Created audio blob, size:", b.size, "type:", outType);
+          try {
+            const t0 = recStartTsRef.current || 0;
+            const tFirst = recFirstChunkTsRef.current || 0;
+            const tStop = Date.now();
+            console.log(JSON.stringify({ type: 'voice.record.finalize', t0, tFirst, tStop, elapsedMs: tStop - t0, firstDeltaMs: tFirst && t0 ? tFirst - t0 : undefined, bytes: b.size }));
+          } catch {}
 
           if (b.size > 0 && voiceLoopRef.current) {
             console.log("MicContext: Processing voice loop (voiceLoop is true)");

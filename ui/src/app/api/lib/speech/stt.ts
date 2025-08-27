@@ -287,6 +287,51 @@ const googleStt: SttProvider = {
   },
 }
 
+// Deepgram STT (REST - short audio)
+const deepgramStt: SttProvider = {
+  name: 'deepgram',
+  async transcribe(input: SttInput): Promise<SttResult> {
+    const key = process.env.DEEPGRAM_API_KEY
+    if (!key) throw new ProviderNotConfiguredError('DEEPGRAM_API_KEY is missing')
+
+    const blob = await loadAudioBlob(input)
+    const ctOrig = (blob.type || 'application/octet-stream').toLowerCase()
+    // Allow common types Deepgram accepts
+    let contentType = ctOrig
+    if (ctOrig.includes('webm')) contentType = 'audio/webm; codecs=opus'
+    else if (ctOrig.includes('ogg')) contentType = 'audio/ogg; codecs=opus'
+    else if (ctOrig.includes('wav')) contentType = 'audio/wav'
+    else if (ctOrig.includes('mpeg') || ctOrig.includes('mp3')) contentType = 'audio/mpeg'
+
+    const ab = await blob.arrayBuffer()
+    const language = input.languageHint || process.env.DEEPGRAM_LANGUAGE || process.env.GOOGLE_SPEECH_LANGUAGE || 'en-US'
+    const model = process.env.DEEPGRAM_MODEL || 'nova-2'
+    const punctuate = 'true'
+    const url = `https://api.deepgram.com/v1/listen?model=${encodeURIComponent(model)}&language=${encodeURIComponent(
+      language,
+    )}&punctuate=${punctuate}`
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Token ${key}`,
+        'Content-Type': contentType,
+        Accept: 'application/json',
+      },
+      body: ab,
+    })
+    if (!res.ok) {
+      const t = await res.text()
+      throw new Error(`Deepgram STT HTTP ${res.status}: ${t}`)
+    }
+    const data: any = await res.json()
+    // Expected shape: { results: { channels: [ { alternatives: [ { transcript: string } ] } ] } }
+    const text: string =
+      data?.results?.channels?.[0]?.alternatives?.[0]?.transcript?.toString?.() || ''
+    return { provider: 'deepgram', text, language }
+  },
+}
+
 // Helpers for fetching audio
 async function loadAudioBlob(input: SttInput): Promise<Blob> {
   if (input.audioUrl) {
@@ -352,6 +397,8 @@ export function getSttProvider(name?: string): SttProvider {
       return azureStt
     case 'google':
       return googleStt
+    case 'deepgram':
+      return deepgramStt
     case 'openai':
       return openaiStt
     case 'mock':

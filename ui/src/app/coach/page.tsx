@@ -38,6 +38,23 @@ type AssessmentLogItem = {
   scores: AssessmentScore[];
 };
 
+// Small helper for relative timestamps
+function timeAgo(ts: number): string {
+  try {
+    const ms = Date.now() - ts;
+    const s = Math.max(0, Math.floor(ms / 1000));
+    if (s < 60) return `${s}s ago`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    const d = Math.floor(h / 24);
+    return `${d}d ago`;
+  } catch {
+    return "";
+  }
+}
+
 // Skeleton loader component
 const SkeletonLoader = ({ className = "" }: { className?: string }) => (
   <div className={`animate-pulse cu-accent-soft-bg rounded ${className}`} />
@@ -367,6 +384,13 @@ export default function CoachPage() {
           : "translateX(0)",
       }}
     >
+      {/* Ambient background accents (dashboard only) */}
+      {dashboardMounted && (
+        <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+          <div className="absolute -top-40 -left-32 h-80 w-80 rounded-full blur-3xl opacity-30 cu-accent-soft-bg" />
+          <div className="absolute -bottom-32 -right-20 h-72 w-72 rounded-full blur-3xl opacity-20 cu-accent-soft-bg" />
+        </div>
+      )}
       {/* Dashboard button in top left */}
       {!showDashboard && (
         <button
@@ -405,16 +429,16 @@ export default function CoachPage() {
                   <h2 id="level-label" className="text-sm font-semibold uppercase tracking-wide cu-muted">Level</h2>
                 </div>
                 
-                <div className="border-2 cu-border rounded-2xl cu-surface p-4">
+                <div className="border-2 cu-border rounded-2xl cu-surface p-4 shadow-sm hover:shadow-md transition-shadow">
                   <div className="flex items-center justify-between">
                     <div className="flex-1 grid place-items-center">
-                      <div className="text-3xl font-semibold text-foreground">{overallLevel}</div>
+                      <div className="text-4xl font-semibold text-foreground tracking-tight">{overallLevel}</div>
                     </div>
                     <div className="ml-4 text-xs">
                       <div className="tracking-wide font-semibold cu-muted">Focus</div>
                       <ul className="mt-1 space-y-1 text-foreground">
-                        <li>• Stop using um filler word</li>
-                        <li>• Use less complicated technical jargon</li>
+                        <li>• Reduce filler words like “um”</li>
+                        <li>• Prefer clear, simple phrasing</li>
                       </ul>
                     </div>
                   </div>
@@ -438,7 +462,7 @@ export default function CoachPage() {
               </div>
               
               <div
-                className="border-2 cu-border rounded-2xl cu-surface p-4 cursor-pointer hover:bg-surface/80 transition-colors"
+                className="border-2 cu-border rounded-2xl cu-surface p-4 cursor-pointer hover:bg-surface/80 transition-colors shadow-sm hover:shadow-md"
                 onClick={() => navigateForward("/coach/analytics")}
                 onMouseEnter={() => { try { router.prefetch("/coach/analytics"); } catch {} }}
                 onFocus={() => { try { router.prefetch("/coach/analytics"); } catch {} }}
@@ -447,7 +471,10 @@ export default function CoachPage() {
                 aria-label="Open analytics"
               >
                 <div className="flex items-center justify-between mb-1">
-                  <div className="text-xs cu-muted">Points earned</div>
+                  <div className="text-xs cu-muted flex items-center gap-2">
+                    <svg aria-hidden="true" viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 4-5"/></svg>
+                    Points earned
+                  </div>
                 </div>
                 <SkillChart data={analyticsPoints} className="w-full" height={56} />
               </div>
@@ -487,14 +514,15 @@ export default function CoachPage() {
                   {[...tracked]
                     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
                     .map((t) => (
-                      <li key={t.skillId} className="border-2 cu-border rounded-2xl cu-surface">
+                      <li key={t.skillId} className="border-2 cu-border rounded-2xl cu-surface shadow-sm hover:shadow-md transition-shadow">
                         <button
                           type="button"
                           onClick={() => navigateForward(`/skills/${t.skillId}`)}
-                          className="w-full text-left p-4"
+                          className="w-full text-left p-4 group"
                           aria-label={`Open ${t.skill?.title || "skill"}`}
                         >
-                          <div className="text-sm font-medium text-foreground line-clamp-2">
+                          <div className="text-sm font-medium text-foreground line-clamp-2 flex items-center gap-2">
+                            <span className="inline-flex items-center justify-center h-6 w-6 rounded-full cu-accent-soft-bg text-[10px] font-semibold">{(t.currentLevel ?? 0) || 0}</span>
                             {t.skill?.title || "Untitled skill"}
                           </div>
                           <div className="mt-2 h-1.5 cu-accent-soft-bg rounded-full overflow-hidden">
@@ -509,8 +537,16 @@ export default function CoachPage() {
                     ))}
                 </ul>
               ) : (
-                <div className="border border-dashed cu-border rounded-2xl p-4 text-center text-sm cu-muted">
-                  No tracked skills yet.
+                <div className="border border-dashed cu-border rounded-2xl p-6 text-center">
+                  <div className="text-sm cu-muted mb-3">You haven’t added any tracked skills yet.</div>
+                  <button
+                    type="button"
+                    onClick={() => navigateForward('/skills')}
+                    className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md cu-surface border cu-border-surface hover:bg-surface/80 transition-colors text-sm"
+                  >
+                    <svg aria-hidden="true" viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+                    Add skills
+                  </button>
                 </div>
               )}
             </section>
@@ -525,7 +561,7 @@ export default function CoachPage() {
               
               <ul className="space-y-3">
                 {[...recent].sort((a, b) => b.createdAt - a.createdAt).map((item) => (
-                  <li key={item.id} className="border-2 cu-border rounded-2xl p-4 cu-surface">
+                  <li key={item.id} className="border-2 cu-border rounded-2xl p-4 cu-surface shadow-sm hover:shadow-md transition-shadow">
                     <button
                       type="button"
                       onClick={() => setExpanded((m) => ({ ...m, [item.id]: !m[item.id] }))}
@@ -533,7 +569,10 @@ export default function CoachPage() {
                       aria-controls={`log-${item.id}-panel`}
                       className="w-full flex items-center gap-3"
                     >
-                      <div className="text-sm text-foreground mr-2 flex-1 text-left">{item.title}</div>
+                      <div className="text-sm text-foreground mr-2 flex-1 text-left">
+                        {item.title}
+                        <span className="ml-2 text-xs cu-muted">{timeAgo(item.createdAt)}</span>
+                      </div>
                       {!expanded[item.id] && (
                         <div className="hidden sm:flex items-center gap-3 flex-wrap text-xs cu-muted mr-1">
                           {item.scores.map((s) => (

@@ -55,11 +55,15 @@ const awsTts: TtsProvider = {
     const bytes = u8.byteLength
     const s3Url = await uploadToS3(u8, contentType)
     if (s3Url) {
-      return { provider: 'aws', audioUrl: s3Url, format: contentType, voiceId, sizeBytes: bytes, uploadedToStorage: true, uploadedBytes: bytes }
+      const r: TtsResult = { provider: 'aws', audioUrl: s3Url, format: contentType, voiceId, sizeBytes: bytes, uploadedToStorage: true, uploadedBytes: bytes }
+      r.durationMs = estimateDurationMs({ bytes, contentType, provider: r.provider })
+      return r
     }
     const b64 = Buffer.from(u8).toString('base64')
     const dataUrl = `data:${contentType};base64,${b64}`
-    return { provider: 'aws', audioUrl: dataUrl, format: contentType, voiceId, sizeBytes: bytes }
+    const r: TtsResult = { provider: 'aws', audioUrl: dataUrl, format: contentType, voiceId, sizeBytes: bytes }
+    r.durationMs = estimateDurationMs({ bytes, contentType, provider: r.provider })
+    return r
   },
 }
 
@@ -88,6 +92,8 @@ export type TtsResult = {
   // If audio was uploaded to object storage by the provider, mark and include byte count
   uploadedToStorage?: boolean
   uploadedBytes?: number
+  // Approximate audio duration in milliseconds (estimated from size/bitrate when not provided by providers)
+  durationMs?: number
 }
 
 export class ProviderNotConfiguredError extends Error {
@@ -103,6 +109,31 @@ export interface TtsProvider {
   synthesize(input: TtsInput): Promise<TtsResult>
 }
 
+// Estimate duration from bytes and content type. Uses known defaults per provider/format.
+function estimateDurationMs(opts: { bytes?: number; contentType: string; provider?: string }): number | undefined {
+  const { bytes, contentType } = opts
+  if (!bytes || bytes <= 0) return undefined
+  const ct = (contentType || '').toLowerCase()
+  // Bitrates in bits per second
+  let bitrate = 128_000 // conservative default for mp3
+  if (ct.includes('audio/mpeg')) {
+    // Azure route uses 160k mono mp3 by default
+    if ((opts.provider || '').toLowerCase() === 'azure') bitrate = 160_000
+    else bitrate = 128_000
+  } else if (ct.includes('audio/ogg')) {
+    // Opus is VBR; use a conservative mid value
+    bitrate = 64_000
+  } else if (ct.includes('audio/wav')) {
+    // LINEAR16 mono 16kHz => 16_000 samples * 16 bits = 256 kbps
+    bitrate = 256_000
+  } else if (ct.includes('audio/mp4')) {
+    // m4a typically ~128k
+    bitrate = 128_000
+  }
+  const seconds = (bytes * 8) / bitrate
+  return Math.max(1, Math.round(seconds * 1000))
+}
+
 // Mock provider
 const mockTts: TtsProvider = {
   name: 'mock',
@@ -110,7 +141,7 @@ const mockTts: TtsProvider = {
     const fmt = input.format || 'audio/mpeg'
     const ext = fmt.includes('wav') ? 'wav' : 'mp3'
     const url = `https://example.com/tts/mock/${encodeURIComponent(input.text.slice(0, 24))}.${ext}`
-    return {
+    const result: TtsResult = {
       provider: 'mock',
       audioUrl: url,
       format: fmt,
@@ -120,6 +151,8 @@ const mockTts: TtsProvider = {
       uploadedToStorage: false,
       uploadedBytes: 0,
     }
+    result.durationMs = estimateDurationMs({ bytes: result.sizeBytes, contentType: result.format, provider: result.provider })
+    return result
   },
 }
 
@@ -170,11 +203,15 @@ const googleTts: TtsProvider = {
     const bytes = u8.byteLength
     const s3Url = await uploadToS3(u8, contentType)
     if (s3Url) {
-      return { provider: 'google', audioUrl: s3Url, format: contentType, voiceId: voiceName, sizeBytes: bytes, uploadedToStorage: true, uploadedBytes: bytes }
+      const r: TtsResult = { provider: 'google', audioUrl: s3Url, format: contentType, voiceId: voiceName, sizeBytes: bytes, uploadedToStorage: true, uploadedBytes: bytes }
+      r.durationMs = estimateDurationMs({ bytes, contentType, provider: r.provider })
+      return r
     }
     const b64 = Buffer.from(u8).toString('base64')
     const dataUrl = `data:${contentType};base64,${b64}`
-    return { provider: 'google', audioUrl: dataUrl, format: contentType, voiceId: voiceName, sizeBytes: bytes }
+    const r: TtsResult = { provider: 'google', audioUrl: dataUrl, format: contentType, voiceId: voiceName, sizeBytes: bytes }
+    r.durationMs = estimateDurationMs({ bytes, contentType, provider: r.provider })
+    return r
   },
 }
 
@@ -230,11 +267,15 @@ const azureTts: TtsProvider = {
     const bytes = u8.byteLength
     const s3Url = await uploadToS3(u8, contentType)
     if (s3Url) {
-      return { provider: 'azure', audioUrl: s3Url, format: contentType, voiceId: voiceName, sizeBytes: bytes, uploadedToStorage: true, uploadedBytes: bytes }
+      const r: TtsResult = { provider: 'azure', audioUrl: s3Url, format: contentType, voiceId: voiceName, sizeBytes: bytes, uploadedToStorage: true, uploadedBytes: bytes }
+      r.durationMs = estimateDurationMs({ bytes, contentType, provider: r.provider })
+      return r
     }
     const b64 = Buffer.from(u8).toString('base64')
     const dataUrl = `data:${contentType};base64,${b64}`
-    return { provider: 'azure', audioUrl: dataUrl, format: contentType, voiceId: voiceName, sizeBytes: bytes }
+    const r: TtsResult = { provider: 'azure', audioUrl: dataUrl, format: contentType, voiceId: voiceName, sizeBytes: bytes }
+    r.durationMs = estimateDurationMs({ bytes, contentType, provider: r.provider })
+    return r
   },
 }
 
@@ -311,12 +352,16 @@ const openaiTts: TtsProvider = {
     const bytes = u8.byteLength
     const s3Url = await uploadToS3(u8, contentType)
     if (s3Url) {
-      return { provider: 'openai', audioUrl: s3Url, format: contentType, voiceId: voice, sizeBytes: bytes, uploadedToStorage: true, uploadedBytes: bytes }
+      const r: TtsResult = { provider: 'openai', audioUrl: s3Url, format: contentType, voiceId: voice, sizeBytes: bytes, uploadedToStorage: true, uploadedBytes: bytes }
+      r.durationMs = estimateDurationMs({ bytes, contentType, provider: r.provider })
+      return r
     }
     // Fallback to data URL
     const b64 = Buffer.from(u8).toString('base64')
     const dataUrl = `data:${contentType};base64,${b64}`
-    return { provider: 'openai', audioUrl: dataUrl, format: contentType, voiceId: voice, sizeBytes: bytes }
+    const r: TtsResult = { provider: 'openai', audioUrl: dataUrl, format: contentType, voiceId: voice, sizeBytes: bytes }
+    r.durationMs = estimateDurationMs({ bytes, contentType, provider: r.provider })
+    return r
   },
 }
 

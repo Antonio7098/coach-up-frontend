@@ -128,6 +128,7 @@ export async function POST(request: Request) {
       sessionId: sessionId ?? null,
       groupId: groupId ?? null,
       audioUrl: result.audioUrl,
+      durationMs: result.durationMs ?? undefined,
       note: result.note ?? undefined,
     } as const;
 
