@@ -3,6 +3,7 @@ import {
   __seedManySkillsForTests,
   __seedSkillAssessmentHistoryForTests,
   __resetAllForTests,
+  __devSeedDefaultSkills,
   listActiveSkills,
   listTrackedSkillsForUser,
   listLevelHistoryForUser,
@@ -33,14 +34,23 @@ export async function POST(req: NextRequest) {
     levelPerAssessment = 5,
     sessionIdBase = 'sess_seed',
     groupIdBase = 'grp_seed',
+    skillIds: desiredSkillIds,
   } = body || {};
 
   if (reset) await __resetAllForTests();
 
-  __seedManySkillsForTests({ total: Number(totalSkills) || 100, categories });
+  // If caller specified explicit skillIds, ensure defaults exist (which include common IDs)
+  if (Array.isArray(desiredSkillIds) && desiredSkillIds.length > 0) {
+    __devSeedDefaultSkills();
+  } else {
+    __seedManySkillsForTests({ total: Number(totalSkills) || 100, categories });
+  }
 
   const skills = await listActiveSkills();
-  const skillIds = skills.map((s) => s.id);
+  const availableIds = new Set(skills.map((s) => s.id));
+  const skillIds = Array.isArray(desiredSkillIds) && desiredSkillIds.length > 0
+    ? desiredSkillIds.filter((id: unknown) => typeof id === 'string' && availableIds.has(String(id)))
+    : skills.map((s) => s.id);
 
   const hist = await __seedSkillAssessmentHistoryForTests({
     userId,

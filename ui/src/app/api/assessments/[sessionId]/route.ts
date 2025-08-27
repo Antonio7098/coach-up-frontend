@@ -46,13 +46,42 @@ export async function GET(
       "X-Request-Id": requestId,
     });
     if (trackedSkillId) headers.set("X-Tracked-Skill-Id", trackedSkillId);
-    upstream = await fetch(`${aiApiBaseUrl()}/assessments/${encodeURIComponent(sessionId)}` , {
-      method: "GET",
-      headers,
-      signal: controller.signal,
-    });
+    // When running locally with MOCK_CONVEX, serve from our Convex-backed mock route instead.
+    const useMockConvex = (process.env.MOCK_CONVEX === '1');
+    const reqUrl = new URL(request.url);
+    const convexLocalUrl = `${reqUrl.origin}/api/assessments/convex/${encodeURIComponent(sessionId)}`;
+    if (useMockConvex) {
+      upstream = await fetch(convexLocalUrl, {
+        method: "GET",
+        headers,
+        signal: controller.signal,
+      });
+    } else {
+      upstream = await fetch(`${aiApiBaseUrl()}/assessments/${encodeURIComponent(sessionId)}`, {
+        method: "GET",
+        headers,
+        signal: controller.signal,
+      });
+    }
   } catch {
-    return new Response("Upstream unavailable", { status: 502 });
+    // Fallback: if AI API is unavailable, try local Convex route before failing.
+    try {
+      const reqUrl = new URL(request.url);
+      const headers = new Headers({
+        Accept: "application/json",
+        "X-Request-Id": requestId,
+      });
+      const incoming = new Headers(request.headers);
+      const trackedSkillId = incoming.get("x-tracked-skill-id");
+      if (trackedSkillId) headers.set("X-Tracked-Skill-Id", trackedSkillId);
+      upstream = await fetch(`${reqUrl.origin}/api/assessments/convex/${encodeURIComponent(sessionId)}`, {
+        method: "GET",
+        headers,
+        signal: controller.signal,
+      });
+    } catch {
+      return new Response("Upstream unavailable", { status: 502 });
+    }
   }
 
   const text = await upstream.text();
