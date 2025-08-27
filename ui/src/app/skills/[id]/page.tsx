@@ -332,6 +332,30 @@ export default function SkillDetailPage() {
                 <div className="text-sm text-foreground">
                   <span className="font-medium">Level {nearestCriteria.level}:</span> {nearestCriteria.criteria}
                 </div>
+                {(Array.isArray(nearestCriteria.examples) && nearestCriteria.examples.length > 0) ||
+                 (Array.isArray(nearestCriteria.rubricHints) && nearestCriteria.rubricHints.length > 0) ? (
+                  <details className="mt-2">
+                    <summary className="text-xs cu-accent-text hover:opacity-90 cursor-pointer">Examples & rubric</summary>
+                    <div className="mt-2 space-y-2">
+                      {Array.isArray(nearestCriteria.examples) && nearestCriteria.examples.length > 0 && (
+                        <div>
+                          <div className="text-xs uppercase tracking-wide cu-muted">Examples</div>
+                          <ul className="list-disc ml-5 text-sm text-foreground">
+                            {nearestCriteria.examples.map((ex, i) => (<li key={i}>{ex}</li>))}
+                          </ul>
+                        </div>
+                      )}
+                      {Array.isArray(nearestCriteria.rubricHints) && nearestCriteria.rubricHints.length > 0 && (
+                        <div>
+                          <div className="text-xs uppercase tracking-wide cu-muted">Rubric</div>
+                          <ul className="list-disc ml-5 text-sm text-foreground">
+                            {nearestCriteria.rubricHints.map((ex, i) => (<li key={i}>{ex}</li>))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  </details>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => setShowAllCriteria((v) => !v)}
@@ -342,9 +366,34 @@ export default function SkillDetailPage() {
                 {showAllCriteria && (
                   <ul className="mt-3 space-y-1 text-sm text-foreground">
                     {(skill?.levels || []).slice().sort((a, b) => a.level - b.level).map((l) => (
-                      <li key={l.level} className="flex items-start gap-2">
-                        <span className="inline-block w-10 shrink-0 cu-muted">{l.level}</span>
-                        <span>{l.criteria}</span>
+                      <li key={l.level} className="flex flex-col gap-1">
+                        <div className="flex items-start gap-2">
+                          <span className="inline-block w-10 shrink-0 cu-muted">{l.level}</span>
+                          <span>{l.criteria}</span>
+                        </div>
+                        {(Array.isArray(l.examples) && l.examples.length > 0) || (Array.isArray(l.rubricHints) && l.rubricHints.length > 0) ? (
+                          <details className="ml-10">
+                            <summary className="text-xs cu-accent-text hover:opacity-90 cursor-pointer">Examples & rubric</summary>
+                            <div className="mt-2 space-y-2">
+                              {Array.isArray(l.examples) && l.examples.length > 0 && (
+                                <div>
+                                  <div className="text-xs uppercase tracking-wide cu-muted">Examples</div>
+                                  <ul className="list-disc ml-5 text-sm text-foreground">
+                                    {l.examples.map((ex, i) => (<li key={i}>{ex}</li>))}
+                                  </ul>
+                                </div>
+                              )}
+                              {Array.isArray(l.rubricHints) && l.rubricHints.length > 0 && (
+                                <div>
+                                  <div className="text-xs uppercase tracking-wide cu-muted">Rubric</div>
+                                  <ul className="list-disc ml-5 text-sm text-foreground">
+                                    {l.rubricHints.map((ex, i) => (<li key={i}>{ex}</li>))}
+                                  </ul>
+                                </div>
+                              )}
+                            </div>
+                          </details>
+                        ) : null}
                       </li>
                     ))}
                   </ul>

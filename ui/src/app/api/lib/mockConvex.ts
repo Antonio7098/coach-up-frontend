@@ -294,6 +294,69 @@ export function __seedSkillsForTests(skills: SkillDoc[]) {
   for (const s of skills) _skills.push(s);
 }
 
+// Test-only: generate many synthetic active skills
+export function __seedManySkillsForTests(opts?: { total?: number; categories?: string[] }) {
+  const total = Math.max(1, Math.min(2000, Number(opts?.total ?? 50)));
+  const categories = (opts?.categories && opts?.categories.length ? opts.categories : [
+    'communication', 'delivery', 'strategy', 'leadership', 'execution', 'collaboration', 'customer'
+  ]);
+  _skills.length = 0;
+  const now = Date.now();
+  for (let i = 0; i < total; i++) {
+    const cat = categories[i % categories.length];
+    _skills.push({
+      id: `skill_${cat}_${i + 1}`,
+      title: `Skill ${i + 1} (${cat})`,
+      description: `Auto-seeded skill ${i + 1} in category ${cat}.`,
+      levels: Array.from({ length: 10 }, (_, idx) => {
+        const lvl = idx + 1;
+        if (lvl <= 3) {
+          return {
+            level: lvl,
+            criteria: 'Often confusing or disorganized; unclear framing; relies on jargon',
+            examples: ['“We implemented a new synergistic paradigm leveraging our backend architecture…”'],
+            rubricHints: ['Define terms; speak to outcomes; reduce clauses'],
+          };
+        }
+        if (lvl <= 6) {
+          return {
+            level: lvl,
+            criteria: 'Generally understandable; usually clear and direct; simplifies complexity',
+            examples: ['“We changed how the app gets data… it’s asynchronous so it should feel a bit faster.”'],
+            rubricHints: ['Use concrete subjects/verbs; one idea per sentence; emphasize outcomes'],
+          };
+        }
+        if (lvl <= 8) {
+          return {
+            level: lvl,
+            criteria: 'Clear, direct; simplifies complexity and explains trade-offs succinctly',
+            examples: ['“We fetch data in the background, so the interface stays responsive and feels faster.”'],
+            rubricHints: ['Bronze: strong clarity and brevity; problem → action → impact'],
+          };
+        }
+        if (lvl === 9) {
+          return {
+            level: lvl,
+            criteria: 'Consistently exceptional clarity; sharp, memorable phrasing',
+            examples: ['“Data now loads asynchronously, eliminating UI freezes and ensuring a seamless experience.”'],
+            rubricHints: ['Silver: consistently exceptional clarity'],
+          };
+        }
+        return {
+          level: lvl,
+          criteria: 'Effortless, memorable communication; elegantly simple framing',
+          examples: ['“Instantly responsive—data streams in the background.”'],
+          rubricHints: ['Gold: exceptional clarity and resonance'],
+        };
+      }),
+      category: cat,
+      isActive: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+}
+
 // Dev-only: seed a few default skills if empty (idempotent)
 export function __devSeedDefaultSkills() {
   if (_skills.length > 0) return;
@@ -303,11 +366,47 @@ export function __devSeedDefaultSkills() {
       id: 'clarity_eloquence',
       title: 'Clarity & Eloquence',
       description: 'Communicate ideas clearly and eloquently.',
-      levels: [
-        { level: 0, criteria: 'Basic articulation' },
-        { level: 5, criteria: 'Consistent clarity in most contexts' },
-        { level: 10, criteria: 'Exceptional clarity and eloquence' },
-      ],
+      levels: Array.from({ length: 10 }, (_, idx) => {
+        const lvl = idx + 1;
+        if (lvl <= 3) {
+          return {
+            level: lvl,
+            criteria: 'Often confusing or disorganized; unclear framing; relies on jargon',
+            examples: ['“We implemented a new synergistic paradigm leveraging our backend architecture…”'],
+            rubricHints: ['Define terms; speak to outcomes; reduce clauses'],
+          };
+        }
+        if (lvl <= 6) {
+          return {
+            level: lvl,
+            criteria: 'Generally understandable; usually clear and direct; simplifies complexity',
+            examples: ['“We changed how the app gets data… it’s asynchronous so it should feel a bit faster.”'],
+            rubricHints: ['Use concrete subjects/verbs; one idea per sentence; emphasize outcomes'],
+          };
+        }
+        if (lvl <= 8) {
+          return {
+            level: lvl,
+            criteria: 'Clear, direct; simplifies complexity and explains trade-offs succinctly',
+            examples: ['“We fetch data in the background, so the interface stays responsive and feels faster.”'],
+            rubricHints: ['Bronze: strong clarity and brevity; problem → action → impact'],
+          };
+        }
+        if (lvl === 9) {
+          return {
+            level: lvl,
+            criteria: 'Consistently exceptional clarity; sharp, memorable phrasing',
+            examples: ['“Data now loads asynchronously, eliminating UI freezes and ensuring a seamless experience.”'],
+            rubricHints: ['Silver: consistently exceptional clarity'],
+          };
+        }
+        return {
+          level: lvl,
+          criteria: 'Effortless, memorable communication; elegantly simple framing',
+          examples: ['“Instantly responsive—data streams in the background.”'],
+          rubricHints: ['Gold: exceptional clarity and resonance'],
+        };
+      }),
       category: 'communication',
       isActive: true,
       createdAt: now,
@@ -318,9 +417,24 @@ export function __devSeedDefaultSkills() {
       title: 'Active Listening',
       description: 'Engage attentively and reflect understanding.',
       levels: [
-        { level: 0, criteria: 'Occasional acknowledgment' },
-        { level: 5, criteria: 'Paraphrases and probes appropriately' },
-        { level: 10, criteria: 'Consistently demonstrates deep listening' },
+        {
+          level: 0,
+          criteria: 'Infrequent acknowledgments; misses key points',
+          examples: ['“Okay.” (no follow-up, no reflection)'],
+          rubricHints: ['Reflect content and feeling; ask one clarifying question'],
+        },
+        {
+          level: 5,
+          criteria: 'Paraphrases, probes, and validates regularly',
+          examples: ['“It sounds like latency is the core issue—did I get that right?”'],
+          rubricHints: ['Bronze: reflect → probe → validate'],
+        },
+        {
+          level: 10,
+          criteria: 'Anticipates needs; consistently demonstrates deep listening',
+          examples: ['“Given the latency concern, shall we test prefetching during idle?”'],
+          rubricHints: ['Gold: anticipates and advances the conversation'],
+        },
       ],
       category: 'communication',
       isActive: true,
@@ -332,9 +446,24 @@ export function __devSeedDefaultSkills() {
       title: 'Storytelling',
       description: 'Use narrative to engage and persuade.',
       levels: [
-        { level: 0, criteria: 'Basic chronological narration' },
-        { level: 5, criteria: 'Clear structure with tension and resolution' },
-        { level: 10, criteria: 'Compelling, memorable storytelling' },
+        {
+          level: 0,
+          criteria: 'Lists events without a clear arc',
+          examples: ['“First we built X, then Y, then Z.”'],
+          rubricHints: ['Introduce goal, conflict, stakes'],
+        },
+        {
+          level: 5,
+          criteria: 'Clear arc with tension and resolution; highlights stakes',
+          examples: ['“We faced drop-offs; we reframed onboarding; activation rose 12%.”'],
+          rubricHints: ['Bronze: arc + stakes + outcome'],
+        },
+        {
+          level: 10,
+          criteria: 'Compelling narrative; vivid and memorable',
+          examples: ['“A 2-minute flow now opens a door to 10k weekly creators.”'],
+          rubricHints: ['Gold: emotional resonance + strategic clarity'],
+        },
       ],
       category: 'delivery',
       isActive: true,
@@ -414,6 +543,11 @@ export async function __resetAllForTests() {
   _skills.length = 0;
   _tracked.length = 0;
   _levelHistory.length = 0;
+}
+
+// Test-only: list level history for a user (and optionally a single skill)
+export function listLevelHistoryForUser(args: { userId: string; skillId?: string }) {
+  return _levelHistory.filter(h => h.userId === args.userId && (!args.skillId || h.skillId === args.skillId));
 }
 
 // -------------------- Tracked Skills (mock) --------------------
@@ -556,4 +690,44 @@ export async function updateLevelFromRecentAssessments(args: {
     return { ok: true, updated: true, toLevel: tracked.currentLevel } as const;
   }
   return { ok: true, updated: false } as const;
+}
+
+// Test-only: bulk seed per-skill assessments and trigger level updates
+export async function __seedSkillAssessmentHistoryForTests(params: {
+  userId: string;
+  skillIds?: string[]; // defaults to all active skills
+  assessmentsPerSkill?: number; // defaults to 8
+  levelPerAssessment?: number; // defaults to 5
+  sessionIdBase?: string;
+  groupIdBase?: string;
+}) {
+  const userId = params.userId || 'unknown';
+  const skillIds = (params.skillIds && params.skillIds.length ? params.skillIds : _skills.map(s => s.id));
+  const per = Math.max(1, Math.min(100, Number(params.assessmentsPerSkill ?? 8)));
+  const fixedLevel = Math.max(0, Math.min(10, Number(params.levelPerAssessment ?? 5)));
+  const salt = (process.env.SKILL_HASH_SALT || 'test_salt').trim();
+
+  let counter = 0;
+  for (const skillId of skillIds) {
+    const skillHash = sha256Hex(`${salt}:${skillId}`);
+    for (let i = 0; i < per; i++) {
+      const sessionId = `${params.sessionIdBase ?? 'sess_seed'}_${skillId}_${i}`;
+      const groupId = `${params.groupIdBase ?? 'grp_seed'}_${skillId}_${i}`;
+      await recordSkillAssessmentV2({
+        userId,
+        sessionId,
+        groupId,
+        skillHash,
+        level: fixedLevel,
+        rubricVersion: 'v2',
+        feedback: [],
+        metCriteria: [],
+        unmetCriteria: [],
+      });
+      // Periodically trigger level update to build a plausible history
+      await updateLevelFromRecentAssessments({ userId, sessionId, groupId, skillHash });
+      counter++;
+    }
+  }
+  return { ok: true, assessmentsInserted: counter } as const;
 }
