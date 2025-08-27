@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useLayoutEffect } from "react";
 import { useRouter } from "next/navigation";
 
 type Skill = {
@@ -38,6 +38,7 @@ export default function SkillsPage() {
   // No entry gating; show content immediately so skeletons are visible
   const [leaving, setLeaving] = useState(false);
   const [leavingDir, setLeavingDir] = useState<"left" | "right">("left");
+  const [enterDir, setEnterDir] = useState<"left" | "right" | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -68,11 +69,22 @@ export default function SkillsPage() {
     };
   }, []);
 
-  // Entry transition handled by route layout (app/skills/layout.tsx)
-
-  // Removed entry animation gating to avoid blank page during initial render
-
-  // Entry animation is handled by app/skills/layout.tsx to avoid double transforms
+  // Entry animation: read navDir on mount and animate new content in
+  useLayoutEffect(() => {
+    try {
+      const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const d = window.sessionStorage.getItem("navDir");
+      window.sessionStorage.removeItem("navDir");
+      if (!reduce && (d === "back" || d === "forward")) {
+        // forward -> enter from right; back -> enter from left
+        setEnterDir(d === "forward" ? "right" : "left");
+        // Use double RAF to ensure initial position is rendered before animating
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => setEnterDir(null));
+        });
+      }
+    } catch {}
+  }, []);
 
   const trackedIds = new Set(tracked.map((t) => t.skillId));
   const untrackedSkills = skills.filter((s) => !trackedIds.has(s.id));
@@ -142,7 +154,7 @@ export default function SkillsPage() {
         try { window.sessionStorage.setItem('navDir', 'back'); } catch {}
         setLeavingDir('right');
         setLeaving(true);
-        setTimeout(() => router.push('/coach'), 650);
+        setTimeout(() => router.push('/coach'), 400);
       }
     } catch {
       router.push('/coach');
@@ -160,15 +172,19 @@ export default function SkillsPage() {
     try { router.prefetch(url); } catch {}
     setLeavingDir('left');
     setLeaving(true);
-    setTimeout(() => router.push(url), 650);
+    setTimeout(() => router.push(url), 400);
   }
 
   return (
     <div
-      className="min-h-screen bg-background text-foreground font-sans p-4 overflow-x-hidden transform-gpu will-change-transform transition-transform duration-700 ease-in-out"
+      className="min-h-screen bg-background text-foreground font-sans p-4 overflow-x-hidden transform-gpu will-change-transform transition-transform duration-400 ease-out"
       style={{
         transform: leaving
           ? (leavingDir === 'left' ? 'translateX(-120vw)' : 'translateX(120vw)')
+          : enterDir === "left"
+          ? "translateX(-120vw)"
+          : enterDir === "right"
+          ? "translateX(120vw)"
           : 'translateX(0)'
       }}
     >

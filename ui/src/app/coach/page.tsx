@@ -6,8 +6,7 @@ import { useRouter } from "next/navigation";
 import { useChat } from "../../context/ChatContext";
 import { useMic } from "../../context/MicContext";
 import { useMicUI } from "../../context/MicUIContext";
-
-// Mock data for dashboard (mirrors tracked skills shape from API)
+import SkillChart from "../../components/SkillChart";
 type Skill = {
   id: string;
   title: string;
@@ -44,41 +43,6 @@ const SkeletonLoader = ({ className = "" }: { className?: string }) => (
   <div className={`animate-pulse cu-accent-soft-bg rounded ${className}`} />
 );
 
-// Tiny SVG sparkline for trends (no deps)
-function Sparkline({
-  data,
-  className = "",
-  stroke = "rgb(var(--cu-accent))",
-  fill = "rgba(var(--cu-accent), 0.12)",
-  height = 56,
-}: {
-  data: number[];
-  className?: string;
-  stroke?: string;
-  fill?: string;
-  height?: number;
-}) {
-  const w = 140;
-  const h = 40;
-  const pad = 2;
-  const min = Math.min(...data);
-  const max = Math.max(...data);
-  const span = Math.max(1, max - min);
-  const pts = data.map((v, i) => {
-    const x = pad + (i * (w - pad * 2)) / Math.max(1, data.length - 1);
-    const y = pad + (h - pad * 2) * (1 - (v - min) / span);
-    return [x, y] as const;
-  });
-  const d = pts.map((p, i) => `${i === 0 ? "M" : "L"}${p[0].toFixed(2)},${p[1].toFixed(2)}`).join(" ");
-  const area = `${d} L${pts[pts.length - 1][0].toFixed(2)},${(h - pad).toFixed(2)} L${pts[0][0].toFixed(2)},${(h - pad).toFixed(2)} Z`;
-  return (
-    <svg className={className} viewBox={`0 0 ${w} ${h}`} role="img" aria-label="trend graph" style={{ height }}>
-      <path d={area} fill={fill} stroke="none" />
-      <path d={d} fill="none" stroke={stroke} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 // Upward-trending mock data
 function genUpwardTrend(n = 8, start = 10, stepMin = 4, stepMax = 12): number[] {
   const out: number[] = [];
@@ -92,8 +56,6 @@ function genUpwardTrend(n = 8, start = 10, stepMin = 4, stepMax = 12): number[] 
   }
   return out;
 }
-
-// Data is loaded from /api/v1/skills/tracked with MOCK_CONVEX=1 in dev
 
 export default function CoachPage() {
   const router = useRouter();
@@ -304,10 +266,12 @@ export default function CoachPage() {
       const d = window.sessionStorage.getItem("navDir");
       window.sessionStorage.removeItem("navDir");
       if (!reduce && (d === "back" || d === "forward")) {
-        // forward -> enter from left; back -> enter from right
-        setEnterDir(d === "forward" ? "left" : "right");
-        const id = requestAnimationFrame(() => setEnterDir(null));
-        return () => cancelAnimationFrame(id);
+        // forward -> enter from right; back -> enter from left
+        setEnterDir(d === "forward" ? "right" : "left");
+        // Use double RAF to ensure initial position is rendered before animating
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => setEnterDir(null));
+        });
       }
     } catch {}
   }, []);
@@ -357,7 +321,7 @@ export default function CoachPage() {
     try { router.prefetch(url); } catch {}
     setLeavingDir("left");
     setLeaving(true);
-    setTimeout(() => router.push(url), 650);
+    setTimeout(() => router.push(url), 400);
   }
 
   // Auto-start mic when entering chat mode with voice loop active (use global mic)
@@ -391,7 +355,7 @@ export default function CoachPage() {
   return (
     <div
       ref={rootRef}
-      className="min-h-screen bg-background text-foreground font-sans relative overflow-x-hidden transform-gpu will-change-transform transition-transform duration-700 ease-in-out"
+      className="min-h-screen bg-background text-foreground font-sans relative overflow-x-hidden transform-gpu will-change-transform transition-transform duration-400 ease-out"
       style={{
         transform: leaving
           ? (leavingDir === "left" ? "translateX(-120vw)" : "translateX(120vw)")
@@ -472,21 +436,20 @@ export default function CoachPage() {
                 <h2 id="analytics-label" className="text-sm font-semibold uppercase tracking-wide cu-muted">Analytics</h2>
               </div>
               
-              <button
-                type="button"
+              <div
+                className="border-2 cu-border rounded-2xl cu-surface p-4 cursor-pointer hover:bg-surface/80 transition-colors"
                 onClick={() => navigateForward("/coach/analytics")}
                 onMouseEnter={() => { try { router.prefetch("/coach/analytics"); } catch {} }}
                 onFocus={() => { try { router.prefetch("/coach/analytics"); } catch {} }}
+                role="button"
+                tabIndex={0}
                 aria-label="Open analytics"
-                className="w-full text-left"
               >
-                <div className="border-2 cu-border rounded-2xl cu-surface p-4">
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="text-xs cu-muted">Points earned</div>
-                  </div>
-                  <Sparkline data={analyticsPoints} className="w-full" height={56} />
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-xs cu-muted">Points earned</div>
                 </div>
-              </button>
+                <SkillChart data={analyticsPoints} className="w-full" height={56} />
+              </div>
             </section>
             {/* Tracked skills */}
             <section

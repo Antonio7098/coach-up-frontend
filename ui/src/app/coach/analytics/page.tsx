@@ -2,8 +2,8 @@
 
 import { useEffect, useLayoutEffect, useMemo, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
+import SkillChart from "../../../components/SkillChart";
 
-// Minimal types (local copy)
 type Skill = {
   id: string;
   title: string;
@@ -21,50 +21,15 @@ type TrackedSkill = {
   skill?: Skill | null;
 };
 
-// Tiny SVG sparkline (no deps)
-function Sparkline({
-  data,
-  className = "",
-  stroke = "rgb(var(--cu-accent))",
-  fill = "rgba(var(--cu-accent), 0.12)",
-  height = 56,
-}: {
-  data: number[];
-  className?: string;
-  stroke?: string;
-  fill?: string;
-  height?: number;
-}) {
-  const w = 240;
-  const h = 48;
-  const pad = 2;
-  const min = Math.min(...data);
-  const max = Math.max(...data);
-  const span = Math.max(1, max - min);
-  const pts = data.map((v, i) => {
-    const x = pad + (i * (w - pad * 2)) / Math.max(1, data.length - 1);
-    const y = pad + (h - pad * 2) * (1 - (v - min) / span);
-    return [x, y] as const;
-  });
-  // ref moved to CoachAnalyticsPage
-  const d = pts.map((p, i) => `${i === 0 ? "M" : "L"}${p[0].toFixed(2)},${p[1].toFixed(2)}`).join(" ");
-  const area = `${d} L${pts[pts.length - 1][0].toFixed(2)},${(h - pad).toFixed(2)} L${pts[0][0].toFixed(2)},${(h - pad).toFixed(2)} Z`;
-  return (
-    <svg className={className} viewBox={`0 0 ${w} ${h}`} role="img" aria-label="trend graph" style={{ height }}>
-      <path d={area} fill={fill} stroke="none" />
-      <path d={d} fill="none" stroke={stroke} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-// Upward-trending mock data
-function genUpwardTrend(n = 12, start = 50, stepMin = 3, stepMax = 10): number[] {
+// Upward-trending mock data (percentage values 0-100)
+function genUpwardTrend(n = 16, start = 30, stepMin = 2, stepMax = 8): number[] {
   const out: number[] = [];
   let cur = start;
   for (let i = 0; i < n; i++) {
-    if (i === 0) out.push(cur);
-    else {
-      cur += stepMin + Math.floor(Math.random() * (stepMax - stepMin + 1));
+    if (i === 0) {
+      out.push(cur);
+    } else {
+      cur = Math.min(100, cur + stepMin + Math.floor(Math.random() * (stepMax - stepMin + 1)));
       out.push(cur);
     }
   }
@@ -100,23 +65,21 @@ export default function CoachAnalyticsPage() {
     return () => { cancelled = true; };
   }, [router]);
 
-  // Hydration-safe entry animation: read navDir on mount and set enterDir
-  useEffect(() => {
+  // Entry animation: read navDir on mount and animate new content in
+  useLayoutEffect(() => {
     try {
       const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       const d = window.sessionStorage.getItem("navDir");
       window.sessionStorage.removeItem("navDir");
       if (!reduce && (d === "back" || d === "forward")) {
-        // Forward: page enters from the right; Back: enter from the left
+        // forward -> enter from right; back -> enter from left
         setEnterDir(d === "forward" ? "right" : "left");
+        // Use double RAF to ensure initial position is rendered before animating
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => setEnterDir(null));
+        });
       }
     } catch {}
-  }, []);
-
-  // Consume navDir and animate entry to 0
-  useLayoutEffect(() => {
-    const id = requestAnimationFrame(() => setEnterDir(null));
-    return () => cancelAnimationFrame(id);
   }, []);
 
   // Safety: if page is restored from BFCache or user navigates back/forward, ensure we don't stay translated off-screen
@@ -164,30 +127,47 @@ export default function CoachAnalyticsPage() {
   // Generate per-skill mock trend data
   const perSkillTrends = useMemo(() => {
     const base = [
-      genUpwardTrend(16, 60, 2, 8),
-      genUpwardTrend(16, 40, 3, 9),
-      genUpwardTrend(16, 30, 4, 10),
-      genUpwardTrend(16, 20, 2, 7),
+      genUpwardTrend(16, 35, 2, 6),  // Communication
+      genUpwardTrend(16, 25, 3, 8),  // Leadership
+      genUpwardTrend(16, 45, 2, 5),  // Technical
+      genUpwardTrend(16, 30, 3, 7),  // Problem Solving
     ];
     return (tracked.length ? tracked : []).map((_, i) => base[i % base.length]);
   }, [tracked]);
 
+  const [leaving, setLeaving] = useState(false);
+  const [leavingDir, setLeavingDir] = useState<"left" | "right">("right");
+
   function goBack() {
-    try { window.sessionStorage.setItem("navDir", "back"); } catch {}
-    router.push('/coach');
+    try {
+      const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (reduce) {
+        router.push('/coach');
+        return;
+      }
+      if (!leaving) {
+        try { window.sessionStorage.setItem("navDir", "back"); } catch {}
+        setLeavingDir('right');
+        setLeaving(true);
+        setTimeout(() => router.push('/coach'), 400);
+      }
+    } catch {
+      router.push('/coach');
+    }
   }
 
   return (
     <div
       ref={rootRef}
-      className="min-h-screen bg-background text-foreground font-sans overflow-x-hidden transform-gpu will-change-transform transition-transform duration-700 ease-in-out"
+      className="min-h-screen bg-background text-foreground font-sans overflow-x-hidden transform-gpu will-change-transform transition-transform duration-400 ease-out"
       style={{
-        transform:
-          enterDir === "left"
-            ? "translateX(-120vw)"
-            : enterDir === "right"
-            ? "translateX(120vw)"
-            : "translateX(0)",
+        transform: leaving
+          ? (leavingDir === "left" ? "translateX(-120vw)" : "translateX(120vw)")
+          : enterDir === "left"
+          ? "translateX(-120vw)"
+          : enterDir === "right"
+          ? "translateX(120vw)"
+          : "translateX(0)",
       }}
     >
       <header className="px-4 pt-10 pb-24">
@@ -226,7 +206,7 @@ export default function CoachAnalyticsPage() {
                     <div className="text-sm font-medium text-foreground line-clamp-2 mb-2">
                       {t.skill?.title || "Untitled skill"}
                     </div>
-                    <Sparkline data={perSkillTrends[idx] || genUpwardTrend(16, 30, 3, 9)} className="w-full" height={64} />
+                    <SkillChart data={perSkillTrends[idx] || genUpwardTrend(16, 30, 3, 9)} className="w-full" height={64} />
                   </li>
                 ))}
             </ul>
