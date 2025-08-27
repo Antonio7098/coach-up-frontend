@@ -49,6 +49,19 @@ export default function ChatPage() {
   const firstTokenSetRef = useRef<boolean>(false);
   const historyRef = useRef<{ role: "user" | "assistant"; content: string }[]>([]);
 
+  // Config state
+  const [showConfig, setShowConfig] = useState(false);
+  const [selectedModel, setSelectedModel] = useState<string>("");
+  const [debugChunks, setDebugChunks] = useState<boolean>(false);
+
+  // Simple model list; can be extended or fetched later
+  const MODEL_OPTIONS: Array<{ value: string; label: string }> = [
+    { value: "", label: "Default (server)" },
+    { value: "openrouter/anthropic/claude-3.5-sonnet", label: "Claude 3.5 Sonnet (OpenRouter)" },
+    { value: "openrouter/openai/gpt-4o-mini", label: "GPT-4o mini (OpenRouter)" },
+    { value: "google/gemini-1.5-pro", label: "Gemini 1.5 Pro" },
+  ];
+
   // Generate a sessionId only on the client after mount to avoid SSR/client mismatch
   const [sessionId, setSessionId] = useState<string>("");
   useEffect(() => {
@@ -164,6 +177,15 @@ export default function ChatPage() {
         }
       }
     } catch {}
+    // Load persisted config
+    try {
+      const m = localStorage.getItem("chat:model");
+      if (m) setSelectedModel(m);
+    } catch {}
+    try {
+      const d = localStorage.getItem("chat:debugChunks");
+      if (d != null) setDebugChunks(d === "1");
+    } catch {}
   }, [sessionId]);
 
   const disconnect = useCallback(() => {
@@ -190,6 +212,7 @@ export default function ChatPage() {
     if (sessionId) params.set("session_id", sessionId);
     const hist = buildHistoryParam();
     if (hist) params.set("history", hist);
+    if (selectedModel) params.set("model", selectedModel);
     const url = `/api/chat?${params.toString()}`;
     // Reset output/metrics
     setOutput("");
@@ -237,6 +260,11 @@ export default function ChatPage() {
         firstTokenSetRef.current = true;
       }
       append(evt.data);
+      if (debugChunks && evt.data) {
+        try {
+          console.debug("[chat] chunk", { len: evt.data.length });
+        } catch {}
+      }
       // Accumulate assistant tokens to build the final assistant message
       assistantBufferRef.current += evt.data;
     };
@@ -254,7 +282,7 @@ export default function ChatPage() {
         connect();
       }, delay);
     };
-  }, [append, disconnect, ingestMessage, sessionId]);
+  }, [append, disconnect, ingestMessage, sessionId, selectedModel, debugChunks]);
 
   useEffect(() => {
     return () => {
@@ -338,10 +366,18 @@ return (
   <div className="mx-auto max-w-2xl p-6 space-y-4 bg-background text-foreground">
     <h1 className="text-2xl font-semibold">Chat Stream (SSE)</h1>
     <p className="text-sm cu-muted">AI API: {AI_API_BASE_URL}</p>
-    <div className="text-sm">
+    <div className="flex items-center gap-3 text-sm">
       <Link href="/chat/voice" className="underline cu-accent-text">
         Try Voice Mode →
       </Link>
+      <button
+        type="button"
+        onClick={() => setShowConfig(true)}
+        className="rounded px-2 py-1 cu-surface border cu-border-surface hover:opacity-90"
+        aria-haspopup="dialog"
+      >
+        Configure
+      </button>
     </div>
     <form
       onSubmit={onSubmit}
@@ -419,6 +455,70 @@ return (
     <div className="text-xs cu-muted">
       Notes: This demo uses native EventSource, which cannot send custom headers. The server generates a request ID for logs; the client prints a final [DONE] marker when streaming ends.
     </div>
+
+    {/* Config Modal */}
+    {showConfig && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center">
+        <div className="absolute inset-0 bg-black/40" onClick={() => setShowConfig(false)} />
+        <div className="relative z-10 w-full max-w-lg rounded-lg border cu-border-surface cu-surface p-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">Chat Configuration</h2>
+            <button
+              type="button"
+              onClick={() => setShowConfig(false)}
+              className="rounded px-2 py-1 cu-accent-soft-bg hover:opacity-90"
+            >
+              Close
+            </button>
+          </div>
+
+          <div className="space-y-3">
+            <div>
+              <label className="block text-sm font-medium mb-1">Model</label>
+              <select
+                className="w-full rounded border cu-border-surface px-3 py-1.5"
+                value={selectedModel}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setSelectedModel(v);
+                  try { localStorage.setItem("chat:model", v); } catch {}
+                }}
+              >
+                {MODEL_OPTIONS.map((m) => (
+                  <option key={m.value || "default"} value={m.value}>{m.label}</option>
+                ))}
+              </select>
+              <div className="text-xs cu-muted mt-1">
+                The selected model will be sent as a <code>model</code> query parameter to <code>/api/chat</code> and passed through to the backend.
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <input
+                id="debugChunks"
+                type="checkbox"
+                checked={debugChunks}
+                onChange={(e) => {
+                  setDebugChunks(e.target.checked);
+                  try { localStorage.setItem("chat:debugChunks", e.target.checked ? "1" : "0"); } catch {}
+                }}
+              />
+              <label htmlFor="debugChunks" className="text-sm">Debug: log chunk sizes to console</label>
+            </div>
+
+            <div className="rounded border cu-border-surface p-3 space-y-1">
+              <div className="text-sm font-medium">Voice Tuning</div>
+              <div className="text-xs cu-muted">
+                Voice parameters are configurable on the Voice page. Use this button to tune VAD/barge-in thresholds and inspect logs.
+              </div>
+              <Link href="/chat/voice" className="inline-block rounded px-2 py-1 cu-accent-bg text-sm hover:opacity-90">
+                Open Voice Tuning
+              </Link>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
 
     <div className="mt-8 border-t cu-border-surface pt-4 space-y-3">
       <h2 className="text-lg font-semibold">Assessments (SPR-002 demo)</h2>

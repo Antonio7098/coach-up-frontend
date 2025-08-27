@@ -13,7 +13,7 @@ import { S3Client, PutObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-Request-Id, Authorization",
+  "Access-Control-Allow-Headers": "Content-Type, X-Request-Id, Authorization, X-Detect-Ms",
   "Access-Control-Expose-Headers": "X-Request-Id",
 };
 
@@ -68,6 +68,8 @@ function safeUUID(): string {
 export async function POST(request: Request) {
   const headersIn = new Headers(request.headers);
   const requestId = headersIn.get("x-request-id") || safeUUID();
+  const detectMsHeader = headersIn.get("x-detect-ms");
+  const clientDetectMs = detectMsHeader ? Number(detectMsHeader) : undefined;
   const routePath = "/api/v1/stt";
   const method = "POST";
   const started = Date.now();
@@ -181,6 +183,8 @@ export async function POST(request: Request) {
         text: result.text,
         confidence: result.confidence ?? undefined,
         language: result.language ?? languageHint ?? undefined,
+        model: result.model ?? undefined,
+        clientDetectMs: typeof clientDetectMs === 'number' && isFinite(clientDetectMs) ? clientDetectMs : undefined,
         sessionId: sessionId ?? null,
         groupId: groupId ?? null,
         audioUrl: uploaded.audioUrl ?? null,
@@ -196,7 +200,7 @@ export async function POST(request: Request) {
         promMetrics.audioBytesIn.labels(labels.route, labels.method, labels.status, labels.mode).inc(size);
       } catch {}
 
-      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, mode, sessionId, groupId, multipart: true, size, mime, latencyMs: Date.now() - started }));
+      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, mode, sessionId, groupId, multipart: true, size, mime, model: result.model, clientDetectMs, latencyMs: Date.now() - started }));
       return respond(200, payload);
     } catch (err: any) {
       if (err?.name === 'ProviderNotConfiguredError' || err instanceof ProviderNotConfiguredError) {
@@ -243,6 +247,8 @@ export async function POST(request: Request) {
       text: result.text,
       confidence: result.confidence ?? undefined,
       language: result.language ?? languageHint ?? undefined,
+      model: result.model ?? undefined,
+      clientDetectMs: typeof clientDetectMs === 'number' && isFinite(clientDetectMs) ? clientDetectMs : undefined,
       sessionId: sessionId ?? null,
       groupId: groupId ?? null,
       audioUrl: audioUrl ?? null,
@@ -272,7 +278,7 @@ export async function POST(request: Request) {
       }
     } catch {}
 
-    console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, mode, sessionId, groupId, hasAudioUrl: !!audioUrl, hasObjectKey: !!objectKey, latencyMs: Date.now() - started }));
+    console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, mode, sessionId, groupId, hasAudioUrl: !!audioUrl, hasObjectKey: !!objectKey, model: result.model, clientDetectMs, latencyMs: Date.now() - started }));
     return respond(200, payload);
   } catch (err: any) {
     if (err?.name === 'ProviderNotConfiguredError' || err instanceof ProviderNotConfiguredError) {

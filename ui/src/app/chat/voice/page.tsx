@@ -5,13 +5,17 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 // Public flags (baked at build time)
 const VOICE_ENABLED = (process.env.NEXT_PUBLIC_ENABLE_VOICE || "1") !== "0";
 const MAX_UTTER_MS = Number(process.env.NEXT_PUBLIC_VOICE_MAX_UTTERANCE_MS || "15000");
-// Tunable VAD / barge-in thresholds (defaults mirror coach page behavior)
+// Tunable VAD / barge-in thresholds (defaults mirror coach page behavior but slightly relaxed to reduce early cutoffs)
 const VAD_THRESHOLD = Number(process.env.NEXT_PUBLIC_VOICE_VAD_THRESHOLD || "0.02");
 const BARGE_RMS_THRESHOLD = Number(
   process.env.NEXT_PUBLIC_BARGE_RMS_THRESHOLD || String(Math.max(2.5 * VAD_THRESHOLD, 0.05))
 );
 const BARGE_MIN_FRAMES = Number(process.env.NEXT_PUBLIC_BARGE_MIN_FRAMES || "5"); // ~500ms at 100ms hops
-const VAD_MAX_SILENCE_MS = Number(process.env.NEXT_PUBLIC_VOICE_VAD_MAX_SILENCE_MS || "900");
+const VAD_MAX_SILENCE_MS = Number(process.env.NEXT_PUBLIC_VOICE_VAD_MAX_SILENCE_MS || "1600");
+// New: configurable min speech and silence debounce (in frames) before stopping
+const MIN_SPEECH_MS = Number(process.env.NEXT_PUBLIC_VOICE_MIN_SPEECH_MS || "500");
+const SILENCE_DEBOUNCE_FRAMES = Number(process.env.NEXT_PUBLIC_VOICE_SILENCE_DEBOUNCE_FRAMES || "6"); // ~600ms at 100ms hops
+const GRACE_PERIOD_MS = Number(process.env.NEXT_PUBLIC_VOICE_VAD_GRACE_MS || "1000");
 
 function safeUUID(): string {
   try {
@@ -39,6 +43,9 @@ export default function VoiceChatPage() {
   const chatEsRef = useRef<EventSource | null>(null);
   const [voiceLoop, setVoiceLoop] = useState(false);
   const historyRef = useRef<{ role: "user" | "assistant"; content: string }[]>([]);
+  // Autoplay gating: require first user interaction before audio.play() resolves
+  const userInteractedRef = useRef<boolean>(false);
+  const pendingAudioUrlRef = useRef<string | null>(null);
 
   const [blob, setBlob] = useState<Blob | null>(null);
   const [objectKey, setObjectKey] = useState<string | null>(null);
@@ -55,6 +62,7 @@ export default function VoiceChatPage() {
   const bargeArmedRef = useRef<boolean>(false);
   const bargeFramesRef = useRef<number>(0);
   const bargeTriggeredRef = useRef<boolean>(false);
+  const silenceFramesRef = useRef<number>(0);
 
   const [busy, setBusy] = useState<"idle" | "presign" | "upload" | "stt" | "chat" | "tts">("idle");
   const [error, setError] = useState<string>("");
@@ -236,7 +244,6 @@ export default function VoiceChatPage() {
         const buffer = new Uint8Array(analyser.fftSize);
         const started = Date.now();
         let lastSpoke = Date.now();
-        const MIN_SPEECH_MS = 300; // ignore early noise before considering silence
         const tick = () => {
           analyser.getByteTimeDomainData(buffer);
           // compute RMS deviation from midpoint 128
@@ -247,9 +254,12 @@ export default function VoiceChatPage() {
           }
           const rms = Math.sqrt(sum / buffer.length);
           const now = Date.now();
-          // Speech detection for silence tracking
+          // Speech detection for silence tracking (with debounce frames)
           if (rms > VAD_THRESHOLD) {
             lastSpoke = now;
+            silenceFramesRef.current = 0;
+          } else {
+            silenceFramesRef.current += 1;
           }
           // Barge-in detection: require sustained louder speech
           if (bargeArmedRef.current && !bargeTriggeredRef.current) {
@@ -273,7 +283,8 @@ export default function VoiceChatPage() {
           const silentFor = now - lastSpoke;
           // Do not auto-stop on silence if TTS playback is active or queued
           const ttsActive = audioPlayingRef.current || audioQueueRef.current.length > 0 || ttsProcessingRef.current;
-          if (!ttsActive && spokeFor > MIN_SPEECH_MS && silentFor > VAD_MAX_SILENCE_MS) {
+          const silenceDebounced = silenceFramesRef.current >= SILENCE_DEBOUNCE_FRAMES;
+          if (!ttsActive && spokeFor > MIN_SPEECH_MS && (silentFor > VAD_MAX_SILENCE_MS || silenceDebounced)) {
             log("info", `Auto-stop on silence (silent ${silentFor} ms)`);
             stopRecording();
             return;
@@ -485,6 +496,10 @@ export default function VoiceChatPage() {
           }
         };
 
+        es.onopen = () => {
+          log("info", "Chat stream opened");
+        };
+
         es.onmessage = (evt) => {
           if (evt.data === "[DONE]") {
             try { es.close(); } catch {}
@@ -508,6 +523,7 @@ export default function VoiceChatPage() {
           }
           acc += evt.data;
           setAssistantText((prev) => prev + evt.data);
+          try { if (evt.data) log("info", `⟶ chunk ${evt.data.length} chars (total ${acc.length})`); } catch {}
           // segmentation
           flushOnPunctuation();
           if (idleTimer) { try { clearTimeout(idleTimer); } catch {} }
@@ -587,9 +603,15 @@ export default function VoiceChatPage() {
         audioRef.current = el;
       }
       el.autoplay = true;
+      el.volume = 1.0;
       el.src = url;
       try { el.load(); } catch {}
-      await el.play().catch(() => {});
+      // If no prior user gesture, defer playback until unlocked
+      if (!userInteractedRef.current) {
+        pendingAudioUrlRef.current = url;
+        return;
+      }
+      await el.play();
       await new Promise<void>((resolve) => {
         const cleanup = () => {
           el!.removeEventListener("ended", onEnded);
@@ -603,8 +625,13 @@ export default function VoiceChatPage() {
         el!.addEventListener("error", onErr, { once: true });
         el!.addEventListener("pause", onPause, { once: true });
       });
-    } catch {
-      // ignore playback errors in loop mode
+    } catch (err: any) {
+      // Handle autoplay block gracefully by deferring the URL
+      if (err?.name === "NotAllowedError") {
+        pendingAudioUrlRef.current = url;
+        return;
+      }
+      // ignore other playback errors in loop mode
     }
   }
 
@@ -691,6 +718,28 @@ export default function VoiceChatPage() {
     // Enqueue and start playback
     enqueueAudio(ttsUrl);
   }, [ttsUrl]);
+
+  // Unlock autoplay on first user interaction and attempt any deferred audio
+  useEffect(() => {
+    const unlock = () => {
+      if (userInteractedRef.current) return;
+      userInteractedRef.current = true;
+      const pending = pendingAudioUrlRef.current;
+      if (pending) {
+        pendingAudioUrlRef.current = null;
+        // Fire-and-forget retry of the deferred audio
+        void playAudio(pending);
+      }
+    };
+    window.addEventListener("pointerdown", unlock, { once: true, passive: true });
+    window.addEventListener("keydown", unlock, { once: true, passive: true as any });
+    window.addEventListener("touchstart", unlock, { once: true, passive: true });
+    return () => {
+      try { window.removeEventListener("pointerdown", unlock as any); } catch {}
+      try { window.removeEventListener("keydown", unlock as any); } catch {}
+      try { window.removeEventListener("touchstart", unlock as any); } catch {}
+    };
+  }, []);
 
   // Voice loop: process a single utterance end-to-end
   const processOnce = useCallback(async (b: Blob) => {

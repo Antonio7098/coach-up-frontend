@@ -5,7 +5,8 @@ const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, X-Request-Id, X-Tracked-Skill-Id",
-  "Access-Control-Expose-Headers": "X-Request-Id",
+  // Expose provider/model so clients and benchmarks can read them
+  "Access-Control-Expose-Headers": "X-Request-Id, X-Chat-Provider, X-Chat-Model",
 };
 
 function aiApiBaseUrl() {
@@ -77,15 +78,20 @@ export async function GET(request: Request) {
       } catch {}
     });
 
-  return new Response(readable, {
-    headers: {
-      "Content-Type": "text/event-stream; charset=utf-8",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      // Explicitly prevent Next.js from buffering
-      "X-Accel-Buffering": "no",
-      "X-Request-Id": requestId,
-      ...corsHeaders,
-    },
-  });
+  // Build response headers, passing through provider/model if set upstream
+  const respHeaders: Record<string, string> = {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    // Explicitly prevent Next.js from buffering
+    "X-Accel-Buffering": "no",
+    "X-Request-Id": requestId,
+    ...corsHeaders,
+  };
+  const upstreamProvider = upstream.headers.get("X-Chat-Provider") || upstream.headers.get("x-chat-provider");
+  const upstreamModel = upstream.headers.get("X-Chat-Model") || upstream.headers.get("x-chat-model");
+  if (upstreamProvider) respHeaders["X-Chat-Provider"] = upstreamProvider;
+  if (upstreamModel) respHeaders["X-Chat-Model"] = upstreamModel;
+
+  return new Response(readable, { headers: respHeaders });
 }

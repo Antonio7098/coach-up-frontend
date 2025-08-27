@@ -97,6 +97,7 @@ export default function CoachPage() {
 
   // Debug panel & logs
   const [debugOpen, setDebugOpen] = useState(false);
+  const [tuningOpen, setTuningOpen] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   // Mount guard for portals
   const [mounted, setMounted] = useState(false);
@@ -109,6 +110,27 @@ export default function CoachPage() {
       // noop
     }
   };
+
+  // Unified configuration modal state
+  const [showConfig, setShowConfig] = useState(false);
+  const [selectedModel, setSelectedModel] = useState<string>("");
+  const [configTab, setConfigTab] = useState<"logs" | "voice" | "model">("logs");
+  const MODEL_OPTIONS: Array<{ value: string; label: string }> = [
+    { value: "google/gemini-2.5-flash-lite", label: "google/gemini-2.5-flash-lite" },
+    { value: "openai/gpt-5-mini", label: "openai/gpt-5-mini" },
+    { value: "google/gemini-2.5-flash", label: "google/gemini-2.5-flash" },
+    { value: "anthropic/claude-3.5-haiku", label: "anthropic/claude-3.5-haiku" },
+    { value: "openai/chatgpt-4o-latest", label: "openai/chatgpt-4o-latest" },
+    { value: "openai/gpt-4o-mini", label: "openai/gpt-4o-mini" },
+  ];
+  useEffect(() => {
+    try {
+      const m = localStorage.getItem("chat:model");
+      const allowed = new Set(MODEL_OPTIONS.map((o) => o.value));
+      if (m && allowed.has(m)) setSelectedModel(m);
+      else setSelectedModel(MODEL_OPTIONS[0]?.value || "");
+    } catch {}
+  }, []);
 
   // (Preamble logging removed; MicProvider handles voice pipeline.)
 
@@ -642,25 +664,179 @@ export default function CoachPage() {
         </header>
       )}
 
-      {/* Overlays portal: debug controls, and toasts (mic button is now global) */}
+      {/* Overlays portal: configuration modal, and toasts (mic button is now global) */}
       {mounted && createPortal(
         <>
-          {/* Debug toggle button */}
+          {/* Unified Configure button */}
           <button
             type="button"
-            onClick={() => setDebugOpen((v) => !v)}
+            onClick={() => setShowConfig(true)}
             className="fixed bottom-4 right-4 z-40 px-3 py-1.5 text-xs rounded-md cu-surface cu-border-surface cu-accent-text shadow"
+            aria-haspopup="dialog"
           >
-            {debugOpen ? "Hide Logs" : "Show Logs"}
+            Configure
           </button>
 
-          {/* Debug panel */}
-          {debugOpen && (
-            <div className="fixed bottom-16 left-4 right-4 z-40 max-h-56 overflow-auto rounded-lg cu-bg-80 text-foreground text-xs p-3 shadow-lg border cu-border-surface">
-              <div className="mb-2 text-[10px] cu-muted">
-                sessionId={sessionId} · mediaSupported={String(mic.mediaSupported)} · recording={String(mic.recording)} · busy={mic.busy}
+          {/* Config Modal */}
+          {showConfig && (
+            <div className="fixed z-50 bottom-16 right-4">
+              <div className="relative w-[58vw] h-[58vw] max-w-[92vw] max-h-[82vh] rounded-lg border cu-border-surface cu-surface p-3 overflow-auto shadow-2xl ring-1 ring-black/10">
+                <div className="flex items-center justify-between mb-2">
+                  <h2 className="text-base font-semibold">Coach Configuration</h2>
+                  <button
+                    type="button"
+                    onClick={() => setShowConfig(false)}
+                    className="rounded px-2 py-1 cu-accent-soft-bg hover:opacity-90 text-sm"
+                  >
+                    Close
+                  </button>
+                </div>
+
+                {/* Tabs */}
+                <div className="flex items-center gap-1 border-b cu-border-surface mb-3">
+                  {([
+                    { key: 'logs', label: 'Logs' },
+                    { key: 'voice', label: 'Voice Tuner' },
+                    { key: 'model', label: 'Model' },
+                  ] as const).map((tab) => (
+                    <button
+                      key={tab.key}
+                      type="button"
+                      onClick={() => setConfigTab(tab.key)}
+                      className={`px-3 py-1.5 text-sm -mb-px border-b-2 ${configTab === tab.key ? 'border-accent text-foreground' : 'border-transparent cu-muted hover:text-foreground'}`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Model */}
+                {configTab === 'model' && (
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Model</label>
+                    <select
+                      className="w-full rounded border cu-border-surface px-3 py-1.5"
+                      value={selectedModel}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setSelectedModel(v);
+                        try { localStorage.setItem("chat:model", v); } catch {}
+                      }}
+                    >
+                      {MODEL_OPTIONS.map((m) => (
+                        <option key={m.value || 'default'} value={m.value}>{m.label}</option>
+                      ))}
+                    </select>
+                    <div className="text-xs cu-muted mt-1">
+                      The selected model will be included as a <code>model</code> parameter in chat requests.
+                    </div>
+                  </div>
+                )}
+
+                {/* Voice tuner */}
+                {configTab === 'voice' && (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => mic.resetTuning?.()}
+                        className="px-2 py-1 rounded border cu-border-surface hover:bg-surface/80 text-[11px]"
+                      >
+                        Reset to defaults
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          try { localStorage.removeItem('cu.voice.tuning'); } catch {}
+                          try { window.location.reload(); } catch {}
+                        }}
+                        className="px-2 py-1 rounded border cu-border-surface hover:bg-surface/80 text-[11px]"
+                      >
+                        Clear overrides
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 gap-3">
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[11px] cu-muted">VAD Threshold (RMS)</span>
+                        <div className="flex items-center gap-2">
+                          <input type="range" min={0.005} max={0.1} step={0.001} value={mic.vadThreshold} onChange={(e) => mic.setTuning({ vadThreshold: Number(e.target.value) })} className="flex-1" />
+                          <input type="number" min={0.001} max={0.5} step={0.001} value={Number(mic.vadThreshold.toFixed(3))} onChange={(e) => mic.setTuning({ vadThreshold: Number(e.target.value) })} className="w-24 px-2 py-1 rounded border cu-border-surface bg-transparent" />
+                        </div>
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[11px] cu-muted">Max Silence (ms)</span>
+                        <div className="flex items-center gap-2">
+                          <input type="range" min={200} max={3000} step={50} value={mic.vadMaxSilenceMs} onChange={(e) => mic.setTuning({ vadMaxSilenceMs: Number(e.target.value) })} className="flex-1" />
+                          <input type="number" min={100} max={10000} step={50} value={mic.vadMaxSilenceMs} onChange={(e) => mic.setTuning({ vadMaxSilenceMs: Number(e.target.value) })} className="w-28 px-2 py-1 rounded border cu-border-surface bg-transparent" />
+                        </div>
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[11px] cu-muted">Barge RMS Threshold</span>
+                        <div className="flex items-center gap-2">
+                          <input type="range" min={0.01} max={0.4} step={0.005} value={mic.bargeRmsThreshold} onChange={(e) => mic.setTuning({ bargeRmsThreshold: Number(e.target.value) })} className="flex-1" />
+                          <input type="number" min={0.01} max={1} step={0.005} value={Number(mic.bargeRmsThreshold.toFixed(3))} onChange={(e) => mic.setTuning({ bargeRmsThreshold: Number(e.target.value) })} className="w-28 px-2 py-1 rounded border cu-border-surface bg-transparent" />
+                        </div>
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[11px] cu-muted">Barge Min Frames</span>
+                        <div className="flex items-center gap-2">
+                          <input type="range" min={1} max={15} step={1} value={mic.bargeMinFrames} onChange={(e) => mic.setTuning({ bargeMinFrames: Number(e.target.value) })} className="flex-1" />
+                          <input type="number" min={0} max={100} step={1} value={mic.bargeMinFrames} onChange={(e) => mic.setTuning({ bargeMinFrames: Number(e.target.value) })} className="w-24 px-2 py-1 rounded border cu-border-surface bg-transparent" />
+                        </div>
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[11px] cu-muted">Max Utterance (ms)</span>
+                        <div className="flex items-center gap-2">
+                          <input type="range" min={2000} max={15000} step={250} value={mic.maxUtterMs} onChange={(e) => mic.setTuning({ maxUtterMs: Number(e.target.value) })} className="flex-1" />
+                          <input type="number" min={1000} max={30000} step={100} value={mic.maxUtterMs} onChange={(e) => mic.setTuning({ maxUtterMs: Number(e.target.value) })} className="w-28 px-2 py-1 rounded border cu-border-surface bg-transparent" />
+                        </div>
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[11px] cu-muted">Min Speech (ms)</span>
+                        <div className="flex items-center gap-2">
+                          <input type="range" min={100} max={2000} step={50} value={mic.minSpeechMs} onChange={(e) => mic.setTuning({ minSpeechMs: Number(e.target.value) })} className="flex-1" />
+                          <input type="number" min={0} max={5000} step={50} value={mic.minSpeechMs} onChange={(e) => mic.setTuning({ minSpeechMs: Number(e.target.value) })} className="w-28 px-2 py-1 rounded border cu-border-surface bg-transparent" />
+                        </div>
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[11px] cu-muted">Silence Debounce (frames)</span>
+                        <div className="flex items-center gap-2">
+                          <input type="range" min={0} max={10} step={1} value={mic.silenceDebounceFrames} onChange={(e) => mic.setTuning({ silenceDebounceFrames: Number(e.target.value) })} className="flex-1" />
+                          <input type="number" min={0} max={50} step={1} value={mic.silenceDebounceFrames} onChange={(e) => mic.setTuning({ silenceDebounceFrames: Number(e.target.value) })} className="w-24 px-2 py-1 rounded border cu-border-surface bg-transparent" />
+                        </div>
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[11px] cu-muted">VAD Grace (ms)</span>
+                        <div className="flex items-center gap-2">
+                          <input type="range" min={0} max={2000} step={50} value={mic.vadGraceMs} onChange={(e) => mic.setTuning({ vadGraceMs: Number(e.target.value) })} className="flex-1" />
+                          <input type="number" min={0} max={5000} step={50} value={mic.vadGraceMs} onChange={(e) => mic.setTuning({ vadGraceMs: Number(e.target.value) })} className="w-28 px-2 py-1 rounded border cu-border-surface bg-transparent" />
+                        </div>
+                      </label>
+                    </div>
+                    <div className="mt-1 text-[11px] cu-muted">Changes apply immediately and persist locally.</div>
+                  </div>
+                )}
+
+                {/* Logs */}
+                {configTab === 'logs' && (
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-sm font-medium">Logs</div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] cu-muted">sessionId={sessionId} · mediaSupported={String(mic.mediaSupported)} · recording={String(mic.recording)} · busy={mic.busy}</span>
+                        <button
+                          type="button"
+                          onClick={() => setLogs([])}
+                          className="px-2 py-1 rounded border cu-border-surface hover:bg-surface/80 text-[11px]"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+                    <pre className="whitespace-pre-wrap break-words leading-4 text-xs max-h-56 overflow-auto">{logs.join("\n") || "(no logs yet)"}</pre>
+                  </div>
+                )}
               </div>
-              <pre className="whitespace-pre-wrap break-words leading-4">{logs.join("\n")}</pre>
             </div>
           )}
 

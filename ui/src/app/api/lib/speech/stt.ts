@@ -14,6 +14,7 @@ export type SttResult = {
   text: string
   confidence?: number
   language?: string
+  model?: string
 }
 
 export class ProviderNotConfiguredError extends Error {
@@ -292,6 +293,7 @@ const deepgramStt: SttProvider = {
   name: 'deepgram',
   async transcribe(input: SttInput): Promise<SttResult> {
     const key = process.env.DEEPGRAM_API_KEY
+    // Debug visibility into env state without leaking secrets
     if (!key) throw new ProviderNotConfiguredError('DEEPGRAM_API_KEY is missing')
 
     const blob = await loadAudioBlob(input)
@@ -304,6 +306,7 @@ const deepgramStt: SttProvider = {
     else if (ctOrig.includes('mpeg') || ctOrig.includes('mp3')) contentType = 'audio/mpeg'
 
     const ab = await blob.arrayBuffer()
+    const bodyBytes = (ab as ArrayBuffer).byteLength
     const language = input.languageHint || process.env.DEEPGRAM_LANGUAGE || process.env.GOOGLE_SPEECH_LANGUAGE || 'en-US'
     const model = process.env.DEEPGRAM_MODEL || 'nova-2'
     const punctuate = 'true'
@@ -311,24 +314,63 @@ const deepgramStt: SttProvider = {
       language,
     )}&punctuate=${punctuate}`
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Token ${key}`,
-        'Content-Type': contentType,
-        Accept: 'application/json',
-      },
-      body: ab,
-    })
-    if (!res.ok) {
-      const t = await res.text()
-      throw new Error(`Deepgram STT HTTP ${res.status}: ${t}`)
+    // Structured debug log for diagnostics
+    try {
+      console.log('[stt][deepgram] prepared request', {
+        hasKey: !!key,
+        model,
+        language,
+        contentType,
+        bodyBytes,
+        source: input.audioUrl ? 'audioUrl' : input.objectKey ? 'objectKey' : 'unknown',
+      })
+    } catch {}
+
+    // Simple retry for transient network errors
+    const maxAttempts = Number(process.env.DEEPGRAM_RETRY_ATTEMPTS || 3)
+    const baseDelayMs = Number(process.env.DEEPGRAM_RETRY_BASE_MS || 250)
+    let lastErr: any
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            Authorization: `Token ${key}`,
+            'Content-Type': contentType,
+            Accept: 'application/json',
+          },
+          body: ab,
+        })
+        if (!res.ok) {
+          const t = await res.text()
+          // For HTTP errors, don't retry 4xx except 408/429; do retry 5xx
+          const shouldRetry = res.status >= 500 || res.status === 408 || res.status === 429
+          const err = new Error(`Deepgram STT HTTP ${res.status}: ${t}`)
+          if (!shouldRetry || attempt === maxAttempts) throw err
+          const delay = baseDelayMs * Math.pow(2, attempt - 1)
+          try { console.warn('[stt][deepgram] http error, retrying', { attempt, status: res.status, delay }) } catch {}
+          await sleep(delay)
+          continue
+        }
+        const data: any = await res.json()
+        const text: string = data?.results?.channels?.[0]?.alternatives?.[0]?.transcript?.toString?.() || ''
+        return { provider: 'deepgram', text, language, model }
+      } catch (e: any) {
+        lastErr = e
+        // Only retry network-level failures (TypeError: fetch failed) or explicit transient errors
+        const msg = String(e?.message || e)
+        const isNetwork = msg.includes('fetch failed') || msg.includes('network') || msg.includes('ECONN') || msg.includes('ETIMEDOUT')
+        if (attempt === maxAttempts || !isNetwork) {
+          try { console.error('[stt][deepgram] fatal error', { attempt, message: msg }) } catch {}
+          throw e
+        }
+        const delay = baseDelayMs * Math.pow(2, attempt - 1)
+        try { console.warn('[stt][deepgram] network error, retrying', { attempt, delay, message: msg }) } catch {}
+        await sleep(delay)
+      }
     }
-    const data: any = await res.json()
-    // Expected shape: { results: { channels: [ { alternatives: [ { transcript: string } ] } ] } }
-    const text: string =
-      data?.results?.channels?.[0]?.alternatives?.[0]?.transcript?.toString?.() || ''
-    return { provider: 'deepgram', text, language }
+    // Should not reach here, but in case
+    throw lastErr || new Error('Deepgram STT failed unexpectedly')
   },
 }
 
