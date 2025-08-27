@@ -76,18 +76,7 @@ export default function CoachAnalyticsPage() {
   const [tracked, setTracked] = useState<TrackedSkill[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [enterDir, setEnterDir] = useState<"left" | "right" | null>(() => {
-    if (typeof window === "undefined") return null;
-    try {
-      const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      const d = window.sessionStorage.getItem("navDir");
-      if (!reduce && (d === "back" || d === "forward")) {
-        // Forward: page enters from the right; Back: enter from the left
-        return d === "forward" ? "right" : "left";
-      }
-    } catch {}
-    return null;
-  });
+  const [enterDir, setEnterDir] = useState<"left" | "right" | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   // On mount: fetch tracked skills (mock API in dev) and prefetch coach for back nav
@@ -110,6 +99,19 @@ export default function CoachAnalyticsPage() {
     try { router.prefetch("/coach"); } catch {}
     return () => { cancelled = true; };
   }, [router]);
+
+  // Hydration-safe entry animation: read navDir on mount and set enterDir
+  useEffect(() => {
+    try {
+      const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const d = window.sessionStorage.getItem("navDir");
+      window.sessionStorage.removeItem("navDir");
+      if (!reduce && (d === "back" || d === "forward")) {
+        // Forward: page enters from the right; Back: enter from the left
+        setEnterDir(d === "forward" ? "right" : "left");
+      }
+    } catch {}
+  }, []);
 
   // Consume navDir and animate entry to 0
   useLayoutEffect(() => {
