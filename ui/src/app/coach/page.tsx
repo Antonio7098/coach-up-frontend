@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useLayoutEffect } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useState, useRef } from "react";
 import { createPortal } from "react-dom";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import { useChat } from "../../context/ChatContext";
 import { useMic } from "../../context/MicContext";
 import { useMicUI } from "../../context/MicUIContext";
@@ -76,6 +76,7 @@ function genUpwardTrend(n = 8, start = 10, stepMin = 4, stepMax = 12): number[] 
 
 export default function CoachPage() {
   const router = useRouter();
+  const pathname = usePathname();
   const { sessionId } = useChat();
   const mic = useMic();
   const { setInCoach, showDashboard, setShowDashboard, setHandlers } = useMicUI();
@@ -92,6 +93,10 @@ export default function CoachPage() {
   const [leaving, setLeaving] = useState(false);
   const [leavingDir, setLeavingDir] = useState<"left" | "right">("left");
   const [enterDir, setEnterDir] = useState<"left" | "right" | null>(null);
+  // Feature flag: disable cross-page transitions for performance
+  const ENABLE_ROUTE_TRANSITIONS = false;
+  // When returning from a subpage (skills/analytics), skip the initial dashboard entrance animation
+  const [skipNextDashboardAnim, setSkipNextDashboardAnim] = useState(false);
 
   // Mic logic moved to MicProvider. Coach page only consumes via `useMic()` and controls UI/animation.
 
@@ -300,19 +305,17 @@ export default function CoachPage() {
 
   // Hydration-safe entry transition: read navDir on mount and animate new content in
   useLayoutEffect(() => {
+    if (!ENABLE_ROUTE_TRANSITIONS) return;
     try {
       const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       const d = window.sessionStorage.getItem("navDir");
       window.sessionStorage.removeItem("navDir");
       if (!reduce && (d === "back" || d === "forward")) {
-        // forward -> enter from right; back -> enter from left
         setEnterDir(d === "forward" ? "right" : "left");
-        // Use single RAF to ensure initial position is rendered before animating
-        requestAnimationFrame(() => {
-        });
+        requestAnimationFrame(() => {});
       }
     } catch {}
-  }, []);
+  }, [ENABLE_ROUTE_TRANSITIONS]);
 
   // Chat session id is provided by ChatProvider
 
@@ -334,13 +337,19 @@ export default function CoachPage() {
         dashUnmountTimer.current = null;
       }
       setDashboardMounted(true);
-      setDashAnim(false);
-      // Two RAFs + forced reflow to ensure initial styles are applied before transitioning
-      requestAnimationFrame(() => {
-        // force layout
-        void dashContainerRef.current?.getBoundingClientRect();
-        requestAnimationFrame(() => setDashAnim(true));
-      });
+      if (skipNextDashboardAnim) {
+        // Show immediately without entrance animation
+        setDashAnim(true);
+        setSkipNextDashboardAnim(false);
+      } else {
+        setDashAnim(false);
+        // Two RAFs + forced reflow to ensure initial styles are applied before transitioning
+        requestAnimationFrame(() => {
+          // force layout
+          void dashContainerRef.current?.getBoundingClientRect();
+          requestAnimationFrame(() => setDashAnim(true));
+        });
+      }
     } else {
       setDashAnim(false); // triggers slide-up
       // Unmount after exit animation completes
@@ -350,19 +359,41 @@ export default function CoachPage() {
         dashUnmountTimer.current = null;
       }, EXIT_MS);
     }
-  }, [showDashboard]);
+  }, [showDashboard, skipNextDashboardAnim]);
 
   // Forward navigation with animated exit (left)
   function navigateForward(url: string) {
-    // Hide dashboard immediately to prevent flashing during transition
+    // If route transitions are disabled, navigate immediately without animating
+    if (!ENABLE_ROUTE_TRANSITIONS) {
+      try { window.sessionStorage.setItem("resumeDashboardNoAnim", "1"); } catch {}
+      try { router.push(url); } catch {}
+      return;
+    }
+    // Otherwise, run the animated exit and hide dashboard during the transition
     setShowDashboard(false);
     try { window.sessionStorage.setItem("navDir", "forward"); } catch {}
-    // Best-effort prefetch before we start the exit animation
+    try { window.sessionStorage.setItem("resumeDashboardNoAnim", "1"); } catch {}
     try { router.prefetch(url); } catch {}
     setLeavingDir("left");
     setLeaving(true);
     setTimeout(() => router.push(url), 250);
   }
+
+  // If we navigated back to /coach, resume on dashboard without animating
+  useEffect(() => {
+    if (pathname === '/coach') {
+      try {
+        const resume = window.sessionStorage.getItem("resumeDashboardNoAnim");
+        if (resume) {
+          window.sessionStorage.removeItem("resumeDashboardNoAnim");
+          setSkipNextDashboardAnim(true);
+          setShowDashboard(true);
+          setDashboardMounted(true);
+          setDashAnim(true);
+        }
+      } catch {}
+    }
+  }, [pathname, setShowDashboard]);
 
   // Auto-start mic when entering chat mode with voice loop active (use global mic)
   useEffect(() => {
@@ -395,14 +426,19 @@ export default function CoachPage() {
   return (
     <div
       ref={rootRef}
-      className="min-h-screen bg-background text-foreground font-sans relative overflow-x-hidden transform-gpu will-change-transform transition-transform duration-300 ease-out"
+      className={[
+        "min-h-screen bg-background text-foreground font-sans relative overflow-x-hidden",
+        ENABLE_ROUTE_TRANSITIONS ? "transform-gpu will-change-transform transition-transform duration-300 ease-out" : ""
+      ].join(" ")}
       style={{
-        transform: leaving
-          ? (leavingDir === "left" ? "translateX(-120vw)" : "translateX(120vw)")
-          : enterDir === "left"
-          ? "translateX(-120vw)"
-          : enterDir === "right"
-          ? "translateX(120vw)"
+        transform: ENABLE_ROUTE_TRANSITIONS
+          ? (leaving
+              ? (leavingDir === "left" ? "translateX(-120vw)" : "translateX(120vw)")
+              : enterDir === "left"
+              ? "translateX(-120vw)"
+              : enterDir === "right"
+              ? "translateX(120vw)"
+              : "translateX(0)")
           : "translateX(0)",
       }}
     >
@@ -440,226 +476,273 @@ export default function CoachPage() {
       {dashboardMounted && (
         <header className="px-4 pt-10 pb-64">
           <div ref={dashContainerRef} className="max-w-md mx-auto">
-            {/* Level block (slides in first) */}
+            {/* Hero header */}
             <div
-              className={["transform-gpu will-change-transform transition-all duration-[400ms] ease-out", dashAnim ? "opacity-100" : "opacity-0"].join(" ")}
+              className={["transform-gpu will-change-transform transition-all duration-[450ms] ease-out", dashAnim ? "opacity-100" : "opacity-0"].join(" ")}
               style={{ transform: dashAnim ? "translateY(0)" : "translateY(-120vh)" }}
             >
-              {/* Level header + card */}
-              <div className="mb-6">
-                <div className="flex items-center justify-between mb-2">
-                  <h2 id="level-label" className="text-sm font-semibold uppercase tracking-wide cu-muted">Level</h2>
-                </div>
-                
-                <div className="border-2 cu-border rounded-2xl cu-surface p-4 shadow-sm hover:shadow-md transition-shadow">
-                  <div className="flex items-center justify-between">
-                    <div className="flex-1 grid place-items-center">
-                      <div className="text-4xl font-semibold text-foreground tracking-tight">{overallLevel}</div>
+              <div className="relative overflow-hidden rounded-3xl border-2 cu-border cu-surface shadow-sm">
+                <div className="absolute inset-0 opacity-40 pointer-events-none" aria-hidden="true" style={{
+                  background:
+                    "radial-gradient(800px 280px at 5% -10%, rgba(99,102,241,0.35), transparent 60%), " +
+                    "radial-gradient(700px 280px at 105% 110%, rgba(16,185,129,0.25), transparent 60%)"
+                }} />
+                <div className="absolute inset-0 backdrop-blur-[2px] opacity-[0.35] pointer-events-none" aria-hidden="true" />
+                <div className="relative p-5">
+                  <div className="text-xs font-semibold uppercase tracking-wide cu-muted">Coach</div>
+                  <h1 className="mt-1 text-2xl font-semibold tracking-tight">Welcome back</h1>
+                  <p className="mt-1 text-sm cu-muted">Track your progress and practice with focused guidance.</p>
+
+                  
+
+                  {/* Moved Level progress and Focus into hero */}
+                  <div className="mt-4">
+                    <div className="grid grid-cols-3 items-end">
+                      <div className="text-xs font-semibold uppercase tracking-wide cu-muted">Level</div>
+                      <div className="justify-self-center relative inline-block leading-none">
+                        <span className="text-5xl md:text-6xl font-extrabold tracking-tight text-black">3</span>
+                        {/* soft glow behind the number */}
+                        <span aria-hidden className="pointer-events-none absolute -inset-x-4 -bottom-1 h-3 blur-md opacity-40 rounded-full" style={{ background: "radial-gradient(closest-side, rgba(99,102,241,0.35), rgba(16,185,129,0.35))" }} />
+                      </div>
+                      <div />
                     </div>
-                    <div className="ml-4 text-xs">
-                      <div className="tracking-wide font-semibold cu-muted">Focus</div>
-                      <ul className="mt-1 space-y-1 text-foreground">
-                        <li>• Reduce filler words like “um”</li>
-                        <li>• Prefer clear, simple phrasing</li>
-                      </ul>
+                    <div className="mt-2 relative h-5 cu-accent-soft-bg rounded-full overflow-hidden">
+                      <div className="absolute inset-0 pointer-events-none" aria-hidden style={{ background: "linear-gradient(90deg, rgba(255,255,255,0.12), rgba(255,255,255,0))" }} />
+                      <div className="h-full" style={{ width: "35%", background: "linear-gradient(90deg, rgba(99,102,241,1), rgba(16,185,129,1))" }} />
+                      <div className="absolute inset-0 grid place-items-center text-[11px] font-medium text-foreground">
+                        7/20
+                      </div>
                     </div>
-                  </div>
-                  <div className="mt-3 relative h-5 cu-accent-soft-bg rounded-full overflow-hidden">
-                    <div className="h-full cu-progress" style={{ width: `${levelStats.progressPercent}%` }} />
-                    <div className="absolute inset-0 grid place-items-center text-[11px] font-medium text-foreground">
-                      {levelStats.pointsEarned}/{levelStats.pointsTotal}
+                    <div className="mt-3">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs tracking-wide font-semibold cu-muted">Focus</div>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <span className="inline-flex items-center gap-2 text-xs px-2.5 py-1 rounded-full border cu-border-surface cu-surface shadow-sm hover:shadow-md transition-all hover:-translate-y-[0.5px]">
+                          <svg aria-hidden viewBox="0 0 24 24" className="w-3.5 h-3.5 cu-success-text" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+                          Reduce filler words like “um”
+                        </span>
+                        <span className="inline-flex items-center gap-2 text-xs px-2.5 py-1 rounded-full border cu-border-surface cu-surface shadow-sm hover:shadow-md transition-all hover:-translate-y-[0.5px]">
+                          <svg aria-hidden viewBox="0 0 24 24" className="w-3.5 h-3.5 cu-success-text" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+                          Prefer clear, simple phrasing
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
             </div>
-            {/* Analytics card */}
-           <section
+
+            
+
+            {/* Analytics */}
+            <section
               aria-labelledby="analytics-label"
-              className="mt-6 mb-6 transform-gpu will-change-transform transition-all duration-[700ms] ease-out"
-              style={{ opacity: dashAnim ? 1 : 0, transform: dashAnim ? "translateY(0)" : "translateY(-120vh)", transitionDelay: dashAnim ? "50ms" : "0ms" }}
+              className="mt-6 transform-gpu will-change-transform transition-all duration-[600ms] ease-out"
+              style={{ opacity: dashAnim ? 1 : 0, transform: dashAnim ? "translateY(0)" : "translateY(-120vh)" }}
+              onMouseEnter={() => { try { router.prefetch("/coach/analytics"); } catch {} }}
+              onFocus={() => { try { router.prefetch("/coach/analytics"); } catch {} }}
+              role="button"
+              tabIndex={0}
+              aria-label="Open analytics"
+              onClick={() => navigateForward('/coach/analytics')}
             >
-              <div className="flex items-center justify-between mb-2">
-                <h2 id="analytics-label" className="text-sm font-semibold uppercase tracking-wide cu-muted">Analytics</h2>
-              </div>
-              
-              <div
-                className="border-2 cu-border rounded-2xl cu-surface p-4 cursor-pointer hover:bg-surface/80 transition-colors shadow-sm hover:shadow-md"
-                onClick={() => navigateForward("/coach/analytics")}
-                onMouseEnter={() => { try { router.prefetch("/coach/analytics"); } catch {} }}
-                onFocus={() => { try { router.prefetch("/coach/analytics"); } catch {} }}
-                role="button"
-                tabIndex={0}
-                aria-label="Open analytics"
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <div className="text-xs cu-muted flex items-center gap-2">
-                    <svg aria-hidden="true" viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 4-5"/></svg>
-                    Points earned
+              <h2 id="analytics-label" className="sr-only">Analytics</h2>
+              <div className="rounded-2xl border-2 cu-border cu-surface p-4 shadow-sm group">
+                {/* Header */}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-sm font-semibold uppercase tracking-wide">ANALYTICS</div>
+                  <div className="flex items-center gap-1">
+                    <span className="text-[11px] px-2 py-0.5 rounded-full border cu-border-surface cu-surface cu-muted">7d</span>
+                    <span className="text-[11px] px-2 py-0.5 rounded-full border cu-border-surface cu-surface cu-muted">30d</span>
+                    <span className="text-[11px] px-2 py-0.5 rounded-full border cu-border-surface cu-surface text-foreground">All</span>
                   </div>
                 </div>
-                <SkillChart data={analyticsPoints} className="w-full" height={56} />
+
+                {/* Mini-stats */}
+                <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                  <div className="rounded-lg border cu-border-surface cu-surface p-2 text-center">
+                    <div className="cu-muted">Total</div>
+                    <div className="font-semibold text-foreground">{analyticsPoints.reduce((a,b)=>a+b,0)}</div>
+                  </div>
+                  <div className="rounded-lg border cu-border-surface cu-surface p-2 text-center">
+                    <div className="cu-muted">Avg</div>
+                    <div className="font-semibold text-foreground">{Math.round(analyticsPoints.reduce((a,b)=>a+b,0)/analyticsPoints.length)}</div>
+                  </div>
+                  <div className="rounded-lg border cu-border-surface cu-surface p-2 text-center">
+                    <div className="cu-muted">Trend</div>
+                    <div className="inline-flex items-center justify-center gap-1 font-semibold text-foreground">
+                      <svg aria-hidden viewBox="0 0 24 24" className="w-3.5 h-3.5 cu-success-text" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12l6-6 5 5 7-7"/></svg>
+                      Up
+                    </div>
+                  </div>
+                </div>
+
+                {/* Chart */}
+                <div className="mt-3">
+                  <SkillChart data={analyticsPoints} className="w-full" height={80} />
+                </div>
+
+                {/* Footer hint */}
+                <div className="mt-2 flex items-center justify-between">
+                  <div className="text-[11px] cu-muted flex items-center gap-2">
+                    <span className="inline-block h-2 w-2 rounded-full" style={{ background: "linear-gradient(90deg, rgba(99,102,241,1), rgba(16,185,129,1))" }} />
+                    Points earned
+                  </div>
+                  <div className="opacity-0 group-hover:opacity-100 transition-opacity text-xs cu-muted">View details →</div>
+                </div>
               </div>
             </section>
+
             {/* Tracked skills */}
             <section
               aria-labelledby="skills-label"
               className="mt-6 mb-6 transform-gpu will-change-transform transition-all duration-[700ms] ease-out"
               style={{ opacity: dashAnim ? 1 : 0, transform: dashAnim ? "translateY(0)" : "translateY(-120vh)", transitionDelay: dashAnim ? "100ms" : "0ms" }}
             >
-              <div className="flex items-center justify-between mb-2">
-                <button
-                  type="button"
-                  onClick={() => navigateForward("/skills")}
-                  onMouseEnter={() => { try { router.prefetch("/skills"); } catch {} }}
-                  onFocus={() => { try { router.prefetch("/skills"); } catch {} }}
-                  aria-label="Go to skills overview"
-                  className="block"
-                >
-                  <h2 id="skills-label" className="text-sm font-semibold uppercase tracking-wide cu-muted hover:text-foreground hover:underline">
-                    Skills
-                  </h2>
-                </button>
-              </div>
-              
-              {loading ? (
-                <div className="grid grid-cols-2 gap-3">
-                  <SkeletonLoader className="h-20 rounded-2xl" />
-                  <SkeletonLoader className="h-20 rounded-2xl" />
-                </div>
-              ) : error ? (
-                <div className="text-sm cu-error-text cu-error-soft-bg border cu-error-border rounded-lg p-3">
-                  {error}
-                </div>
-              ) : tracked && tracked.length > 0 ? (
-                <ul className="grid grid-cols-2 gap-3">
-                  {[...tracked]
-                    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-                    .map((t) => (
-                      <li key={t.skillId} className="border-2 cu-border rounded-2xl cu-surface shadow-sm hover:shadow-md transition-shadow">
-                        <button
-                          type="button"
-                          onClick={() => navigateForward(`/skills/${t.skillId}`)}
-                          className="w-full text-left p-4 group"
-                          aria-label={`Open ${t.skill?.title || "skill"}`}
-                        >
-                          <div className="text-sm font-medium text-foreground line-clamp-2 flex items-center gap-2">
-                            <span className="inline-flex items-center justify-center h-6 w-6 rounded-full cu-accent-soft-bg text-[10px] font-semibold">{(t.currentLevel ?? 0) || 0}</span>
-                            {t.skill?.title || "Untitled skill"}
-                          </div>
-                          <div className="mt-2 h-1.5 cu-accent-soft-bg rounded-full overflow-hidden">
-                            <div
-                              className="h-full cu-progress"
-                              style={{ width: `${Math.max(0, Math.min(10, Number(t.currentLevel) || 0)) * 10}%` }}
-                            />
-                          </div>
-                          <div className="mt-1 text-xs cu-muted">Lv {t.currentLevel}/10</div>
-                        </button>
-                      </li>
-                    ))}
-                </ul>
-              ) : (
-                <div className="border border-dashed cu-border rounded-2xl p-6 text-center">
-                  <div className="text-sm cu-muted mb-3">You haven’t added any tracked skills yet.</div>
+              <div className="rounded-2xl border-2 cu-border cu-surface p-4 shadow-sm">
+                <div className="flex items-center justify-between mb-2">
                   <button
                     type="button"
-                    onClick={() => navigateForward('/skills')}
-                    className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md cu-surface border cu-border-surface hover:bg-surface/80 transition-colors text-sm"
+                    onClick={() => navigateForward("/skills")}
+                    onMouseEnter={() => { try { router.prefetch("/skills"); } catch {} }}
+                    onFocus={() => { try { router.prefetch("/skills"); } catch {} }}
+                    aria-label="Go to skills overview"
+                    className="block"
                   >
-                    <svg aria-hidden="true" viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14"/></svg>
-                    Add skills
+                    <div id="skills-label" className="text-sm font-semibold uppercase tracking-wide">SKILLS</div>
                   </button>
                 </div>
-              )}
-            </section>
-            <section
-              aria-labelledby="recent-label"
-              className="space-y-3 transform-gpu will-change-transform transition-all duration-[500ms] ease-out"
-              style={{ opacity: dashAnim ? 1 : 0, transform: dashAnim ? "translateY(0)" : "translateY(-120vh)", transitionDelay: dashAnim ? "150ms" : "0ms" }}
-            >
-              <div className="flex items-center justify-between mb-2">
-                <h2 id="recent-label" className="text-sm font-semibold uppercase tracking-wide cu-muted">Log</h2>
-              </div>
-              
-              <ul className="space-y-3">
-                {[...recent].sort((a, b) => b.createdAt - a.createdAt).map((item) => (
-                  <li key={item.id} className="border-2 cu-border rounded-2xl p-4 cu-surface shadow-sm hover:shadow-md transition-shadow">
+
+                {loading ? (
+                  <div className="grid grid-cols-2 gap-3">
+                    <SkeletonLoader className="h-24 rounded-2xl" />
+                    <SkeletonLoader className="h-24 rounded-2xl" />
+                  </div>
+                ) : error ? (
+                  <div className="text-sm cu-error-text cu-error-soft-bg border cu-error-border rounded-lg p-3">
+                    {error}
+                  </div>
+                ) : tracked && tracked.length > 0 ? (
+                  <ul className="grid grid-cols-2 gap-3">
+                    {[...tracked]
+                      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+                      .map((t) => (
+                        <li key={t.skillId} className="group relative overflow-hidden border-2 cu-border rounded-2xl cu-surface shadow-sm transition-all hover:shadow-md">
+                          <button
+                            type="button"
+                            onClick={() => navigateForward(`/skills/${t.skillId}`)}
+                            className="w-full text-left p-4"
+                            aria-label={`Open ${t.skill?.title || 'skill'}`}
+                          >
+                            {/* base subtle gradient texture */}
+                            <span
+                              aria-hidden
+                              className="pointer-events-none absolute inset-0 opacity-[0.35]"
+                              style={{
+                                background:
+                                  "linear-gradient(135deg, rgba(99,102,241,0.05), rgba(16,185,129,0.05))",
+                              }}
+                            />
+                            <span aria-hidden className="pointer-events-none absolute -top-10 -right-10 h-24 w-24 rounded-full opacity-0 group-hover:opacity-30 blur-2xl" style={{ background: 'radial-gradient(closest-side, rgba(99,102,241,0.35), transparent)' }} />
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="inline-flex items-center justify-center h-6 w-6 rounded-full bg-gradient-to-br from-indigo-500/20 to-emerald-500/20 text-[10px] font-semibold shadow-sm border cu-border-surface">{(t.currentLevel ?? 0) || 0}</span>
+                                  <div className="text-sm font-medium text-foreground truncate">{t.skill?.title || 'Untitled skill'}</div>
+                                </div>
+                                <div className="mt-1 text-[11px] cu-muted truncate">{t.skill?.category || `Lv ${t.currentLevel}/10`}</div>
+                              </div>
+                              <svg aria-hidden viewBox="0 0 24 24" className="w-4 h-4 cu-muted transition-all group-hover:translate-x-0.5 group-hover:opacity-100 opacity-60" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+                            </div>
+                            <div className="mt-3 relative h-1.5 cu-accent-soft-bg rounded-full overflow-hidden">
+                              <div className="absolute inset-0 pointer-events-none" aria-hidden style={{ background: 'linear-gradient(90deg, rgba(255,255,255,0.14), rgba(255,255,255,0))' }} />
+                              <div className="h-full transition-[width] duration-500 ease-out" style={{ width: `${Math.max(0, Math.min(10, Number(t.currentLevel) || 0)) * 10}%`, background: 'linear-gradient(90deg, rgba(99,102,241,1), rgba(16,185,129,1))' }} />
+                            </div>
+                            <div className="mt-1 text-[11px] cu-muted">Lv {t.currentLevel}/10</div>
+                          </button>
+                        </li>
+                      ))}
+                  </ul>
+                ) : (
+                  <div className="relative overflow-hidden border-2 border-dashed cu-border rounded-2xl p-6 text-center cu-surface shadow-sm">
+                    <div aria-hidden className="pointer-events-none absolute -top-10 left-1/2 -translate-x-1/2 h-32 w-32 rounded-full opacity-20 blur-3xl cu-accent-soft-bg" />
+                    <div className="text-sm cu-muted mb-3">You haven’t added any tracked skills yet.</div>
                     <button
                       type="button"
-                      onClick={() => setExpanded((m) => ({ ...m, [item.id]: !m[item.id] }))}
-                      aria-expanded={!!expanded[item.id]}
-                      aria-controls={`log-${item.id}-panel`}
-                      className="w-full flex items-center gap-3"
+                      onClick={() => navigateForward('/skills')}
+                      className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md cu-surface border cu-border-surface hover:bg-surface/80 active:scale-[0.98] transition-all text-sm shadow-sm"
                     >
-                      <div className="text-sm text-foreground mr-2 flex-1 text-left">
-                        {item.title}
-                        <span className="ml-2 text-xs cu-muted">{timeAgo(item.createdAt)}</span>
-                      </div>
-                      {!expanded[item.id] && (
-                        <div className="hidden sm:flex items-center gap-3 flex-wrap text-xs cu-muted mr-1">
-                          {item.scores.map((s) => (
-                            <span key={s.category} className="whitespace-nowrap">
-                              <span className="capitalize">{s.category}</span>
-                              <span className="mx-1 cu-muted">·</span>
-                              <span className="font-semibold text-foreground">{s.level}</span>
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                      <svg
-                        aria-hidden="true"
-                        viewBox="0 0 24 24"
-                        className={["ml-auto w-4 h-4 cu-muted transition-transform", expanded[item.id] ? "rotate-180" : "rotate-0"].join(" ")}
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      >
-                        <path d="M6 9l6 6 6-6" />
-                      </svg>
+                      <svg aria-hidden="true" viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+                      Add skills
                     </button>
+                  </div>
+                )}
+              </div>
+            </section>
 
-                    <div
-                      id={`log-${item.id}-panel`}
-                      className={[
-                        "transition-all duration-300",
-                        expanded[item.id]
-                          ? "mt-3 pt-3 border-t cu-border opacity-100 translate-y-0 max-h-[600px]"
-                          : "opacity-0 -translate-y-1 max-h-0 overflow-hidden"
-                      ].join(" ")}
-                    >
-                      {/* Skills moved into expanded area */}
-                      <div className="flex items-center gap-3 flex-wrap text-sm cu-muted mb-2">
-                        {item.scores.map((s) => (
-                          <span key={s.category} className="whitespace-nowrap">
-                            <span className="capitalize">{s.category}</span>
-                            <span className="mx-1 cu-muted">·</span>
-                            <span className="font-semibold text-foreground">{s.level}</span>
-                          </span>
-                        ))}
-                      </div>
-
-                      {/* Feedback */}
-                      {item.scores.map((s) => (
-                        <div key={s.category} className="mb-3">
-                          {Array.isArray(s.feedback) && s.feedback.length > 0 ? (
-                            <>
-                              <div className="text-xs uppercase tracking-wide cu-muted mb-1">{s.category}</div>
-                              <ul className="list-disc pl-5 text-sm text-foreground space-y-1">
-                                {s.feedback.map((f, i) => (
-                                  <li key={i}>{f}</li>
+            {/* Log */}
+            <section
+              aria-labelledby="recent-label"
+              className="transform-gpu will-change-transform transition-all duration-[500ms] ease-out"
+              style={{ opacity: dashAnim ? 1 : 0, transform: dashAnim ? "translateY(0)" : "translateY(-120vh)", transitionDelay: dashAnim ? "150ms" : "0ms" }}
+            >
+              <div className="rounded-2xl border-2 cu-border cu-surface p-4 shadow-sm">
+                <div className="flex items-center justify-between mb-2">
+                  <div id="recent-label" className="text-sm font-semibold uppercase tracking-wide">LOG</div>
+                </div>
+                <ul className="space-y-3">
+                  {[...recent].sort((a, b) => b.createdAt - a.createdAt).map((item) => (
+                    <li key={item.id} className="group border cu-border-surface rounded-2xl p-4 cu-surface hover:shadow-sm transition-all hover:bg-surface/80">
+                      <button
+                        type="button"
+                        onClick={() => setExpanded((m) => ({ ...m, [item.id]: !m[item.id] }))}
+                        aria-expanded={!!expanded[item.id]}
+                        aria-controls={`log-${item.id}-panel`}
+                        className="w-full flex items-center gap-3"
+                      >
+                        <div className="text-sm text-foreground mr-2 flex-1 text-left">
+                          {item.title}
+                          <span className="ml-2 text-xs cu-muted">{timeAgo(item.createdAt)}</span>
+                        </div>
+                        {!expanded[item.id] && (
+                          <div className="hidden sm:flex items-center gap-3 flex-wrap text-xs cu-muted mr-1">
+                            {item.scores.map((s) => (
+                              <span key={s.category} className="whitespace-nowrap">
+                                {s.category}: Lv {s.level}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <svg aria-hidden viewBox="0 0 24 24" className="w-4 h-4 cu-muted transition-transform" style={{ transform: expanded[item.id] ? 'rotate(90deg)' : 'rotate(0deg)' }} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+                      </button>
+                      {expanded[item.id] && (
+                        <div id={`log-${item.id}-panel`} className="mt-3 text-sm">
+                          <div className="grid grid-cols-2 gap-2">
+                            {item.scores.map((s) => (
+                              <div key={s.category} className="rounded-lg border cu-border-surface cu-surface p-2 text-center">
+                                <div className="cu-muted text-xs">{s.category}</div>
+                                <div className="font-semibold text-foreground">Lv {s.level}</div>
+                              </div>
+                            ))}
+                          </div>
+                          {item.scores.some((s) => s.feedback && s.feedback.length) && (
+                            <div className="mt-2">
+                              <div className="text-xs font-medium cu-muted">Feedback</div>
+                              <ul className="list-disc ml-5 mt-1">
+                                {item.scores.flatMap((s) => s.feedback || []).map((f, i) => (
+                                  <li key={i} className="text-sm">{f}</li>
                                 ))}
                               </ul>
-                            </>
-                          ) : null}
+                            </div>
+                          )}
                         </div>
-                      ))}
-                    </div>
-                  </li>
-                ))}
+                      )}
+                    </li>
+                  ))}
                 </ul>
-              </section>
+              </div>
+            </section>
           </div>
         </header>
       )}
