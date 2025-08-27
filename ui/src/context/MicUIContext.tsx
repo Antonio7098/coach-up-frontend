@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useMemo, useState } from "react";
+import React, { createContext, useContext, useMemo, useState, useCallback } from "react";
 
 export type MicUIContextValue = {
   inCoach: boolean;
@@ -26,6 +26,11 @@ export function MicUIProvider({ children }: { children: React.ReactNode }) {
   const [onTap, setOnTap] = useState<(() => void) | undefined>(undefined);
   const [onLongPress, setOnLongPress] = useState<(() => void) | undefined>(undefined);
 
+  const setHandlers = useCallback(({ onTap, onLongPress }: { onTap?: () => void; onLongPress?: () => void }) => {
+    setOnTap(() => onTap);
+    setOnLongPress(() => onLongPress);
+  }, []);
+
   const value = useMemo<MicUIContextValue>(() => ({
     inCoach,
     showDashboard,
@@ -33,11 +38,8 @@ export function MicUIProvider({ children }: { children: React.ReactNode }) {
     setShowDashboard,
     onTap,
     onLongPress,
-    setHandlers: ({ onTap, onLongPress }) => {
-      setOnTap(() => onTap);
-      setOnLongPress(() => onLongPress);
-    },
-  }), [inCoach, onLongPress, onTap, showDashboard]);
+    setHandlers,
+  }), [inCoach, onLongPress, onTap, showDashboard, setHandlers]);
 
   return <MicUIContext.Provider value={value}>{children}</MicUIContext.Provider>;
 }

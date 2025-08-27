@@ -12,15 +12,15 @@ export default function GlobalMicButton() {
   const { voiceLoop, recording, busy, toggleVoiceLoop, startRecording, stopRecording } = useMic();
   const { inCoach, showDashboard, setShowDashboard, onTap, onLongPress } = useMicUI();
 
+  // Long-press support (coach mode) - moved to top level to fix hooks order
+  const pressTimerRef = useRef<number | null>(null);
+  const pressLongRef = useRef(false);
+
   useEffect(() => { setMounted(true); return () => setMounted(false); }, []);
 
   if (!mounted) return null;
 
   const isActive = recording || (voiceLoop && busy !== "idle");
-
-  // Long-press support (coach mode)
-  const pressTimerRef = useRef<number | null>(null);
-  const pressLongRef = useRef(false);
   const LONG_PRESS_MS = 500;
   const onDown = () => {
     if (!inCoach) return; // only relevant for coach mic UI
