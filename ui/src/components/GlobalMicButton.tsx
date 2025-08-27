@@ -66,9 +66,11 @@ export default function GlobalMicButton() {
       onPointerUp={onUp}
       onPointerLeave={onLeave}
       className={[
-        "fixed z-50 left-1/2 top-1/2 w-32 h-32 rounded-full flex items-center justify-center transform-gpu will-change-transform transition-transform duration-[400ms] ease-in-out",
-        "border",
-        isActive ? "cu-accent-bg cu-accent-border text-white shadow-lg hover:shadow-xl" : "cu-surface text-foreground cu-border-surface shadow-md hover:shadow-lg",
+        "fixed z-50 left-1/2 top-1/2 w-32 h-32 rounded-full flex items-center justify-center transform-gpu will-change-transform transition-all duration-[400ms] ease-in-out",
+        "border-2",
+        isActive
+          ? "cu-accent-border text-white shadow-lg hover:shadow-xl"
+          : "cu-surface text-foreground cu-border-surface shadow-md hover:shadow-lg",
       ].join(" ")}
       style={{
         transform: showDashboard
@@ -76,7 +78,30 @@ export default function GlobalMicButton() {
           : "translate(-50%, -50%) scale(1)",
       }}
     >
-      {isActive && <span className="absolute inline-flex h-full w-full rounded-full cu-accent-bg-20 animate-ping" />}
+      {/* Base gradient background (subtle) */}
+      <span
+        aria-hidden
+        className="absolute inset-0 rounded-full pointer-events-none opacity-70"
+        style={{
+          background: isActive
+            ? "linear-gradient(135deg, rgba(99,102,241,0.35), rgba(16,185,129,0.35))"
+            : "linear-gradient(135deg, rgba(99,102,241,0.08), rgba(16,185,129,0.08))",
+        }}
+      />
+      {/* Radial center glow */}
+      <span
+        aria-hidden
+        className="absolute inset-0 rounded-full pointer-events-none"
+        style={{
+          background: "radial-gradient(circle at 50% 45%, rgba(255,255,255,0.18), rgba(255,255,255,0) 58%)",
+        }}
+      />
+      {/* Glossy top highlight */}
+      <span
+        aria-hidden
+        className="absolute inset-x-6 top-2 h-10 rounded-full bg-white/15 blur-[2px] pointer-events-none"
+      />
+      {isActive && <span className="absolute inline-flex h-full w-full rounded-full cu-accent-bg-20 animate-ping" aria-hidden />}
       {isActive ? (
         <svg
           aria-hidden="true"
@@ -140,13 +165,31 @@ export default function GlobalMicButton() {
         // Long-press is used to pause/stop. No-op on short click.
         return;
       }}
-      className="fixed z-[1000] right-5 bottom-[calc(env(safe-area-inset-bottom,0)+20px)] h-14 w-14 rounded-full shadow-lg flex items-center justify-center cu-accent-bg text-white select-none"
+      className="fixed z-[1000] right-5 bottom-[calc(env(safe-area-inset-bottom,0)+20px)] h-14 w-14 rounded-full shadow-lg flex items-center justify-center text-white select-none border-2 cu-accent-border"
       style={{
         boxShadow: isActive ? "0 0 0 8px rgba(0,0,0,0.08)" : undefined,
-        transition: "transform 200ms ease, box-shadow 200ms ease, background 200ms ease",
-        transform: isActive ? "scale(1.05)" : "scale(1.0)",
+        transition: "transform 220ms ease, box-shadow 220ms ease, background 220ms ease",
+        transform: isActive ? "scale(1.07)" : "scale(1.0)",
       }}
     >
+      {/* Base gradient background */}
+      <span
+        aria-hidden
+        className="absolute inset-0 rounded-full pointer-events-none"
+        style={{
+          background: isActive
+            ? "linear-gradient(135deg, rgba(99,102,241,0.6), rgba(16,185,129,0.6))"
+            : "linear-gradient(135deg, rgba(99,102,241,0.45), rgba(16,185,129,0.45))",
+        }}
+      />
+      {/* Inner glow */}
+      <span
+        aria-hidden
+        className="absolute inset-0 rounded-full pointer-events-none"
+        style={{ background: "radial-gradient(circle at 50% 45%, rgba(255,255,255,0.22), rgba(255,255,255,0) 60%)" }}
+      />
+      {/* Gloss highlight */}
+      <span aria-hidden className="absolute inset-x-3 top-1.5 h-6 rounded-full bg-white/20 blur-[1.5px] pointer-events-none" />
       <div className="relative">
         {isActive && <span className="absolute -inset-3 rounded-full border-2 border-white/60 animate-ping" aria-hidden />}
         {isActive ? (

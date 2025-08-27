@@ -3,6 +3,8 @@
 import { useEffect, useLayoutEffect, useMemo, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import SkillChart from "../../../components/SkillChart";
+import HeroCard from "../../components/HeroCard";
+import SectionCard from "../../components/SectionCard";
 
 type Skill = {
   id: string;
@@ -43,6 +45,8 @@ export default function CoachAnalyticsPage() {
   const [error, setError] = useState<string | null>(null);
   const [enterDir, setEnterDir] = useState<"left" | "right" | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  // Feature flag: disable cross-page transitions for performance
+  const ENABLE_ROUTE_TRANSITIONS = false;
 
   // On mount: fetch tracked skills (mock API in dev) and prefetch coach for back nav
   useEffect(() => {
@@ -67,6 +71,7 @@ export default function CoachAnalyticsPage() {
 
   // Entry animation: read navDir on mount and animate new content in
   useLayoutEffect(() => {
+    if (!ENABLE_ROUTE_TRANSITIONS) return;
     try {
       const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       const d = window.sessionStorage.getItem("navDir");
@@ -80,7 +85,7 @@ export default function CoachAnalyticsPage() {
         });
       }
     } catch {}
-  }, []);
+  }, [ENABLE_ROUTE_TRANSITIONS]);
 
   // Safety: if page is restored from BFCache or user navigates back/forward, ensure we don't stay translated off-screen
   useEffect(() => {
@@ -141,12 +146,14 @@ export default function CoachAnalyticsPage() {
   function goBack() {
     try {
       const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      if (reduce) {
+      if (reduce || !ENABLE_ROUTE_TRANSITIONS) {
+        try { window.sessionStorage.setItem('resumeDashboardNoAnim', '1'); } catch {}
         router.push('/coach');
         return;
       }
       if (!leaving) {
         try { window.sessionStorage.setItem("navDir", "back"); } catch {}
+        try { window.sessionStorage.setItem('resumeDashboardNoAnim', '1'); } catch {}
         setLeavingDir('right');
         setLeaving(true);
         setTimeout(() => router.push('/coach'), 250);
@@ -159,14 +166,19 @@ export default function CoachAnalyticsPage() {
   return (
     <div
       ref={rootRef}
-      className="min-h-screen bg-background text-foreground font-sans overflow-x-hidden transform-gpu will-change-transform transition-transform duration-300 ease-out"
+      className={[
+        "min-h-screen bg-background text-foreground font-sans overflow-x-hidden",
+        ENABLE_ROUTE_TRANSITIONS ? "transform-gpu will-change-transform transition-transform duration-300 ease-out" : ""
+      ].join(" ")}
       style={{
-        transform: leaving
-          ? (leavingDir === "left" ? "translateX(-120vw)" : "translateX(120vw)")
-          : enterDir === "left"
-          ? "translateX(-120vw)"
-          : enterDir === "right"
-          ? "translateX(120vw)"
+        transform: ENABLE_ROUTE_TRANSITIONS
+          ? (leaving
+              ? (leavingDir === "left" ? "translateX(-120vw)" : "translateX(120vw)")
+              : enterDir === "left"
+              ? "translateX(-120vw)"
+              : enterDir === "right"
+              ? "translateX(120vw)"
+              : "translateX(0)")
           : "translateX(0)",
       }}
     >
@@ -183,30 +195,54 @@ export default function CoachAnalyticsPage() {
                 <path d="M15 18l-6-6 6-6" />
               </svg>
             </button>
-            <div>
-              <div className="text-xs uppercase tracking-wide cu-muted">Analytics</div>
-              <h1 className="text-2xl font-semibold">Points by Skill</h1>
-            </div>
+            <div className="flex-1" />
           </div>
 
-          {loading ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="h-24 rounded-2xl animate-pulse cu-accent-soft-bg" />
-              <div className="h-24 rounded-2xl animate-pulse cu-accent-soft-bg" />
-            </div>
-          ) : error ? (
-            <div className="text-sm cu-error-text cu-error-soft-bg border cu-error-border rounded-lg p-3">{error}</div>
+          {/* Hero header consistent with /coach */}
+          <div className="mb-4">
+            {loading ? (
+              <SectionCard>
+                <div className="h-6 w-40 mx-auto skeleton skeleton-text" />
+                <div className="mt-2 h-4 w-64 mx-auto skeleton skeleton-text" />
+              </SectionCard>
+            ) : (
+              <HeroCard label="Analytics" title={<span>Points by Skill</span>} subtitle={<span>Explore your progress trends.</span>} />
+            )}
+          </div>
+
+          {error ? (
+            <SectionCard className="mb-3">
+              <div className="text-sm cu-error-text">{error}</div>
+            </SectionCard>
           ) : tracked && tracked.length > 0 ? (
-            <ul className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <ul className="grid grid-cols-1 gap-3">
               {tracked
                 .slice()
                 .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
                 .map((t, idx) => (
-                  <li key={t.skillId} className="border-2 cu-border rounded-2xl cu-surface p-4">
-                    <div className="text-sm font-medium text-foreground line-clamp-2 mb-2">
+                  <li key={t.skillId} className="relative overflow-hidden rounded-2xl border-2 cu-border cu-surface p-4 shadow-sm group">
+                    {/* base subtle gradient texture */}
+                    <span
+                      aria-hidden
+                      className="pointer-events-none absolute inset-0 opacity-[0.35]"
+                      style={{
+                        background:
+                          "linear-gradient(135deg, rgba(99,102,241,0.05), rgba(16,185,129,0.05))",
+                      }}
+                    />
+                    <div className="text-sm font-medium text-foreground line-clamp-2 mb-2 relative">
                       {t.skill?.title || "Untitled skill"}
                     </div>
-                    <SkillChart data={perSkillTrends[idx] || genUpwardTrend(16, 30, 3, 9)} className="w-full" height={64} />
+                    <div className="mt-1 relative">
+                      <SkillChart data={perSkillTrends[idx] || genUpwardTrend(16, 30, 3, 9)} className="w-full" height={80} />
+                    </div>
+                    {/* Footer hint */}
+                    <div className="mt-2 flex items-center justify-between relative">
+                      <div className="text-[11px] cu-muted flex items-center gap-2">
+                        <span className="inline-block h-2 w-2 rounded-full" style={{ background: "linear-gradient(90deg, rgba(99,102,241,1), rgba(16,185,129,1))" }} />
+                        Points earned
+                      </div>
+                    </div>
                   </li>
                 ))}
             </ul>

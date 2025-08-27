@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useChat } from "../../../context/ChatContext";
+import HeroCard from "../../components/HeroCard";
+import SectionCard from "../../components/SectionCard";
 
 type Skill = {
   id: string;
@@ -45,6 +47,8 @@ export default function SkillDetailPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const [leavingDir, setLeavingDir] = useState<"left" | "right">("left");
+  // Feature flag: disable cross-page transitions for performance
+  const ENABLE_ROUTE_TRANSITIONS = false;
   // Chat session id provided by ChatProvider
 
   // Load skill and tracked info
@@ -225,12 +229,14 @@ export default function SkillDetailPage() {
   function handleBack() {
     try {
       const reduce = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-      if (reduce) {
+      if (reduce || !ENABLE_ROUTE_TRANSITIONS) {
+        try { window.sessionStorage.setItem('resumeDashboardNoAnim', '1'); } catch {}
         router.push('/coach');
         return;
       }
       if (!leaving) {
         try { window.sessionStorage.setItem('navDir', 'back'); } catch {}
+        try { window.sessionStorage.setItem('resumeDashboardNoAnim', '1'); } catch {}
         setLeavingDir('right');
         setLeaving(true);
         setTimeout(() => router.push('/coach'), 650);
@@ -242,10 +248,15 @@ export default function SkillDetailPage() {
 
   return (
     <div
-      className="min-h-screen bg-background text-foreground font-sans p-4 overflow-x-hidden transform-gpu will-change-transform transition-transform duration-700 ease-in-out"
+      className={[
+        "min-h-screen bg-background text-foreground font-sans p-4 overflow-x-hidden",
+        ENABLE_ROUTE_TRANSITIONS ? "transform-gpu will-change-transform transition-transform duration-700 ease-in-out" : ""
+      ].join(" ")}
       style={{
-        transform: leaving
-          ? (leavingDir === 'left' ? 'translateX(-120vw)' : 'translateX(120vw)')
+        transform: ENABLE_ROUTE_TRANSITIONS
+          ? (leaving
+              ? (leavingDir === 'left' ? 'translateX(-120vw)' : 'translateX(120vw)')
+              : 'translateX(0)')
           : 'translateX(0)'
       }}
     >
@@ -260,23 +271,24 @@ export default function SkillDetailPage() {
         </button>
 
         {loading ? (
-          <div className="mb-4">
+          <SectionCard className="mb-4">
             <div className="h-6 w-40 mx-auto skeleton skeleton-text" />
             <div className="mt-2 h-4 w-64 mx-auto skeleton skeleton-text" />
-          </div>
+          </SectionCard>
         ) : (
-          <>
-            <h1 className="text-xl md:text-2xl uppercase tracking-wide cu-muted font-medium mb-1 text-center">
-              {skill?.title || "Skill"}
-            </h1>
-            {skill?.description && (
-              <p className="text-sm cu-muted text-center mb-4">{skill.description}</p>
-            )}
-          </>
+          <div className="mb-4">
+            <HeroCard
+              label="Skill"
+              title={<span>{skill?.title || "Skill"}</span>}
+              subtitle={skill?.description ? <span>{skill.description}</span> : undefined}
+            />
+          </div>
         )}
 
         {actionError && (
-          <div role="alert" className="text-sm cu-error-text cu-error-soft-bg border cu-error-border rounded-lg p-3 mb-3">{actionError}</div>
+          <SectionCard className="mb-3">
+            <div role="alert" className="text-sm cu-error-text">{actionError}</div>
+          </SectionCard>
         )}
 
         <div className="flex items-center justify-center mb-4">
@@ -302,30 +314,30 @@ export default function SkillDetailPage() {
         </div>
 
         {loading ? (
-          <div className="rounded-2xl cu-surface border cu-border-surface shadow-sm p-4 mb-4">
+          <SectionCard className="mb-4">
             <div className="h-4 w-24 skeleton skeleton-text mb-3" />
             <div className="h-10 w-16 mx-auto skeleton skeleton-rounded" />
-          </div>
+          </SectionCard>
         ) : (
-          <div className="rounded-2xl cu-surface border cu-border-surface shadow-sm p-4 mb-4">
+          <SectionCard className="mb-4">
             <div className="text-xs uppercase tracking-wide cu-muted mb-1">Current level</div>
             <div className="text-4xl font-semibold text-foreground text-center" data-testid="skill-current-level">
               {currentLevel}
             </div>
-          </div>
+          </SectionCard>
         )}
 
         {loading ? (
-          <div className="rounded-2xl cu-surface border cu-border-surface shadow-sm p-4 mb-4">
+          <SectionCard className="mb-4">
             <div className="h-4 w-24 skeleton skeleton-text mb-3" />
             <div className="space-y-2">
               <div className="h-4 w-full skeleton skeleton-text" />
               <div className="h-4 w-11/12 skeleton skeleton-text" />
               <div className="h-4 w-10/12 skeleton skeleton-text" />
             </div>
-          </div>
+          </SectionCard>
         ) : (
-          <div className="rounded-2xl cu-surface border cu-border-surface shadow-sm p-4 mb-4">
+          <SectionCard className="mb-4">
             <div className="text-xs uppercase tracking-wide cu-muted mb-2">Criteria</div>
             {nearestCriteria ? (
               <div>
@@ -402,7 +414,7 @@ export default function SkillDetailPage() {
             ) : (
               <div className="text-sm cu-muted">No criteria available.</div>
             )}
-          </div>
+          </SectionCard>
         )}
 
         <section>
@@ -411,13 +423,15 @@ export default function SkillDetailPage() {
             <div className="text-sm cu-muted">Loading assessments…</div>
           )}
           {assessError && (
-            <div className="text-sm cu-error-text cu-error-soft-bg border cu-error-border rounded-lg p-3 mb-3">{assessError}</div>
+            <SectionCard className="mb-3">
+              <div className="text-sm cu-error-text">{assessError}</div>
+            </SectionCard>
           )}
           {!assessLoading && !assessError && (
             <div className="space-y-3">
               {v2SkillAssessments.length > 0 ? (
                 v2SkillAssessments.map((a, idx) => (
-                  <div key={idx} className="rounded-2xl cu-surface border cu-border-surface shadow-sm p-4">
+                  <SectionCard key={idx}>
                     <div className="text-xs uppercase tracking-wide cu-muted mb-1">Assessment</div>
                     {typeof a.level === "number" && (
                       <div className="text-sm text-foreground mb-2">Level: <span className="font-medium">{a.level}</span></div>
@@ -446,10 +460,10 @@ export default function SkillDetailPage() {
                         </ul>
                       </div>
                     )}
-                  </div>
+                  </SectionCard>
                 ))
               ) : assessments?.summary ? (
-                <div className="rounded-2xl cu-surface border cu-border-surface shadow-sm p-4">
+                <SectionCard>
                   <div className="text-xs uppercase tracking-wide cu-muted mb-1">Latest Summary</div>
                   <div className="text-sm text-foreground">
                     <div className="mb-2">
@@ -468,7 +482,7 @@ export default function SkillDetailPage() {
                       <div className="text-xs cu-muted">Rubric: {assessments.summary.rubricVersion}</div>
                     )}
                   </div>
-                </div>
+                </SectionCard>
               ) : (
                 <div className="text-sm cu-muted">No assessments available yet.</div>
               )}
