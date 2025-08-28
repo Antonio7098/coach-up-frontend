@@ -84,6 +84,30 @@ type TrackedSkillDoc = {
 };
 const _tracked: TrackedSkillDoc[] = [];
 
+// Helper to persist tracked skills to prevent loss on server restart
+function saveTrackedSkills() {
+  if (typeof global !== 'undefined') {
+    try {
+      (global as any).__mockTrackedSkills = JSON.stringify(_tracked);
+    } catch {}
+  }
+}
+
+function loadTrackedSkills() {
+  if (typeof global !== 'undefined') {
+    try {
+      const saved = (global as any).__mockTrackedSkills;
+      if (typeof saved === 'string') {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          _tracked.length = 0;
+          _tracked.push(...parsed);
+        }
+      }
+    } catch {}
+  }
+}
+
 export async function createAssessmentGroup(args: {
   sessionId: string;
   groupId: string;
@@ -543,6 +567,12 @@ export async function __resetAllForTests() {
   _skills.length = 0;
   _tracked.length = 0;
   _levelHistory.length = 0;
+  // Clear persistence
+  if (typeof global !== 'undefined') {
+    try {
+      delete (global as any).__mockTrackedSkills;
+    } catch {}
+  }
 }
 
 // Test-only: list level history for a user (and optionally a single skill)
@@ -552,6 +582,7 @@ export function listLevelHistoryForUser(args: { userId: string; skillId?: string
 
 // -------------------- Tracked Skills (mock) --------------------
 export async function listTrackedSkillsForUser(args: { userId: string }) {
+  loadTrackedSkills();
   const rows = _tracked.filter((t) => t.userId === args.userId);
   const out = rows.map((t) => ({
     ...t,
@@ -562,6 +593,7 @@ export async function listTrackedSkillsForUser(args: { userId: string }) {
 }
 
 export async function trackSkill(args: { userId: string; skillId: string; order?: number }) {
+  loadTrackedSkills();
   const skill = _skills.find((s) => s.id === args.skillId);
   if (!skill) throw new Error("skill not found");
   if (!skill.isActive) throw new Error("skill not active");
@@ -578,21 +610,26 @@ export async function trackSkill(args: { userId: string; skillId: string; order?
 
   if (!existing) {
     _tracked.push({ userId: args.userId, skillId: args.skillId, currentLevel: 0, order: ord, createdAt: now, updatedAt: now });
+    saveTrackedSkills();
     return { created: true } as const;
   }
   existing.order = ord;
   existing.updatedAt = now;
+  saveTrackedSkills();
   return { created: false } as const;
 }
 
 export async function untrackSkill(args: { userId: string; skillId: string }) {
+  loadTrackedSkills();
   const idx = _tracked.findIndex((t) => t.userId === args.userId && t.skillId === args.skillId);
   if (idx === -1) return { ok: true, removed: false } as const;
   _tracked.splice(idx, 1);
+  saveTrackedSkills();
   return { ok: true, removed: true } as const;
 }
 
 export async function setSkillLevel(args: { userId: string; skillId: string; currentLevel: number }) {
+  loadTrackedSkills();
   const { userId, skillId, currentLevel } = args;
   if (currentLevel < 0 || currentLevel > 10) throw new Error("currentLevel must be between 0 and 10");
   const existing = _tracked.find((t) => t.userId === userId && t.skillId === skillId);
@@ -600,6 +637,7 @@ export async function setSkillLevel(args: { userId: string; skillId: string; cur
   const now = Date.now();
   existing.currentLevel = currentLevel;
   existing.updatedAt = now;
+  saveTrackedSkills();
   return { ok: true } as const;
 }
 

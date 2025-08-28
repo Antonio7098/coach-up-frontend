@@ -274,230 +274,254 @@ export default function SkillDetailPage() {
           <SectionCard className="mb-4">
             <div className="h-6 w-40 mx-auto skeleton skeleton-text" />
             <div className="mt-2 h-4 w-64 mx-auto skeleton skeleton-text" />
-          </SectionCard>
-        ) : (
-          <div className="mb-4">
-            <HeroCard
-              label="Skill"
-              title={<span>{skill?.title || "Skill"}</span>}
-              subtitle={skill?.description ? <span>{skill.description}</span> : undefined}
-            />
-          </div>
-        )}
-
-        {actionError && (
-          <SectionCard className="mb-3">
-            <div role="alert" className="text-sm cu-error-text">{actionError}</div>
-          </SectionCard>
-        )}
-
-        <div className="flex items-center justify-center mb-4">
-          {trackedEntry ? (
-            <button
-              type="button"
-              onClick={onUntrack}
-              disabled={actionLoading}
-              className="rounded-lg border cu-border-surface cu-surface px-4 py-2 text-sm hover:opacity-90 disabled:opacity-60"
-            >
-              {actionLoading ? "Working…" : "Untrack"}
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={onTrack}
-              disabled={!canTrackMore || actionLoading}
-              className="rounded-lg cu-accent-bg px-4 py-2 text-sm hover:opacity-90 disabled:opacity-60"
-            >
-              {actionLoading ? "Working…" : "Track"}
-            </button>
-          )}
-        </div>
-
-        {loading ? (
-          <SectionCard className="mb-4">
-            <div className="h-4 w-24 skeleton skeleton-text mb-3" />
+            <div className="mt-4 h-4 w-24 skeleton skeleton-text mb-3" />
             <div className="h-10 w-16 mx-auto skeleton skeleton-rounded" />
           </SectionCard>
         ) : (
           <SectionCard className="mb-4">
-            <div className="text-xs uppercase tracking-wide cu-muted mb-1">Current level</div>
-            <div className="text-4xl font-semibold text-foreground text-center" data-testid="skill-current-level">
-              {currentLevel}
-            </div>
-          </SectionCard>
-        )}
-
-        {loading ? (
-          <SectionCard className="mb-4">
-            <div className="h-4 w-24 skeleton skeleton-text mb-3" />
-            <div className="space-y-2">
-              <div className="h-4 w-full skeleton skeleton-text" />
-              <div className="h-4 w-11/12 skeleton skeleton-text" />
-              <div className="h-4 w-10/12 skeleton skeleton-text" />
-            </div>
-          </SectionCard>
-        ) : (
-          <SectionCard className="mb-4">
-            <div className="text-xs uppercase tracking-wide cu-muted mb-2">Criteria</div>
-            {nearestCriteria ? (
-              <div>
-                <div className="text-sm text-foreground">
-                  <span className="font-medium">Level {nearestCriteria.level}:</span> {nearestCriteria.criteria}
-                </div>
-                {(Array.isArray(nearestCriteria.examples) && nearestCriteria.examples.length > 0) ||
-                 (Array.isArray(nearestCriteria.rubricHints) && nearestCriteria.rubricHints.length > 0) ? (
-                  <details className="mt-2">
-                    <summary className="text-xs cu-accent-text hover:opacity-90 cursor-pointer">Examples & rubric</summary>
-                    <div className="mt-2 space-y-2">
-                      {Array.isArray(nearestCriteria.examples) && nearestCriteria.examples.length > 0 && (
-                        <div>
-                          <div className="text-xs uppercase tracking-wide cu-muted">Examples</div>
-                          <ul className="list-disc ml-5 text-sm text-foreground">
-                            {nearestCriteria.examples.map((ex, i) => (<li key={i}>{ex}</li>))}
-                          </ul>
-                        </div>
-                      )}
-                      {Array.isArray(nearestCriteria.rubricHints) && nearestCriteria.rubricHints.length > 0 && (
-                        <div>
-                          <div className="text-xs uppercase tracking-wide cu-muted">Rubric</div>
-                          <ul className="list-disc ml-5 text-sm text-foreground">
-                            {nearestCriteria.rubricHints.map((ex, i) => (<li key={i}>{ex}</li>))}
-                          </ul>
-                        </div>
-                      )}
-                    </div>
-                  </details>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => setShowAllCriteria((v) => !v)}
-                  className="mt-2 text-xs cu-accent-text hover:opacity-90 underline"
-                >
-                  {showAllCriteria ? "Hide all criteria" : "Show all criteria"}
-                </button>
-                {showAllCriteria && (
-                  <ul className="mt-3 space-y-1 text-sm text-foreground">
-                    {(skill?.levels || []).slice().sort((a, b) => a.level - b.level).map((l) => (
-                      <li key={l.level} className="flex flex-col gap-1">
-                        <div className="flex items-start gap-2">
-                          <span className="inline-block w-10 shrink-0 cu-muted">{l.level}</span>
-                          <span>{l.criteria}</span>
-                        </div>
-                        {(Array.isArray(l.examples) && l.examples.length > 0) || (Array.isArray(l.rubricHints) && l.rubricHints.length > 0) ? (
-                          <details className="ml-10">
-                            <summary className="text-xs cu-accent-text hover:opacity-90 cursor-pointer">Examples & rubric</summary>
-                            <div className="mt-2 space-y-2">
-                              {Array.isArray(l.examples) && l.examples.length > 0 && (
-                                <div>
-                                  <div className="text-xs uppercase tracking-wide cu-muted">Examples</div>
-                                  <ul className="list-disc ml-5 text-sm text-foreground">
-                                    {l.examples.map((ex, i) => (<li key={i}>{ex}</li>))}
-                                  </ul>
-                                </div>
-                              )}
-                              {Array.isArray(l.rubricHints) && l.rubricHints.length > 0 && (
-                                <div>
-                                  <div className="text-xs uppercase tracking-wide cu-muted">Rubric</div>
-                                  <ul className="list-disc ml-5 text-sm text-foreground">
-                                    {l.rubricHints.map((ex, i) => (<li key={i}>{ex}</li>))}
-                                  </ul>
-                                </div>
-                              )}
-                            </div>
-                          </details>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ul>
+            {/* Hero-like header */}
+            <div className="relative overflow-hidden rounded-2xl border cu-border-surface">
+              <div className="absolute inset-0 opacity-40 pointer-events-none" aria-hidden="true" style={{
+                background:
+                  "radial-gradient(700px 240px at 5% -10%, rgba(99,102,241,0.35), transparent 60%), " +
+                  "radial-gradient(600px 240px at 105% 110%, rgba(16,185,129,0.25), transparent 60%)"
+              }} />
+              <div className="absolute inset-0 backdrop-blur-[2px] opacity-[0.3] pointer-events-none" aria-hidden="true" />
+              <div className="relative p-4">
+                <div className="text-[11px] font-semibold uppercase tracking-wide cu-muted">Skill</div>
+                <h1 className="mt-1 text-2xl font-semibold tracking-tight">{skill?.title || "Skill"}</h1>
+                {skill?.description && (
+                  <p className="mt-1 text-sm cu-muted">{skill.description}</p>
                 )}
               </div>
-            ) : (
-              <div className="text-sm cu-muted">No criteria available.</div>
-            )}
-          </SectionCard>
-        )}
+            </div>
 
-        <section>
-          <div className="text-sm uppercase tracking-wide cu-muted font-medium mb-2">Assessments</div>
-          {assessLoading && (
-            <div className="text-sm cu-muted">Loading assessments…</div>
-          )}
-          {assessError && (
-            <SectionCard className="mb-3">
-              <div className="text-sm cu-error-text">{assessError}</div>
-            </SectionCard>
-          )}
-          {!assessLoading && !assessError && (
-            <div className="space-y-3">
-              {v2SkillAssessments.length > 0 ? (
-                v2SkillAssessments.map((a, idx) => (
-                  <SectionCard key={idx}>
-                    <div className="text-xs uppercase tracking-wide cu-muted mb-1">Assessment</div>
-                    {typeof a.level === "number" && (
-                      <div className="text-sm text-foreground mb-2">Level: <span className="font-medium">{a.level}</span></div>
-                    )}
-                    {Array.isArray(a.metCriteria) && a.metCriteria.length > 0 && (
-                      <div className="mb-2">
-                        <div className="text-xs font-medium cu-success-text">Met</div>
-                        <ul className="list-disc ml-5 text-sm text-foreground">
-                          {a.metCriteria.map((c, i) => (<li key={i}>{c}</li>))}
-                        </ul>
-                      </div>
-                    )}
-                    {Array.isArray(a.unmetCriteria) && a.unmetCriteria.length > 0 && (
-                      <div className="mb-2">
-                        <div className="text-xs font-medium cu-error-text">Unmet</div>
-                        <ul className="list-disc ml-5 text-sm text-foreground">
-                          {a.unmetCriteria.map((c, i) => (<li key={i}>{c}</li>))}
-                        </ul>
-                      </div>
-                    )}
-                    {Array.isArray(a.feedback) && a.feedback.length > 0 && (
-                      <div>
-                        <div className="text-xs font-medium text-foreground">Feedback</div>
-                        <ul className="list-disc ml-5 text-sm text-foreground">
-                          {a.feedback.map((c, i) => (<li key={i}>{c}</li>))}
-                        </ul>
-                      </div>
-                    )}
-                  </SectionCard>
-                ))
-              ) : assessments?.summary ? (
-                <SectionCard>
-                  <div className="text-xs uppercase tracking-wide cu-muted mb-1">Latest Summary</div>
-                  <div className="text-sm text-foreground">
-                    <div className="mb-2">
-                      <div className="text-xs font-medium text-foreground">Highlights</div>
-                      <ul className="list-disc ml-5">
-                        {(assessments.summary?.highlights || []).map((h: string, i: number) => (<li key={i}>{h}</li>))}
-                      </ul>
-                    </div>
-                    <div className="mb-2">
-                      <div className="text-xs font-medium text-foreground">Recommendations</div>
-                      <ul className="list-disc ml-5">
-                        {(assessments.summary?.recommendations || []).map((h: string, i: number) => (<li key={i}>{h}</li>))}
-                      </ul>
-                    </div>
-                    {assessments.summary?.rubricVersion && (
-                      <div className="text-xs cu-muted">Rubric: {assessments.summary.rubricVersion}</div>
-                    )}
-                  </div>
-                </SectionCard>
-              ) : (
-                <div className="text-sm cu-muted">No assessments available yet.</div>
-              )}
-              <div>
+            {/* Action Error */}
+            {actionError && (
+              <div className="mb-4">
+                <div role="alert" className="text-sm cu-error-text">{actionError}</div>
+              </div>
+            )}
+
+            {/* Track/Untrack Buttons */}
+            <div className="flex items-center justify-center mb-6 mt-4">
+              {trackedEntry ? (
                 <button
                   type="button"
-                  onClick={() => fetchAssessments()}
-                  className="rounded cu-accent-soft-bg px-3 py-1.5 hover:opacity-90 text-sm"
+                  onClick={onUntrack}
+                  disabled={actionLoading}
+                  className="inline-flex items-center gap-2 rounded-full border cu-border-surface cu-surface px-4 py-2 text-sm shadow-sm hover:shadow-md transition-all disabled:opacity-60 active:scale-[0.98]"
                 >
-                  Refresh
+                  {actionLoading ? "Working…" : (
+                    <span className="inline-flex items-center gap-2"><svg aria-hidden viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>Untrack</span>
+                  )}
                 </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onTrack}
+                  disabled={!canTrackMore || actionLoading}
+                  className="inline-flex items-center gap-2 rounded-full cu-accent-bg px-4 py-2 text-sm shadow-sm hover:shadow-md transition-all disabled:opacity-60 active:scale-[0.98]"
+                >
+                  {actionLoading ? "Working…" : (
+                    <span className="inline-flex items-center gap-2"><svg aria-hidden viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14"/></svg>Track</span>
+                  )}
+                </button>
+              )}
+            </div>
+
+            {/* Current Level Section */}
+            <div className="mb-6">
+              <div className="text-xs uppercase tracking-wide cu-muted mb-1">Current level</div>
+              <div className="relative inline-block left-1/2 -translate-x-1/2">
+                <span className="text-5xl font-extrabold tracking-tight" data-testid="skill-current-level">{currentLevel}</span>
+                <span aria-hidden className="pointer-events-none absolute -inset-x-4 -bottom-1 h-3 blur-md opacity-40 rounded-full" style={{ background: "radial-gradient(closest-side, rgba(99,102,241,0.35), rgba(16,185,129,0.35))" }} />
               </div>
             </div>
-          )}
-        </section>
+
+            {/* Criteria Section */}
+            <div className="mb-6">
+              <div className="text-xs uppercase tracking-wide cu-muted mb-2">Criteria</div>
+              {nearestCriteria ? (
+                <div>
+                  <div className="text-sm text-foreground">
+                    <span className="inline-flex items-center gap-2 px-2 py-0.5 rounded-full border cu-border-surface cu-surface text-[11px] font-medium mr-2">Level {nearestCriteria.level}</span>
+                    <span>{nearestCriteria.criteria}</span>
+                  </div>
+                  {(Array.isArray(nearestCriteria.examples) && nearestCriteria.examples.length > 0) ||
+                   (Array.isArray(nearestCriteria.rubricHints) && nearestCriteria.rubricHints.length > 0) ? (
+                    <details className="mt-3 group">
+                      <summary className="flex items-center gap-2 text-xs cu-accent-text hover:opacity-90 cursor-pointer select-none">
+                        <svg aria-hidden viewBox="0 0 24 24" className="w-4 h-4 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+                        Examples & rubric
+                      </summary>
+                      <div className="mt-2 grid grid-cols-1 gap-2">
+                        {Array.isArray(nearestCriteria.examples) && nearestCriteria.examples.length > 0 && (
+                          <div className="rounded-xl border cu-border-surface cu-surface p-3">
+                            <div className="text-xs uppercase tracking-wide cu-muted">Examples</div>
+                            <ul className="mt-1 list-disc ml-5 text-sm text-foreground">
+                              {nearestCriteria.examples.map((ex, i) => (<li key={i}>{ex}</li>))}
+                            </ul>
+                          </div>
+                        )}
+                        {Array.isArray(nearestCriteria.rubricHints) && nearestCriteria.rubricHints.length > 0 && (
+                          <div className="rounded-xl border cu-border-surface cu-surface p-3">
+                            <div className="text-xs uppercase tracking-wide cu-muted">Rubric</div>
+                            <ul className="mt-1 list-disc ml-5 text-sm text-foreground">
+                              {nearestCriteria.rubricHints.map((ex, i) => (<li key={i}>{ex}</li>))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    </details>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setShowAllCriteria((v) => !v)}
+                    className="mt-3 text-xs cu-accent-text hover:opacity-90 underline"
+                  >
+                    {showAllCriteria ? "Hide all criteria" : "Show all criteria"}
+                  </button>
+                  {showAllCriteria && (
+                    <ul className="mt-3 space-y-2 text-sm text-foreground">
+                      {(skill?.levels || []).slice().sort((a, b) => a.level - b.level).map((l) => (
+                        <li key={l.level} className="rounded-xl border cu-border-surface cu-surface p-3">
+                          <div className="flex items-start gap-2">
+                            <span className="inline-flex items-center justify-center h-6 w-6 rounded-full bg-gradient-to-br from-indigo-500/20 to-emerald-500/20 text-[11px] font-semibold border cu-border-surface shrink-0">{l.level}</span>
+                            <span className="flex-1">{l.criteria}</span>
+                          </div>
+                          {(Array.isArray(l.examples) && l.examples.length > 0) || (Array.isArray(l.rubricHints) && l.rubricHints.length > 0) ? (
+                            <details className="mt-2">
+                              <summary className="text-xs cu-accent-text hover:opacity-90 cursor-pointer">Examples & rubric</summary>
+                              <div className="mt-2 grid grid-cols-1 gap-2">
+                                {Array.isArray(l.examples) && l.examples.length > 0 && (
+                                  <div className="rounded-lg border cu-border-surface p-2">
+                                    <div className="text-xs uppercase tracking-wide cu-muted">Examples</div>
+                                    <ul className="mt-1 list-disc ml-5 text-sm text-foreground">
+                                      {l.examples.map((ex, i) => (<li key={i}>{ex}</li>))}
+                                    </ul>
+                                  </div>
+                                )}
+                                {Array.isArray(l.rubricHints) && l.rubricHints.length > 0 && (
+                                  <div className="rounded-lg border cu-border-surface p-2">
+                                    <div className="text-xs uppercase tracking-wide cu-muted">Rubric</div>
+                                    <ul className="mt-1 list-disc ml-5 text-sm text-foreground">
+                                      {l.rubricHints.map((ex, i) => (<li key={i}>{ex}</li>))}
+                                    </ul>
+                                  </div>
+                                )}
+                              </div>
+                            </details>
+                          ) : null}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ) : (
+                <div className="text-sm cu-muted">No criteria available.</div>
+              )}
+            </div>
+
+            {/* Assessments Section */}
+            <div>
+              <div className="text-sm uppercase tracking-wide cu-muted font-medium mb-2">Assessments</div>
+              {assessLoading && (
+                <div className="text-sm cu-muted">Loading assessments…</div>
+              )}
+              {assessError && (
+                <div className="mb-3">
+                  <div className="text-sm cu-error-text">{assessError}</div>
+                </div>
+              )}
+              {!assessLoading && !assessError && (
+                <div className="space-y-3">
+                  {v2SkillAssessments.length > 0 ? (
+                    v2SkillAssessments.map((a, idx) => (
+                      <div key={idx} className="rounded-2xl border cu-border-surface cu-surface p-3">
+                        <div className="flex items-center justify-between">
+                          <div className="text-xs uppercase tracking-wide cu-muted">Assessment</div>
+                          {typeof a.level === "number" && (
+                            <span className="inline-flex items-center gap-2 px-2 py-0.5 rounded-full border cu-border-surface text-[11px]">Level {a.level}</span>
+                          )}
+                        </div>
+                        {Array.isArray(a.metCriteria) && a.metCriteria.length > 0 && (
+                          <div className="mt-2">
+                            <div className="text-xs font-medium cu-success-text">Met</div>
+                            <ul className="mt-1 flex flex-wrap gap-1.5">
+                              {a.metCriteria.map((c, i) => (
+                                <li key={i} className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full border cu-border-surface cu-surface shadow-sm">
+                                  <svg aria-hidden viewBox="0 0 24 24" className="w-3.5 h-3.5 cu-success-text" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+                                  {c}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {Array.isArray(a.unmetCriteria) && a.unmetCriteria.length > 0 && (
+                          <div className="mt-2">
+                            <div className="text-xs font-medium cu-error-text">Unmet</div>
+                            <ul className="mt-1 flex flex-wrap gap-1.5">
+                              {a.unmetCriteria.map((c, i) => (
+                                <li key={i} className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full border cu-error-border cu-error-soft-bg shadow-sm">
+                                  <svg aria-hidden viewBox="0 0 24 24" className="w-3.5 h-3.5 cu-error-text" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                                  {c}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {Array.isArray(a.feedback) && a.feedback.length > 0 && (
+                          <div className="mt-2">
+                            <div className="text-xs font-medium text-foreground">Feedback</div>
+                            <ul className="mt-1 list-disc ml-5 text-sm text-foreground">
+                              {a.feedback.map((c, i) => (<li key={i}>{c}</li>))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  ) : assessments?.summary ? (
+                    <div className="rounded-2xl border cu-border-surface cu-surface p-3">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs uppercase tracking-wide cu-muted">Latest Summary</div>
+                        {assessments.summary?.rubricVersion && (
+                          <span className="text-[11px] px-2 py-0.5 rounded-full border cu-border-surface">Rubric {assessments.summary.rubricVersion}</span>
+                        )}
+                      </div>
+                      <div className="text-sm text-foreground">
+                        <div className="mt-2">
+                          <div className="text-xs font-medium text-foreground">Highlights</div>
+                          <ul className="mt-1 list-disc ml-5">
+                            {(assessments.summary?.highlights || []).map((h: string, i: number) => (<li key={i}>{h}</li>))}
+                          </ul>
+                        </div>
+                        <div className="mt-2">
+                          <div className="text-xs font-medium text-foreground">Recommendations</div>
+                          <ul className="mt-1 list-disc ml-5">
+                            {(assessments.summary?.recommendations || []).map((h: string, i: number) => (<li key={i}>{h}</li>))}
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-sm cu-muted">No assessments available yet.</div>
+                  )}
+                  <div className="pt-1">
+                    <button
+                      type="button"
+                      onClick={() => fetchAssessments()}
+                      className="inline-flex items-center gap-2 rounded-full cu-accent-soft-bg px-3 py-1.5 hover:opacity-90 text-sm active:scale-[0.98] shadow-sm"
+                    >
+                      <svg aria-hidden viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/></svg>
+                      Refresh
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </SectionCard>
+        )}
       </div>
     </div>
   );

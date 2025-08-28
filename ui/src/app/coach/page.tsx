@@ -82,6 +82,7 @@ export default function CoachPage() {
   const { setInCoach, showDashboard, setShowDashboard, setHandlers } = useMicUI();
   const [dashboardMounted, setDashboardMounted] = useState(false);
   const [tracked, setTracked] = useState<TrackedSkill[]>([]);
+  const [skillHistory, setSkillHistory] = useState<Record<string, Array<{ level: number; timestamp: number }>>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [recent, setRecent] = useState<AssessmentLogItem[]>([]);
@@ -199,6 +200,15 @@ export default function CoachPage() {
           setTracked(list);
           log(`skills: loaded ${list.length}`);
         }
+
+        // Fetch level history for deriving latest levels (tracked and untracked)
+        try {
+          const historyRes = await fetch("/api/v1/skills/level-history", { headers: { accept: "application/json" } });
+          if (historyRes.ok) {
+            const hData: any = await historyRes.json();
+            if (!cancelled) setSkillHistory(hData?.history || {});
+          }
+        } catch {}
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e ?? "Unknown error");
         if (!cancelled) setError(msg);
@@ -433,11 +443,30 @@ export default function CoachPage() {
 
   // Component-level cleanup on unmount: MicProvider owns mic lifecycle
 
+  // Compute latest level from history per skillId
+  const latestLevelBySkillId = useMemo(() => {
+    const out: Record<string, number> = {};
+    try {
+      for (const [skillId, hist] of Object.entries(skillHistory || {})) {
+        if (Array.isArray(hist) && hist.length) {
+          // pick the entry with max timestamp (history may or may not be sorted)
+          const latest = hist.reduce((a, b) => (a.timestamp >= b.timestamp ? a : b));
+          out[skillId] = Number.isFinite(Number(latest.level)) ? Math.max(0, Math.min(10, Number(latest.level))) : 0;
+        }
+      }
+    } catch {}
+    return out;
+  }, [skillHistory]);
+
   const overallLevel = useMemo(() => {
     if (!tracked.length) return 0;
-    const sum = tracked.reduce((sum, t) => sum + (Number(t.currentLevel) || 0), 0);
-    return Math.round((sum / tracked.length) * 10) / 10; // average to 1 decimal
-  }, [tracked]);
+    const levels = tracked.map((t) => {
+      const fromHist = latestLevelBySkillId[t.skillId];
+      return Number.isFinite(fromHist) ? fromHist : (Number(t.currentLevel) || 0);
+    });
+    const sum = levels.reduce((acc, n) => acc + n, 0);
+    return Math.round((sum / levels.length) * 10) / 10; // average to 1 decimal
+  }, [tracked, latestLevelBySkillId]);
 
   const levelStats = useMemo(() => {
     const currentLevelInt = Math.floor(overallLevel);
@@ -676,18 +705,18 @@ export default function CoachPage() {
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-2">
-                                  <span className="inline-flex items-center justify-center h-6 w-6 rounded-full bg-gradient-to-br from-indigo-500/20 to-emerald-500/20 text-[10px] font-semibold shadow-sm border cu-border-surface">{(t.currentLevel ?? 0) || 0}</span>
+                                  <span className="inline-flex items-center justify-center h-6 w-6 rounded-full bg-gradient-to-br from-indigo-500/20 to-emerald-500/20 text-[10px] font-semibold shadow-sm border cu-border-surface">{(Number.isFinite(latestLevelBySkillId[t.skillId]) ? latestLevelBySkillId[t.skillId] : (t.currentLevel ?? 0)) || 0}</span>
                                   <div className="text-sm font-medium text-foreground truncate">{t.skill?.title || 'Untitled skill'}</div>
                                 </div>
-                                <div className="mt-1 text-[11px] cu-muted truncate">{t.skill?.category || `Lv ${t.currentLevel}/10`}</div>
+                                <div className="mt-1 text-[11px] cu-muted truncate">{t.skill?.category || `Lv ${(Number.isFinite(latestLevelBySkillId[t.skillId]) ? latestLevelBySkillId[t.skillId] : (t.currentLevel ?? 0))}/10`}</div>
                               </div>
                               <svg aria-hidden viewBox="0 0 24 24" className="w-4 h-4 cu-muted transition-all group-hover:translate-x-0.5 group-hover:opacity-100 opacity-60" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6"/></svg>
                             </div>
                             <div className="mt-3 relative h-1.5 cu-accent-soft-bg rounded-full overflow-hidden">
                               <div className="absolute inset-0 pointer-events-none" aria-hidden style={{ background: 'linear-gradient(90deg, rgba(255,255,255,0.14), rgba(255,255,255,0))' }} />
-                              <div className="h-full transition-[width] duration-500 ease-out" style={{ width: `${Math.max(0, Math.min(10, Number(t.currentLevel) || 0)) * 10}%`, background: 'linear-gradient(90deg, rgba(99,102,241,1), rgba(16,185,129,1))' }} />
+                              <div className="h-full transition-[width] duration-500 ease-out" style={{ width: `${Math.max(0, Math.min(10, Number(Number.isFinite(latestLevelBySkillId[t.skillId]) ? latestLevelBySkillId[t.skillId] : (t.currentLevel || 0)) || 0)) * 10}%`, background: 'linear-gradient(90deg, rgba(99,102,241,1), rgba(16,185,129,1))' }} />
                             </div>
-                            <div className="mt-1 text-[11px] cu-muted">Lv {t.currentLevel}/10</div>
+                            <div className="mt-1 text-[11px] cu-muted">Lv {(Number.isFinite(latestLevelBySkillId[t.skillId]) ? latestLevelBySkillId[t.skillId] : (t.currentLevel ?? 0))}/10</div>
                           </button>
                         </li>
                       ))}

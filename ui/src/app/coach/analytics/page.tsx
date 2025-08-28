@@ -41,6 +41,7 @@ function genUpwardTrend(n = 16, start = 30, stepMin = 2, stepMax = 8): number[] 
 export default function CoachAnalyticsPage() {
   const router = useRouter();
   const [tracked, setTracked] = useState<TrackedSkill[]>([]);
+  const [skillHistory, setSkillHistory] = useState<Record<string, Array<{ level: number; timestamp: number }>>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [enterDir, setEnterDir] = useState<"left" | "right" | null>(null);
@@ -48,16 +49,25 @@ export default function CoachAnalyticsPage() {
   // Feature flag: disable cross-page transitions for performance
   const ENABLE_ROUTE_TRANSITIONS = false;
 
-  // On mount: fetch tracked skills (mock API in dev) and prefetch coach for back nav
+  // On mount: fetch tracked skills and skill history (mock API in dev) and prefetch coach for back nav
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch("/api/v1/skills/tracked", { headers: { accept: "application/json" } });
-        if (!res.ok) throw new Error(`Failed to load tracked skills (${res.status})`);
-        const data: any = await res.json();
-        const list: TrackedSkill[] = Array.isArray(data) ? data : Array.isArray(data?.tracked) ? data.tracked : [];
-        if (!cancelled) setTracked(list);
+        // Fetch tracked skills
+        const trackedRes = await fetch("/api/v1/skills/tracked", { headers: { accept: "application/json" } });
+        if (!trackedRes.ok) throw new Error(`Failed to load tracked skills (${trackedRes.status})`);
+        const trackedData: any = await trackedRes.json();
+        const trackedList: TrackedSkill[] = Array.isArray(trackedData) ? trackedData : Array.isArray(trackedData?.tracked) ? trackedData.tracked : [];
+
+        if (!cancelled) setTracked(trackedList);
+
+        // Fetch skill history (always)
+        const historyRes = await fetch("/api/v1/skills/level-history", { headers: { accept: "application/json" } });
+        if (historyRes.ok) {
+          const historyData: any = await historyRes.json();
+          if (!cancelled) setSkillHistory(historyData.history || {});
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e ?? "Unknown error");
         if (!cancelled) setError(msg);
@@ -129,16 +139,18 @@ export default function CoachAnalyticsPage() {
     };
   }, []);
 
-  // Generate per-skill mock trend data
+  // Convert skill history data to chart format
   const perSkillTrends = useMemo(() => {
-    const base = [
-      genUpwardTrend(16, 35, 2, 6),  // Communication
-      genUpwardTrend(16, 25, 3, 8),  // Leadership
-      genUpwardTrend(16, 45, 2, 5),  // Technical
-      genUpwardTrend(16, 30, 3, 7),  // Problem Solving
-    ];
-    return (tracked.length ? tracked : []).map((_, i) => base[i % base.length]);
-  }, [tracked]);
+    return tracked.map((skill: TrackedSkill) => {
+      const history = skillHistory[skill.skillId];
+      if (history && history.length > 0) {
+        // Convert level history to chart data (levels are 0-10, chart expects any range)
+        return history.map(h => h.level);
+      }
+      // Fallback to mock data if no history available
+      return genUpwardTrend(16, Math.max(0, skill.currentLevel * 10), 2, 5);
+    });
+  }, [tracked, skillHistory]);
 
   const [leaving, setLeaving] = useState(false);
   const [leavingDir, setLeavingDir] = useState<"left" | "right">("right");
@@ -218,8 +230,8 @@ export default function CoachAnalyticsPage() {
             <ul className="grid grid-cols-1 gap-3">
               {tracked
                 .slice()
-                .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-                .map((t, idx) => (
+                .sort((a: TrackedSkill, b: TrackedSkill) => (a.order ?? 0) - (b.order ?? 0))
+                .map((t: TrackedSkill, idx: number) => (
                   <li key={t.skillId} className="relative overflow-hidden rounded-2xl border-2 cu-border cu-surface p-4 shadow-sm group">
                     {/* base subtle gradient texture */}
                     <span
@@ -234,14 +246,14 @@ export default function CoachAnalyticsPage() {
                       {t.skill?.title || "Untitled skill"}
                     </div>
                     <div className="mt-1 relative">
-                      <SkillChart data={perSkillTrends[idx] || genUpwardTrend(16, 30, 3, 9)} className="w-full" height={80} />
-                    </div>
-                    {/* Footer hint */}
-                    <div className="mt-2 flex items-center justify-between relative">
-                      <div className="text-[11px] cu-muted flex items-center gap-2">
-                        <span className="inline-block h-2 w-2 rounded-full" style={{ background: "linear-gradient(90deg, rgba(99,102,241,1), rgba(16,185,129,1))" }} />
-                        Points earned
-                      </div>
+                      <SkillChart 
+                        data={perSkillTrends[idx] || genUpwardTrend(16, 30, 3, 9)} 
+                        className="w-full" 
+                        height={140}
+                        xLabel="Days ago"
+                        yLabel="Level"
+                        yTickLabels={['1', '5', '10']}
+                      />
                     </div>
                   </li>
                 ))}

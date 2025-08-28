@@ -9,6 +9,11 @@ interface SkillChartProps {
   showArea?: boolean; // fill under line
   showAxes?: boolean; // draw axes/grid
   showHover?: boolean; // interactive hover guideline/tooltip
+  // axis labels
+  xLabel?: string;
+  yLabel?: string;
+  xTickLabels?: string[]; // custom labels for x-axis ticks
+  yTickLabels?: string[]; // custom labels for y-axis ticks
 }
 
 const SkillChart: React.FC<SkillChartProps> = ({
@@ -19,6 +24,10 @@ const SkillChart: React.FC<SkillChartProps> = ({
   showArea = false,
   showAxes = true,
   showHover = true,
+  xLabel = "Days ago",
+  yLabel = "Level",
+  xTickLabels,
+  yTickLabels,
 }) => {
   if (!data || data.length === 0) {
     return <div className="text-sm text-muted-foreground">No data available</div>;
@@ -27,7 +36,8 @@ const SkillChart: React.FC<SkillChartProps> = ({
   const w = 280;
   const h = 80;
   const pad = 8; // inner padding
-  const axisPad = 12; // left/right padding for nicer breathing room
+  const axisPad = 24; // left/right padding for nicer breathing room with labels
+  const labelPad = 16; // additional padding for axis labels
 
   const min = Math.min(...data);
   const max = Math.max(...data);
@@ -66,6 +76,19 @@ const SkillChart: React.FC<SkillChartProps> = ({
   const yTicks = showAxes ? [min, min + (span / 2), max] : [];
   const yToSvg = (v: number) => pad + (h - pad * 2) * (1 - (v - min) / span);
 
+  // Generate tick labels if not provided
+  const defaultXTickLabels = xTickLabels || (data.length >= 3 ? [
+    `${Math.floor(data.length * 2 / 3)} days ago`,
+    `${Math.floor(data.length / 3)} days ago`,
+    'Today'
+  ] : ['Start', 'Mid', 'End']);
+
+  const defaultYTickLabels = yTickLabels || (yTicks.length === 3 ? [
+    '1',
+    '5',
+    '10'
+  ] : yTicks.map(v => Math.round(v).toString()));
+
   const [hoverIdx, setHoverIdx] = React.useState<number | null>(null);
   const handleMove = showHover ? (e: React.MouseEvent<SVGSVGElement>) => {
     const rect = (e.target as SVGElement).closest('svg')!.getBoundingClientRect();
@@ -85,7 +108,7 @@ const SkillChart: React.FC<SkillChartProps> = ({
   return (
     <div className={className}>
       <svg
-        viewBox={`0 0 ${w} ${h}`}
+        viewBox={`0 0 ${w} ${h + labelPad + 18}`}
         role="img"
         aria-label="skill progress chart"
         style={{ height, width: '100%' }}
@@ -118,6 +141,36 @@ const SkillChart: React.FC<SkillChartProps> = ({
             {yTicks.map((v, i) => (
               <line key={`tick-${i}`} x1={axisPad - 2} x2={axisPad + 2} y1={yToSvg(v)} y2={yToSvg(v)} stroke="#888" strokeWidth="1" opacity="1" />
             ))}
+            {/* Y-axis tick labels */}
+            {yTicks.map((v, i) => (
+              <text key={`ylabel-${i}`} x={axisPad - 6} y={yToSvg(v) + 3} textAnchor="end" fontSize="8" fill="#666" opacity="0.8">
+                {defaultYTickLabels[i]}
+              </text>
+            ))}
+            {/* X-axis tick marks and labels */}
+            {data.length >= 3 && (
+              <>
+                {[0, Math.floor(data.length / 3), Math.floor(data.length * 2 / 3), data.length - 1].map((idx, i) => {
+                  if (idx >= pts.length) return null;
+                  const x = pts[idx][0];
+                  return (
+                    <g key={`xtick-${i}`}>
+                      <line x1={x} y1={bottom} x2={x} y2={bottom + 3} stroke="#888" strokeWidth="1" opacity="1" />
+                      <text x={x} y={bottom + 12} textAnchor="middle" fontSize="8" fill="#666" opacity="0.8">
+                        {defaultXTickLabels[Math.min(i, defaultXTickLabels.length - 1)]}
+                      </text>
+                    </g>
+                  );
+                })}
+              </>
+            )}
+            {/* Axis labels */}
+            <text x={w / 2} y={h + labelPad} textAnchor="middle" fontSize="9" fill="#666" opacity="0.9" fontWeight="500">
+              {xLabel}
+            </text>
+            <text x={axisPad - labelPad} y={h / 2} textAnchor="middle" fontSize="9" fill="#666" opacity="0.9" fontWeight="500" transform={`rotate(-90, ${axisPad - labelPad}, ${h / 2})`}>
+              {yLabel}
+            </text>
           </>
         )}
 
