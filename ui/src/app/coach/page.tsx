@@ -90,11 +90,24 @@ export default function CoachPage() {
   const dashContainerRef = useRef<HTMLDivElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  // Expanded state for assessment chip details in chat mode
+  const [chipOpen, setChipOpen] = useState<Record<string, boolean>>({});
+  // Debug chat input
+  const [debugPrompt, setDebugPrompt] = useState("");
   const [leaving, setLeaving] = useState(false);
   const [leavingDir, setLeavingDir] = useState<"left" | "right">("left");
   const [enterDir, setEnterDir] = useState<"left" | "right" | null>(null);
   // Feature flag: disable cross-page transitions for performance
   const ENABLE_ROUTE_TRANSITIONS = false;
+  // Feature flag: enable/disable voice mode and mic interactions on Coach page
+  const ENABLE_VOICE = (() => {
+    try {
+      const v = String(process.env.NEXT_PUBLIC_ENABLE_VOICE ?? "0").toLowerCase();
+      return v === "1" || v === "true" || v === "yes" || v === "on";
+    } catch { return false; }
+  })();
+  // Feature flag: model selector is disabled to avoid unintended model overrides
+  const ENABLE_MODEL_SELECTOR = false;
   // When returning from a subpage (skills/analytics), skip the initial dashboard entrance animation
   const [skipNextDashboardAnim, setSkipNextDashboardAnim] = useState(false);
 
@@ -146,21 +159,29 @@ export default function CoachPage() {
   }, [setInCoach]);
   // Wire mic interactions into the global mic via MicUIContext handlers
   useEffect(() => {
-    setHandlers({
-      onTap: () => {
-        if (showDashboard) {
-          setShowDashboard(false);
-        } else {
-          mic.toggleVoiceLoop();
-        }
-      },
-      onLongPress: () => {
-        if (showDashboard) {
-          try { mic.stopRecording(); } catch {}
-        }
-      },
-    });
-  }, [mic, setHandlers, setShowDashboard, showDashboard]);
+    if (ENABLE_VOICE) {
+      setHandlers({
+        onTap: () => {
+          if (showDashboard) {
+            setShowDashboard(false);
+          } else {
+            mic.toggleVoiceLoop();
+          }
+        },
+        onLongPress: () => {
+          if (showDashboard) {
+            try { mic.stopRecording(); } catch {}
+          }
+        },
+      });
+    } else {
+      // Voice disabled: only allow toggling the dashboard; no mic interactions
+      setHandlers({
+        onTap: () => setShowDashboard(!showDashboard),
+        onLongPress: () => {},
+      });
+    }
+  }, [ENABLE_VOICE, mic, setHandlers, setShowDashboard, showDashboard]);
 
   useEffect(() => {
     let cancelled = false;
@@ -397,11 +418,18 @@ export default function CoachPage() {
 
   // Auto-start mic when entering chat mode with voice loop active (use global mic)
   useEffect(() => {
-    if (!showDashboard && mic.mediaSupported && mic.voiceLoop && !mic.recording && mic.busy === "idle") {
+    if (
+      ENABLE_VOICE &&
+      !showDashboard &&
+      mic.mediaSupported &&
+      mic.voiceLoop &&
+      !mic.recording &&
+      mic.busy === "idle"
+    ) {
       log("auto: voice loop active -> start mic (provider)");
       void mic.startRecording();
     }
-  }, [showDashboard, mic]);
+  }, [ENABLE_VOICE, showDashboard, mic]);
 
   // Component-level cleanup on unmount: MicProvider owns mic lifecycle
 
@@ -777,11 +805,18 @@ export default function CoachPage() {
 
                 {/* Tabs */}
                 <div className="flex items-center gap-1 border-b cu-border-surface mb-3">
-                  {([
-                    { key: 'logs', label: 'Logs' },
-                    { key: 'voice', label: 'Voice Tuner' },
-                    { key: 'model', label: 'Model' },
-                  ] as const).map((tab) => (
+                  {(
+                    ENABLE_MODEL_SELECTOR
+                      ? ([
+                          { key: 'logs', label: 'Logs' },
+                          { key: 'voice', label: 'Voice Tuner' },
+                          { key: 'model', label: 'Model' },
+                        ] as const)
+                      : ([
+                          { key: 'logs', label: 'Logs' },
+                          { key: 'voice', label: 'Voice Tuner' },
+                        ] as const)
+                  ).map((tab) => (
                     <button
                       key={tab.key}
                       type="button"
@@ -794,7 +829,7 @@ export default function CoachPage() {
                 </div>
 
                 {/* Model */}
-                {configTab === 'model' && (
+                {ENABLE_MODEL_SELECTOR && configTab === 'model' && (
                   <div>
                     <label className="block text-sm font-medium mb-1">Model</label>
                     <select
@@ -937,8 +972,143 @@ export default function CoachPage() {
 
       {/* Main content area */}
       {!showDashboard && (
-        <main className="px-6 pt-10 pb-32 text-center">
-          {/* Clean, minimal chat mode */}
+        <main className="px-6 pt-10 pb-32">
+          <div className="max-w-md mx-auto space-y-4">
+            {/* Multi-turn interaction indicator */}
+            <div className="flex items-center justify-between rounded-lg border cu-border-surface cu-surface p-2 shadow-sm">
+              <div className="flex items-center gap-2 text-sm">
+                <span
+                  aria-hidden
+                  className={["inline-block h-2.5 w-2.5 rounded-full",
+                    mic.interactionState === "active" ? "bg-emerald-500" : "bg-zinc-400"].join(" ")}
+                />
+                <span className="font-medium">
+                  {mic.interactionState === "active" ? "Multi‑turn active" : "Idle"}
+                </span>
+                {mic.interactionGroupId && (
+                  <span className="text-xs cu-muted">· {mic.interactionGroupId.length > 12 ? `${mic.interactionGroupId.slice(0,6)}…${mic.interactionGroupId.slice(-4)}` : mic.interactionGroupId}</span>
+                )}
+              </div>
+              <div className="text-xs cu-muted">Turns: {mic.interactionTurnCount || 0}</div>
+            </div>
+
+            {/* Live assistant stream panel */}
+            <section aria-label="Live assistant" className="rounded-lg border cu-border-surface cu-surface p-3 shadow-sm">
+              <div className="flex items-center justify-between mb-1">
+                <div className="text-sm font-semibold">Assistant</div>
+                <div className="text-[11px] cu-muted">
+                  busy={mic.busy} · recording={String(mic.recording)}
+                </div>
+              </div>
+              <div className="text-sm whitespace-pre-wrap break-words min-h-[2.5rem]">
+                {mic.assistantText || <span className="cu-muted">(waiting for response…)</span>}
+              </div>
+              {mic.transcript ? (
+                <div className="mt-2 border-t cu-border-surface pt-2 text-xs">
+                  <div className="cu-muted mb-0.5">You</div>
+                  <div className="whitespace-pre-wrap break-words">{mic.transcript}</div>
+                </div>
+              ) : null}
+
+              {/* Debug prompt controls */}
+              <div className="mt-3 flex items-center gap-2">
+                <input
+                  type="text"
+                  value={debugPrompt}
+                  onChange={(e) => setDebugPrompt(e.target.value)}
+                  placeholder="Type a prompt to test streaming"
+                  className="flex-1 px-2 py-1 rounded border cu-border-surface bg-transparent text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={async () => { try { await mic.sendPrompt(debugPrompt); } catch {} }}
+                  className="px-2 py-1 rounded border cu-border-surface text-sm hover:bg-surface/80"
+                >
+                  Send
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { try { mic.clear(); } catch {}; setDebugPrompt(""); }}
+                  className="px-2 py-1 rounded border cu-border-surface text-sm hover:bg-surface/80"
+                >
+                  Clear
+                </button>
+              </div>
+            </section>
+
+            {/* Assessment chips row */}
+            {mic.assessmentChips && mic.assessmentChips.length > 0 && (
+              <section aria-label="Assessments">
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {mic.assessmentChips.map((chip) => (
+                    <button
+                      key={chip.id}
+                      type="button"
+                      onClick={() => setChipOpen((m) => ({ ...m, [chip.id]: !m[chip.id] }))}
+                      aria-expanded={!!chipOpen[chip.id]}
+                      className="shrink-0 inline-flex items-center gap-2 px-2.5 py-1.5 rounded-full border cu-border-surface cu-surface text-xs shadow-sm hover:shadow-md transition-all hover:-translate-y-[0.5px]"
+                      title={chip.id}
+                    >
+                      {/* Status icon */}
+                      {chip.status === "done" ? (
+                        <svg aria-hidden viewBox="0 0 24 24" className="w-3.5 h-3.5 cu-success-text" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+                      ) : chip.status === "error" ? (
+                        <svg aria-hidden viewBox="0 0 24 24" className="w-3.5 h-3.5 cu-error-text" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>
+                      ) : (
+                        <span className="inline-block h-2.5 w-2.5 rounded-full bg-amber-400" aria-hidden />
+                      )}
+                      <span className="whitespace-nowrap">Assessment</span>
+                      <span className="text-[11px] cu-muted">
+                        {chip.status === "queued" ? "Queued" : chip.status === "done" ? "Ready" : "Error"}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Chip details panels */}
+                <div className="space-y-2 mt-1">
+                  {mic.assessmentChips.map((chip) => (
+                    chipOpen[chip.id] ? (
+                      <div key={chip.id} className="rounded-lg border cu-border-surface cu-surface p-3 text-sm">
+                        <div className="flex items-center justify-between">
+                          <div className="font-medium">Assessment {chip.id.length > 14 ? `${chip.id.slice(0,8)}…${chip.id.slice(-4)}` : chip.id}</div>
+                          <span className="text-xs cu-muted">{new Date(chip.createdAt).toLocaleTimeString()}</span>
+                        </div>
+                        {chip.status === "queued" && (
+                          <div className="mt-2 text-xs cu-muted">Queued — awaiting results…</div>
+                        )}
+                        {chip.status === "error" && (
+                          <div className="mt-2 text-xs cu-error-text">Error. {String(chip.summary?.error || chip.summary?.message || "See logs")}</div>
+                        )}
+                        {chip.status === "done" && (
+                          <div className="mt-2 space-y-2">
+                            {/* Meta summary if present */}
+                            {chip.summary?.meta && (
+                              <div className="grid grid-cols-2 gap-2 text-xs">
+                                <div className="rounded border cu-border-surface p-2"><div className="cu-muted">Tokens In</div><div className="font-semibold">{chip.summary?.meta?.tokensIn ?? "-"}</div></div>
+                                <div className="rounded border cu-border-surface p-2"><div className="cu-muted">Tokens Out</div><div className="font-semibold">{chip.summary?.meta?.tokensOut ?? "-"}</div></div>
+                                <div className="rounded border cu-border-surface p-2"><div className="cu-muted">Cost</div><div className="font-semibold">{chip.summary?.meta?.costUsd != null ? `$${chip.summary.meta.costUsd.toFixed?.(4) ?? chip.summary.meta.costUsd}` : "-"}</div></div>
+                                <div className="rounded border cu-border-surface p-2"><div className="cu-muted">Latency</div><div className="font-semibold">{chip.summary?.meta?.latencyMsTotal != null ? `${chip.summary.meta.latencyMsTotal} ms` : "-"}</div></div>
+                              </div>
+                            )}
+                            {/* Counts if present */}
+                            <div className="text-xs cu-muted">
+                              {Array.isArray(chip.summary?.skillAssessments) && (<span className="mr-2">Skills: {chip.summary.skillAssessments.length}</span>)}
+                              {Array.isArray(chip.summary?.errors) && chip.summary.errors.length > 0 && (<span>Errors: {chip.summary.errors.length}</span>)}
+                            </div>
+                            {/* Fallback raw JSON if nothing else */}
+                            {!chip.summary?.meta && !Array.isArray(chip.summary?.skillAssessments) && !Array.isArray(chip.summary?.errors) && (
+                              <pre className="text-xs overflow-auto max-h-48 cu-muted">{JSON.stringify(chip.summary ?? {}, null, 2)}</pre>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ) : null
+                  ))}
+                </div>
+              </section>
+            )}
+          </div>
         </main>
       )}
 

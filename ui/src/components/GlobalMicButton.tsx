@@ -9,8 +9,10 @@ import { useMicUI } from "../context/MicUIContext";
 // When in coach, renders the large center mic with chat<->dashboard transform, driven by MicUIContext.
 export default function GlobalMicButton() {
   const [mounted, setMounted] = useState(false);
-  const { voiceLoop, recording, busy, toggleVoiceLoop, startRecording, stopRecording } = useMic();
+  const { voiceLoop, recording, busy, toggleVoiceLoop, startRecording, stopRecording, inputSpeaking, processingRing } = useMic();
   const { inCoach, showDashboard, setShowDashboard, onTap, onLongPress } = useMicUI();
+  // Only show speaking pulse when the mic is actively recording
+  const speakingPulse = recording && inputSpeaking;
 
   // Long-press support (coach mode) - moved to top level to fix hooks order
   const pressTimerRef = useRef<number | null>(null);
@@ -59,6 +61,8 @@ export default function GlobalMicButton() {
     if (pressTimerRef.current) { window.clearTimeout(pressTimerRef.current); pressTimerRef.current = null; }
   };
 
+  const isProcessing = processingRing; // precise STT->pre-TTS window
+
   const coachButton = (
     <button
       aria-label={showDashboard ? "Dashboard mic (tap to go to chat, hold to stop)" : (isActive ? "Pause voice mode" : "Resume voice mode")}
@@ -75,9 +79,23 @@ export default function GlobalMicButton() {
       style={{
         transform: showDashboard
           ? "translate(-50%, clamp(18vh, 24vh, calc(50vh - 8rem - env(safe-area-inset-bottom)))) scale(0.5)"
-          : "translate(-50%, -50%) scale(1)",
+          : `translate(-50%, -50%) scale(${speakingPulse ? 1.06 : 1})`,
       }}
     >
+      {/* Processing rotating ring */}
+      {isProcessing && (
+        <span
+          aria-hidden
+          className="absolute -inset-2 rounded-full pointer-events-none animate-spin"
+          style={{
+            background: "conic-gradient(from 0deg, rgba(99,102,241,0.0), rgba(99,102,241,0.35), rgba(16,185,129,0.35), rgba(99,102,241,0.0))",
+            WebkitMask: "linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)",
+            WebkitMaskComposite: "xor",
+            maskComposite: "exclude",
+            padding: "6px",
+          } as React.CSSProperties}
+        />
+      )}
       {/* Base gradient background (subtle) */}
       <span
         aria-hidden
@@ -101,7 +119,8 @@ export default function GlobalMicButton() {
         aria-hidden
         className="absolute inset-x-6 top-2 h-10 rounded-full bg-white/15 blur-[2px] pointer-events-none"
       />
-      {isActive && <span className="absolute inline-flex h-full w-full rounded-full cu-accent-bg-20 animate-ping" aria-hidden />}
+      {/* Subtle pulsate only while recording and detecting speech */}
+      {speakingPulse && <span className="absolute inline-flex h-full w-full rounded-full cu-accent-bg-20 animate-ping" aria-hidden />}
       {isActive ? (
         <svg
           aria-hidden="true"
@@ -169,9 +188,23 @@ export default function GlobalMicButton() {
       style={{
         boxShadow: isActive ? "0 0 0 8px rgba(0,0,0,0.08)" : undefined,
         transition: "transform 220ms ease, box-shadow 220ms ease, background 220ms ease",
-        transform: isActive ? "scale(1.07)" : "scale(1.0)",
+        transform: `scale(${speakingPulse ? 1.08 : (isActive ? 1.07 : 1.0)})`,
       }}
     >
+      {/* Processing rotating ring */}
+      {isProcessing && (
+        <span
+          aria-hidden
+          className="absolute -inset-1.5 rounded-full pointer-events-none animate-spin"
+          style={{
+            background: "conic-gradient(from 0deg, rgba(99,102,241,0.0), rgba(99,102,241,0.5), rgba(16,185,129,0.5), rgba(99,102,241,0.0))",
+            WebkitMask: "linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)",
+            WebkitMaskComposite: "xor",
+            maskComposite: "exclude",
+            padding: "4px",
+          } as React.CSSProperties}
+        />
+      )}
       {/* Base gradient background */}
       <span
         aria-hidden
@@ -191,7 +224,7 @@ export default function GlobalMicButton() {
       {/* Gloss highlight */}
       <span aria-hidden className="absolute inset-x-3 top-1.5 h-6 rounded-full bg-white/20 blur-[1.5px] pointer-events-none" />
       <div className="relative">
-        {isActive && <span className="absolute -inset-3 rounded-full border-2 border-white/60 animate-ping" aria-hidden />}
+        {speakingPulse && <span className="absolute -inset-3 rounded-full border-2 border-white/60 animate-ping" aria-hidden />}
         {isActive ? (
           <svg
             aria-hidden="true"

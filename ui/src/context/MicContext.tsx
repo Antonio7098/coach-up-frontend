@@ -8,6 +8,13 @@ import { useChat } from "./ChatContext";
 
 export type MicBusyState = "idle" | "stt" | "chat" | "tts";
 
+type AssessmentChip = {
+  id: string; // groupId
+  status: "queued" | "done" | "error";
+  createdAt: number;
+  summary?: any;
+};
+
 type MicContextValue = {
   mediaSupported: boolean;
   recording: boolean;
@@ -16,6 +23,18 @@ type MicContextValue = {
   voiceLoop: boolean;
   transcript: string;
   assistantText: string;
+  // Fire a chat request with a text prompt (UI/debug helper)
+  sendPrompt: (prompt: string) => Promise<string>;
+  // Live input VAD state for UI animations
+  inputSpeaking: boolean;
+  // Show processing ring precisely between STT send and TTS start
+  processingRing: boolean;
+  // Interaction classifier state (multi-turn lifecycle)
+  interactionState: "active" | "idle";
+  interactionGroupId?: string;
+  interactionTurnCount: number;
+  // Assessment chips (UI surface for in-flight and completed assessments)
+  assessmentChips: AssessmentChip[];
   // Live tuning config
   vadThreshold: number;
   vadMaxSilenceMs: number;
@@ -62,6 +81,18 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
   const [voiceLoop, setVoiceLoop] = useState(true);
   const [transcript, setTranscript] = useState("");
   const [assistantText, setAssistantText] = useState("");
+  // Multi-turn interaction and assessments state
+  const [interactionState, setInteractionState] = useState<"active" | "idle">("idle");
+  const [interactionGroupId, setInteractionGroupId] = useState<string | undefined>(undefined);
+  const [interactionTurnCount, setInteractionTurnCount] = useState<number>(0);
+  const [assessmentChips, setAssessmentChips] = useState<AssessmentChip[]>([]);
+  const chipsRef = useRef<AssessmentChip[]>([]);
+  useEffect(() => { chipsRef.current = assessmentChips; }, [assessmentChips]);
+  const assessPollRef = useRef<boolean>(false);
+  // VAD flag for UI (true when incoming audio exceeds threshold)
+  const [inputSpeaking, setInputSpeaking] = useState(false);
+  // Precise flag for rotating ring animation
+  const [processingRing, setProcessingRing] = useState(false);
   // Runtime-configurable tuning (persisted to localStorage)
   const tuningKey = "cu.voice.tuning";
   const envDefaults = useMemo(() => {
@@ -135,7 +166,14 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
   // Chat history for context (last 10 messages)
   const historyRef = useRef<{ role: "user" | "assistant"; content: string }[]>([]);
 
-  const MAX_HISTORY_FOR_VOICE = 2; // Reduced from 3 for faster LLM processing
+  // How many recent messages to send to the backend as client-passed history.
+  // Configurable via NEXT_PUBLIC_MESSAGE_CONTEXT_LENGTH and clamped to [1, 10]
+  // since we only persist the last 10 locally.
+  const MAX_HISTORY_FOR_VOICE = (() => {
+    const envN = Number(process.env.NEXT_PUBLIC_MESSAGE_CONTEXT_LENGTH ?? 0) || 2;
+    const n = Math.max(1, Math.min(10, Math.floor(envN)));
+    return n;
+  })();
 
   const mediaRef = useRef<MediaRecorder | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -251,7 +289,14 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
           resolve(); 
         };
         const onErr = (event: any) => { 
-          console.error('MicContext: Audio error event:', event);
+          console.error('MicContext: Audio error event:', {
+            type: event?.type,
+            target: event?.target?.tagName,
+            src: event?.target?.src,
+            error: event?.target?.error,
+            networkState: event?.target?.networkState,
+            readyState: event?.target?.readyState
+          });
           cleanup(); 
           resolve(); 
         };
@@ -279,6 +324,20 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     pendingAudioUrlRef.current = null;
     audioQueueRef.current = [];
     audioPlayingRef.current = false;
+    try { setProcessingRing(false); } catch {}
+  }, []);
+
+  // Pause audio playback immediately without clearing the current source or queue.
+  // Useful for interrupts (barge-in) where we want to halt sound right away.
+  const pausePlayback = useCallback(() => {
+    try {
+      const el = audioRef.current;
+      if (el) {
+        el.pause();
+      }
+    } catch {}
+    audioPlayingRef.current = false;
+    try { setProcessingRing(false); } catch {}
   }, []);
 
   const ensureAudioWorker = useCallback(async () => {
@@ -294,6 +353,8 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     console.log("MicContext: Starting audio playback:", next);
     audioPlayingRef.current = true;
     try { setBusy("tts"); } catch {}
+    // TTS is starting – stop the ring
+    try { setProcessingRing(false); } catch {}
     try {
       await playAudio(next);
       console.log("MicContext: Audio playback finished");
@@ -432,12 +493,42 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
 
   const enqueueTTSSegment = useCallback((text: string) => {
     if (!text || !text.trim()) return;
-    console.log("MicContext: Enqueueing TTS segment:", text.trim());
+    console.log("MicContext: TTS enqueueTTSSegment", { text, queueLen: ttsTextQueueRef.current.length });
     ttsTextQueueRef.current.push(text.trim());
     void ensureTTSWorker();
   }, [ensureTTSWorker]);
 
-  
+  // --- Assessments polling worker ---
+  const ensureAssessmentPolling = useCallback(async () => {
+    if (assessPollRef.current) return;
+    assessPollRef.current = true;
+    try {
+      while (true) {
+        // Stop when no pending chips
+        const hasPending = chipsRef.current.some((c) => c.status !== "done" && c.status !== "error");
+        if (!hasPending || !sessionId) break;
+        try {
+          const res = await fetch(`/api/assessments/${encodeURIComponent(sessionId)}`, { headers: { accept: "application/json" } });
+          const data: any = await res.json().catch(() => ({}));
+          const latestGid = data?.latestGroupId || data?.latest_group_id;
+          if (latestGid) {
+            setAssessmentChips((prev) => {
+              const idx = prev.findIndex((c) => c.id === latestGid);
+              if (idx >= 0 && prev[idx].status !== "done") {
+                const next = prev.slice();
+                next[idx] = { ...next[idx], status: "done", summary: data?.summary ?? next[idx]?.summary };
+                return next;
+              }
+              return prev;
+            });
+          }
+        } catch {}
+        await new Promise((r) => setTimeout(r, 1200));
+      }
+    } finally {
+      assessPollRef.current = false;
+    }
+  }, [sessionId]);
 
   const waitForQueueToDrain = useCallback(async (timeoutMs = 15000): Promise<void> => {
     const start = Date.now();
@@ -513,6 +604,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
   // --- STT and Chat helpers ---
   const callSTTMultipart = useCallback(async (b: Blob, detectMs?: number): Promise<{ text: string }> => {
     setBusy("stt");
+    try { setProcessingRing(true); } catch {}
     const sttStart = Date.now();
     const form = new FormData();
     form.set("audio", b, "utterance.webm");
@@ -532,26 +624,34 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     return { text: String(data?.text || "") };
   }, [sessionId]);
 
-  const chatToText = useCallback(async (promptText: string): Promise<string> => {
+  const chatToText = useCallback(async (promptText: string, opts?: { includeHistory?: boolean }): Promise<string> => {
     setBusy("chat");
+    // Clear assistant text for a fresh streaming response
+    try { setAssistantText(""); } catch {}
     return new Promise<string>((resolve, reject) => {
       try {
-        const hist = buildHistoryParam();
-        let model = "";
-        try { model = localStorage.getItem("chat:model") || ""; } catch {}
-        const qs = `?prompt=${encodeURIComponent(promptText)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""}${hist ? `&history=${encodeURIComponent(hist)}` : ""}${model ? `&model=${encodeURIComponent(model)}` : ""}`;
+        const includeHistory = opts?.includeHistory !== false;
+        const hist = includeHistory ? buildHistoryParam() : "";
+        const qs = `?prompt=${encodeURIComponent(promptText)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""}${hist ? `&history=${encodeURIComponent(hist)}` : ""}`;
+        // Ensure any previous stream is closed before starting a new one
+        try { if (chatEsRef.current) { chatEsRef.current.close(); chatEsRef.current = null; } } catch {}
         const es = new EventSource(`/api/chat${qs}`, { withCredentials: false });
-        try { chatEsRef.current?.close(); } catch {}
         chatEsRef.current = es;
+        try { console.log("MicContext: chatToText: EventSource opened", { url: `/api/chat${qs}`, includeHistory }); } catch {}
         let acc = "";
         let lastFlushed = 0;
         const minFlushChars = 12;
+
+        es.onopen = () => {
+          try { console.log("MicContext: chatToText: onopen"); } catch {}
+        };
         let idleTimer: ReturnType<typeof setTimeout> | null = null;
         const maybeFlush = (force = false) => {
           const pending = acc.slice(lastFlushed);
           if (!force && pending.length < minFlushChars) return;
           const segment = pending.trim();
           if (!segment) return;
+          console.log("MicContext: TTS maybeFlush", { force, pendingLen: pending.length, segment });
           lastFlushed = acc.length;
           enqueueTTSSegment(segment);
         };
@@ -562,6 +662,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
             const cut = lastFlushed + idx + 1;
             const seg = acc.slice(lastFlushed, cut).trim();
             if (seg.length >= 1) {
+              console.log("MicContext: TTS flushOnPunctuation", { seg, lastFlushed, idx, cut });
               lastFlushed = cut;
               enqueueTTSSegment(seg);
             }
@@ -569,6 +670,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
         };
         es.onmessage = (evt) => {
           if (evt.data === "[DONE]") {
+            try { console.log("MicContext: chatToText: DONE received", { accLen: acc.length }); } catch {}
             try { es.close(); } catch {}
             try { if (chatEsRef.current === es) chatEsRef.current = null; } catch {}
             const tail = acc.slice(lastFlushed).trim();
@@ -588,7 +690,8 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
           if (idleTimer) { try { clearTimeout(idleTimer); } catch {} }
           idleTimer = setTimeout(() => { maybeFlush(true); }, 200);
         };
-        es.onerror = () => {
+        es.onerror = (e) => {
+          try { console.error("MicContext: chatToText: onerror", e); } catch {}
           try { es.close(); } catch {}
           try { if (chatEsRef.current === es) chatEsRef.current = null; } catch {}
           reject(new Error("chat stream failed"));
@@ -599,13 +702,48 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     });
   }, [enqueueTTSSegment]);
 
+  // Public helper to trigger a chat from UI without voice
+  const sendPrompt = useCallback(async (prompt: string): Promise<string> => {
+    if (!prompt || !prompt.trim()) return "";
+    try {
+      // Also add to history as a user message for context continuity
+      historyRef.current.push({ role: "user", content: prompt });
+      if (historyRef.current.length > 10) historyRef.current = historyRef.current.slice(-10);
+      saveHistory();
+      const reply = await chatToText(prompt, { includeHistory: true });
+      return reply;
+    } catch (e: any) {
+      setVoiceError(e?.message || "chat failed");
+      throw e;
+    } finally {
+      if (busy === "chat") setBusy("idle");
+    }
+  }, [chatToText, busy]);
+
   const ingestMessage = useCallback(async (role: "user" | "assistant", content: string) => {
     try {
       if (!sessionId || !content) return;
       const payload = { sessionId, messageId: Math.random().toString(36).slice(2), role, content, ts: Date.now() } as const;
-      await fetch("/api/messages/ingest", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
+      const res = await fetch("/api/messages/ingest", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
+      const data: any = await res.json().catch(() => ({}));
+      // Update multi-turn state
+      const st = String(data?.state || "").toLowerCase();
+      setInteractionState(st === "active" ? "active" : "idle");
+      if (typeof data?.groupId === "string" && data.groupId) setInteractionGroupId(data.groupId);
+      setInteractionTurnCount(Number(data?.turnCount || 0) || 0);
+      // Enqueued assessment -> add chip and start polling
+      if (data?.enqueued && typeof data?.groupId === "string" && data.groupId) {
+        const gid = data.groupId as string;
+        setAssessmentChips((prev) => {
+          if (prev.some((c) => c.id === gid)) return prev;
+          const next: AssessmentChip[] = [{ id: gid, status: "queued" as const, createdAt: Date.now() }, ...prev].slice(0, 12);
+          return next;
+        });
+        // kick off polling
+        void ensureAssessmentPolling();
+      }
     } catch {}
-  }, [sessionId]);
+  }, [sessionId, ensureAssessmentPolling]);
 
   // --- Recording controls ---
   const streamRef = useRef<MediaStream | null>(null);
@@ -615,6 +753,8 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     
     // Clear recording state immediately
     setRecording(false);
+    // Clear speaking indicator
+    try { setInputSpeaking(false); } catch {}
     
     // Stop MediaRecorder and clear reference
     const rec = mediaRef.current;
@@ -720,6 +860,9 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
         console.log("MicContext: Recording stopped, processing", chunks.length, "chunks");
         console.log("MicContext: voiceLoopRef.current =", voiceLoopRef.current);
         console.log("MicContext: recordingRef.current =", recordingRef.current);
+        // Ensure UI state reflects that we are no longer recording.
+        // This is critical so the barge monitor can start while assistant is responding.
+        try { setRecording(false); } catch {}
         
         // Only skip processing if voice loop is disabled (paused)
         if (!voiceLoopRef.current) {
@@ -763,19 +906,21 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
                 if (historyRef.current.length > 10) historyRef.current = historyRef.current.slice(-10);
                 saveHistory();
                 void ingestMessage("user", text);
-                const reply = await chatToText(text);
+                const reply = await chatToText(text, { includeHistory: true });
                 console.log("MicContext: Chat response:", reply);
                 setAssistantText(reply);
                 void ingestMessage("assistant", reply);
               } else {
                 console.log("MicContext: No speech detected");
                 setVoiceError("No speech detected. Please try again.");
+                try { setProcessingRing(false); } catch {}
               }
             } catch (e: any) {
               console.error("MicContext: Voice chat failed:", e);
               setVoiceError(e?.message || "Voice chat failed");
             } finally {
               setBusy("idle");
+              try { setProcessingRing(false); } catch {}
               // restart loop only if still enabled
               if (voiceLoopRef.current) {
                 console.log("MicContext: Restarting voice loop after processing");
@@ -794,6 +939,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
               const tFirst = recFirstChunkTsRef.current || 0;
               const detectMs = tFirst && t0 ? (tFirst - t0) : undefined;
               const { text } = await callSTTMultipart(b, detectMs);
+              setProcessingRing(true);
               if (text && text.trim()) {
                 console.log("MicContext: STT result:", text);
                 setTranscript(text);
@@ -807,29 +953,35 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
                 setAssistantText(reply);
                 void ingestMessage("assistant", reply);
               } else {
-                console.log("MicContext: No speech detected");
+                console.log("MicContext: No speech detected (one-shot)");
                 setVoiceError("No speech detected. Please try again.");
+                try { setProcessingRing(false); } catch {}
               }
             } catch (e: any) {
-              console.error("MicContext: Voice chat failed:", e);
+              console.error("MicContext: One-shot voice chat failed:", e);
               setVoiceError(e?.message || "Voice chat failed");
             } finally {
               setBusy("idle");
+              try { setProcessingRing(false); } catch {}
             }
           } else {
-            console.log("MicContext: No audio captured or voiceLoop disabled, skipping processing");
+            console.log("MicContext: No audio captured");
             setBusy("idle");
+            try { setProcessingRing(false); } catch {}
           }
         } catch (e) {
           console.error("MicContext: Failed to finalize recording:", e);
           setVoiceError("Failed to finalize recording");
           setBusy("idle");
+          try { setProcessingRing(false); } catch {}
         }
       };
 
       rec.start(100);
       console.log("MicContext: Recording started");
       setRecording(true);
+      // Reset speaking indicator on start
+      try { setInputSpeaking(false); } catch {}
 
       if (stopTimerRef.current) { window.clearTimeout(stopTimerRef.current); }
       stopTimerRef.current = window.setTimeout(() => {
@@ -866,6 +1018,8 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
               lastSpeechTs = Date.now();
               silenceFrames = 0;
               if (!firstSpeechTs) firstSpeechTs = lastSpeechTs;
+              // Mark speaking when over threshold
+              try { setInputSpeaking(true); } catch {}
             } else {
               // Accumulate silence frames with debounce
               silenceFrames += 1;
@@ -874,6 +1028,8 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
               const graceOk = (firstSpeechTs ? (now - firstSpeechTs) : (now - (recStartTsRef.current || now))) >= VAD_GRACE_MS;
               const minSpeechOk = firstSpeechTs ? (now - firstSpeechTs) >= MIN_SPEECH_MS : false;
               const sustainedSilence = (now - lastSpeechTs) > VAD_MAX_SILENCE_MS && silenceFrames >= SILENCE_DEBOUNCE_FRAMES;
+              // Decay speaking indicator when under threshold
+              try { setInputSpeaking(false); } catch {}
               if (hadSpeech && graceOk && minSpeechOk && sustainedSilence) {
                 console.log("MicContext: VAD auto-stop triggered", { rms, VAD_THRESHOLD, silenceMs: now - lastSpeechTs, silenceFrames, SILENCE_DEBOUNCE_FRAMES, MIN_SPEECH_MS, VAD_GRACE_MS });
                 try { rec.stop(); } catch {}
@@ -961,24 +1117,24 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
           let sum = 0, count = 0;
           for (let i = 0; i < buf.length; i += 32) { const v = buf[i]; sum += v * v; count++; }
           const rms = Math.sqrt(sum / Math.max(1, count));
-          if (rms >= BARGE_RMS_THRESHOLD) {
-            speechFramesRef.current += 1;
-            if (speechFramesRef.current >= BARGE_MIN_FRAMES && bargeArmedRef.current) {
-              console.log("MicContext: BARGE-IN TRIGGERED", { rms, BARGE_RMS_THRESHOLD, frames: speechFramesRef.current });
-              bargeArmedRef.current = false;
-              // Interrupt playback and chat immediately
-              try { stopPlaybackAndClear(); } catch {}
-              // Cancel any in-flight or queued TTS
-              ttsCancelRef.current += 1;
-              ttsTextQueueRef.current = [];
-              pendingAudioUrlRef.current = null;
-              try { chatEsRef.current?.close(); chatEsRef.current = null; } catch {}
-              try { setBusy("idle"); } catch {}
-              // Stop monitor before starting recording
-              stopBargeMonitor();
-              // Start recording immediately
-              void startRecording();
-            }
+          // Immediate barge-in: trigger on the first frame above threshold
+          if (bargeArmedRef.current && rms >= BARGE_RMS_THRESHOLD) {
+            console.log("MicContext: BARGE-IN TRIGGERED (immediate)", { rms, BARGE_RMS_THRESHOLD });
+            bargeArmedRef.current = false;
+            // Interrupt playback and chat immediately
+            try { pausePlayback(); } catch {}
+            // Clear any queued audio so nothing resumes after interrupt
+            try { audioQueueRef.current = []; } catch {}
+            // Cancel any in-flight or queued TTS
+            ttsCancelRef.current += 1;
+            ttsTextQueueRef.current = [];
+            pendingAudioUrlRef.current = null;
+            try { chatEsRef.current?.close(); chatEsRef.current = null; } catch {}
+            try { setBusy("idle"); } catch {}
+            // Stop monitor before starting recording
+            stopBargeMonitor();
+            // Start recording immediately
+            void startRecording();
           } else {
             // decay frames to reduce false positives
             speechFramesRef.current = Math.max(0, speechFramesRef.current - 1);
@@ -986,17 +1142,19 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
         } catch (e) {
           console.log("MicContext: barge monitor error", e);
         }
-      }, 100);
-      console.log("MicContext: Barge monitor started", { BARGE_RMS_THRESHOLD, BARGE_MIN_FRAMES });
+      }, 50);
+      console.log("MicContext: Barge monitor started", { BARGE_RMS_THRESHOLD, intervalMs: 50 });
     } catch (e) {
       console.log("MicContext: Failed to start barge monitor", e);
       stopBargeMonitor();
     }
   }, [BARGE_MIN_FRAMES, BARGE_RMS_THRESHOLD, startRecording, stopBargeMonitor]);
 
-  // Start/stop barge monitor depending on assistant output state
+  // Start/stop barge monitor only when assistant audio is playing.
+  // Avoid monitoring during text streaming (busy === 'chat') to prevent premature interrupts.
   useEffect(() => {
-    const shouldMonitor = voiceLoop && !recording && (audioPlayingRef.current || busy === "chat");
+    const shouldMonitor = voiceLoop && !recording && audioPlayingRef.current;
+    try { console.log("MicContext: Barge monitor check", { voiceLoop, recording, audioPlaying: audioPlayingRef.current, busy }); } catch {}
     if (shouldMonitor) {
       void startBargeMonitor();
     } else {
@@ -1014,6 +1172,13 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     voiceLoop,
     transcript,
     assistantText,
+    sendPrompt,
+    inputSpeaking,
+    processingRing,
+    interactionState,
+    interactionGroupId,
+    interactionTurnCount,
+    assessmentChips,
     setVoiceLoop: setVoiceLoopState,
     toggleVoiceLoop,
     startRecording,
@@ -1029,7 +1194,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     silenceDebounceFrames: tuning.silenceDebounceFrames,
     vadGraceMs: tuning.vadGraceMs,
     setTuning,
-  }), [assistantText, busy, clear, mediaSupported, recording, startRecording, stopRecording, transcript, voiceError, voiceLoop, toggleVoiceLoop, setVoiceLoopState, tuning, setTuning, resetTuning]);
+  }), [assistantText, busy, clear, mediaSupported, recording, startRecording, stopRecording, transcript, voiceError, voiceLoop, toggleVoiceLoop, setVoiceLoopState, tuning, setTuning, resetTuning, inputSpeaking, processingRing, interactionState, interactionGroupId, interactionTurnCount, assessmentChips]);
 
   return (
     <MicContext.Provider value={value}>{children}</MicContext.Provider>

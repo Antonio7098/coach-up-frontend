@@ -298,6 +298,10 @@ function escapeXml(s: string): string {
 }
 
 async function uploadToS3(data: Uint8Array, contentType: string): Promise<string | null> {
+  // Opt-in only: require explicit enable to attempt any upload
+  const uploadEnabled = process.env.TTS_UPLOAD_TO_STORAGE === '1'
+  const storageProvider = (process.env.STORAGE_PROVIDER || 's3').toLowerCase()
+  if (!uploadEnabled || storageProvider !== 's3') return null
   const bucket = process.env.S3_BUCKET_AUDIO
   if (!bucket) return null
   const region = process.env.S3_REGION || 'us-east-1'
@@ -308,7 +312,13 @@ async function uploadToS3(data: Uint8Array, contentType: string): Promise<string
   const day = date.toISOString().slice(0, 10)
   const ext = contentType.includes('wav') ? 'wav' : contentType.includes('ogg') ? 'ogg' : contentType.includes('mp4') ? 'm4a' : 'mp3'
   const key = `tts/${day}/${crypto.randomUUID()}.${ext}`
-  await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: data, ContentType: contentType }))
+  try {
+    await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: data, ContentType: contentType }))
+  } catch (e) {
+    // Fail-open for privacy-first and local dev: if storage is unavailable, skip upload.
+    try { console.warn('[tts] uploadToS3 failed; falling back to data URL', { message: (e as any)?.message }) } catch {}
+    return null
+  }
   // Construct a URL if endpoint is public-ish; otherwise caller will know to use bucket access. For LocalStack/minio, endpoint works.
   if (endpoint) {
     const base = endpoint.replace(/\/$/, '')

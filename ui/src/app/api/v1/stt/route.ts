@@ -170,14 +170,13 @@ export async function POST(request: Request) {
         return respond(413, { error: "Audio too large", maxBytes });
       }
 
-      // Require storage for multipart path
-      const uploaded = await uploadToS3AndGetKey(audio);
-      if (!uploaded) {
-        console.log(JSON.stringify({ level: 'error', route: routePath, requestId, status: 501, mode, msg: 'Storage not configured for multipart', latencyMs: Date.now() - started }));
-        return respond(501, { error: "Storage not configured" });
-      }
+      // Privacy-first: bypass storage entirely by posting bytes directly to the provider.
+      // Encode the uploaded blob as a data URL that providers can fetch via standard fetch.
+      const ab = await audio.arrayBuffer();
+      const b64 = Buffer.from(ab).toString('base64');
+      const dataUrl = `data:${mime};base64,${b64}`;
 
-      const result = await provider.transcribe({ audioUrl: null, objectKey: uploaded.objectKey, languageHint: languageHint ?? null });
+      const result = await provider.transcribe({ audioUrl: dataUrl, objectKey: null, languageHint: languageHint ?? null });
       const payload = {
         provider: result.provider || mode,
         text: result.text,
@@ -187,12 +186,12 @@ export async function POST(request: Request) {
         clientDetectMs: typeof clientDetectMs === 'number' && isFinite(clientDetectMs) ? clientDetectMs : undefined,
         sessionId: sessionId ?? null,
         groupId: groupId ?? null,
-        audioUrl: uploaded.audioUrl ?? null,
-        objectKey: uploaded.objectKey,
+        audioUrl: null,
+        objectKey: null,
       } as const;
 
-      // Persist transcript
-      persistInteraction({ sessionId, groupId, requestId, text: result.text ?? null, audioUrl: uploaded.audioUrl ?? null, objectKey: uploaded.objectKey }).catch(() => {});
+      // Persist transcript only (no audioUrl/objectKey for privacy)
+      persistInteraction({ sessionId, groupId, requestId, text: result.text ?? null, audioUrl: null, objectKey: null }).catch(() => {});
 
       // Metrics: audio bytes in (multipart path)
       try {
