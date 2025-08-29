@@ -7,6 +7,11 @@
 ## Request ID
 - X-Request-Id: stable per client request; propagate client → Next.js → FastAPI → provider
 
+## Idempotency
+- Idempotency-Key: optional request header echoed by the server in responses.
+  - Currently implemented on `GET /api/v1/session-summary` for tracing and future idempotency semantics.
+  - Response will include `Idempotency-Key` when provided by the client.
+
 ## Tracked Skill (privacy-preserving)
 - X-Tracked-Skill-Id: optional; raw tracked skill identifier provided by the client.
   - The server hashes this value (SHA-256) and only the hash (`trackedSkillIdHash`) is logged/persisted.
@@ -36,9 +41,19 @@
 - text/event-stream for SSE streaming endpoints
 
 ## Rate Limits
-- 429 with Retry-After header on limit exceeded
-- Suggested headers (document if implemented):
-  - X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset
+- 429 with `Retry-After` header on limit exceeded.
+- Implemented headers (in-memory, best-effort) on `GET /api/v1/session-summary` responses:
+  - `X-RateLimit-Limit`: burst capacity for the token bucket.
+  - `X-RateLimit-Remaining`: remaining tokens after this request.
+  - `X-RateLimit-Reset`: seconds until tokens are replenished.
+  - On 429, `Retry-After` is also included.
+- Notes:
+  - Limiting is per client key derived from `x-forwarded-for`/`x-real-ip` and `user-agent`.
+  - This limiter is in-memory and not suitable for multi-instance production without a shared store.
+
+### Metrics
+- Prometheus counter for rate-limited responses: `coachup_ui_api_rate_limited_total{route,method,status,mode}`.
+  - Example route label: `/api/v1/session-summary`
 
 ## Tracing
 - Include requestId in all logs; optionally include hashed userId/sessionId/trackedSkillId/groupId

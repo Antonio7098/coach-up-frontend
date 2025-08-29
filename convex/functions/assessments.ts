@@ -46,8 +46,41 @@ export const recordSkillAssessmentV2 = mutation({
       createdAt: now,
       updatedAt: now,
     } as any;
-    const id = await ctx.db.insert("assessments", doc);
+    const id = await (ctx.db as any).insert("assessments", doc);
     return { ok: true, id } as const;
+  },
+});
+
+// Fetch latest session summary for a given sessionId
+export const getLatestAssessmentSummary = query({
+  args: {
+    sessionId: v.string(),
+  },
+  handler: async (ctx, { sessionId }) => {
+    // Find the latest summary entry in assessments for this session
+    const latest = await ctx.db
+      .query("assessments")
+      .withIndex("by_session", (q) => q.eq("sessionId", sessionId))
+      .filter((q) => q.eq(q.field("kind"), "summary"))
+      .order("desc")
+      .first();
+
+    if (!latest) return null as any;
+
+    // Look up session record to provide latestGroupId (optional)
+    const sess = await ctx.db
+      .query("sessions")
+      .withIndex("by_sessionId", (q) => q.eq("sessionId", sessionId))
+      .first();
+
+    return {
+      sessionId,
+      latestGroupId: sess?.latestGroupId ?? latest.groupId ?? null,
+      summary: latest.summary ?? null,
+      rubricVersion: latest.rubricVersion ?? "v2",
+      createdAt: latest.createdAt,
+      updatedAt: latest.updatedAt,
+    } as any;
   },
 });
 

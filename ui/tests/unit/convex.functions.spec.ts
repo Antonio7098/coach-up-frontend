@@ -1,12 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 
 // Mock Convex server wrappers and values (virtual modules)
-vi.mock('../../../convex/_generated/server', () => ({
+(vi as any).mock('../../../convex/_generated/server', () => ({
   mutation: (def: any) => def,
   query: (def: any) => def,
 }), { virtual: true });
 
-vi.mock('convex/values', () => ({
+(vi as any).mock('convex/values', () => ({
   v: {
     string: () => ({}),
     number: () => ({}),
@@ -23,7 +23,7 @@ vi.mock('convex/values', () => ({
 import { updateSessionState } from '../../../convex/functions/sessions';
 import { appendInteraction } from '../../../convex/functions/interactions';
 import { logEvent, listBySession } from '../../../convex/functions/events';
-import { getLatestSummaryBySession, persistAssessmentSummary, writeAssessment } from '../../../convex/functions/assessments';
+import { recordSkillAssessmentV2, getLatestAssessmentSummary, checkFinalizeIdempotency, markFinalizeCompleted } from '../../../convex/functions/assessments';
 
 describe('Convex functions: write paths and index usage', () => {
   it('sessions.updateSessionState uses by_sessionId unique and inserts when missing', async () => {
@@ -165,62 +165,61 @@ describe('Convex functions: write paths and index usage', () => {
     await expect((logEvent as any).handler(ctx, { userId: 'u1', sessionId: 's1', kind: 'k', trackedSkillIdHash: ' ', payload: {} })).rejects.toThrow('trackedSkillIdHash must be non-empty when provided');
   });
 
-  it('assessments.getLatestSummaryBySession filters by kind and returns latest by createdAt', async () => {
+  it('assessments.getLatestAssessmentSummary returns latest summary with latestGroupId', async () => {
+    const ctx = {
+      db: {
+        query: vi.fn((table: string) => ({
+          withIndex: (name: string, cb: any) => {
+            if (table === 'assessments' && name === 'by_session') {
+              // Simulate .filter().order('desc').first() chain
+              const q = { eq: (_f: any, _v: any) => true, field: (_s: string) => 'kind' } as any
+              cb(q)
+              return {
+                filter: (_fcb: any) => ({ order: (_dir: 'desc' | 'asc') => ({ first: async () => ({
+                  sessionId: 's1', groupId: 'g2', kind: 'summary', summary: { a: 1 }, rubricVersion: 'v2', createdAt: 20, updatedAt: 21,
+                }) }) }),
+              }
+            }
+            if (table === 'sessions' && name === 'by_sessionId') {
+              const q = { eq: (_f: any, _v: any) => true } as any
+              cb(q)
+              return { first: async () => ({ latestGroupId: 'g3' }) }
+            }
+            return { first: async () => null }
+          },
+        })),
+      },
+    } as any
+
+    const res = await (getLatestAssessmentSummary as any).handler(ctx, { sessionId: 's1' })
+    expect(res).toMatchObject({ sessionId: 's1', latestGroupId: 'g3', rubricVersion: 'v2', createdAt: 20, updatedAt: 21 })
+    expect(res.summary).toEqual({ a: 1 })
+  })
+
+  it('assessments.recordSkillAssessmentV2 validates level bounds and inserts document', async () => {
+    const inserts: any[] = []
+    const ctx = { db: { insert: vi.fn(async (_t: string, doc: any) => { inserts.push(doc); return 'assessV2'; }) } } as any
+    // invalid level
+    await expect((recordSkillAssessmentV2 as any).handler(ctx, { userId: 'u1', sessionId: 's1', groupId: 'g1', skillHash: 'h', level: 11, rubricVersion: 'v2', feedback: [], metCriteria: [], unmetCriteria: [] })).rejects.toThrow('level must be 0-10')
+    // valid path
+    const res = await (recordSkillAssessmentV2 as any).handler(ctx, { userId: 'u1', sessionId: 's1', groupId: 'g1', skillHash: 'h', level: 5, rubricVersion: 'v2', feedback: ['f'], metCriteria: ['a'], unmetCriteria: ['b'], trackedSkillIdHash: 'th' })
+    expect(res).toEqual({ ok: true, id: 'assessV2' })
+    expect(inserts).toHaveLength(1)
+    expect(inserts[0]).toMatchObject({ userId: 'u1', sessionId: 's1', groupId: 'g1', skillHash: 'h', level: 5, kind: 'skill_assessment', rubricVersion: 'v2' })
+  })
+
+  it('assessments.idempotency guards are respected', async () => {
     const ctx = {
       db: {
         query: vi.fn(() => ({
-          withIndex: (_name: string, _cb: any) => ({ collect: async () => ([
-            { kind: 'per_interaction', createdAt: 5 },
-            { kind: 'summary', createdAt: 10, id: 'a' },
-            { kind: 'summary', createdAt: 20, id: 'b' },
-          ]) }),
+          withIndex: (_name: string, _cb: any) => ({ first: async () => ({ sessionId: 's1', groupId: 'g1', expiresAt: Date.now() + 1000 }) }),
         })),
+        insert: vi.fn(async (_t: string, _doc: any) => undefined),
       },
-    } as any;
-
-    const res = await (getLatestSummaryBySession as any).handler(ctx, { sessionId: 's1' });
-    expect(res).toMatchObject({ kind: 'summary', createdAt: 20, id: 'b' });
-  });
-
-  it('assessments.persistAssessmentSummary inserts summary doc', async () => {
-    const inserts: any[] = [];
-    const ctx = {
-      db: {
-        insert: vi.fn(async (_table: string, doc: any) => { inserts.push(doc); return 'assess1'; }),
-      },
-    } as any;
-
-    const args = {
-      userId: 'u1', sessionId: 's1', groupId: 'g1', rubricVersion: 'v1',
-      summary: { highlights: [], recommendations: [], rubricKeyPoints: [] },
-    } as any;
-
-    const res = await (persistAssessmentSummary as any).handler(ctx, args);
-    expect(res).toEqual({ ok: true, id: 'assess1' });
-    expect(inserts).toHaveLength(1);
-    expect(inserts[0]).toMatchObject({ userId: 'u1', sessionId: 's1', groupId: 'g1', kind: 'summary' });
-    expect(typeof inserts[0].createdAt).toBe('number');
-  });
-
-  it('assessments.writeAssessment validates kind, score, ids, and categories', async () => {
-    const ctx = { db: { insert: vi.fn(async () => 'assessX') } } as any;
-    const base: any = {
-      userId: 'u1',
-      sessionId: 's1',
-      trackedSkillIdHash: undefined,
-      interactionId: 'i1',
-      groupId: 'g1',
-      kind: 'per_interaction',
-      category: 'clarity',
-      score: 0.5,
-      errors: [],
-      tags: [],
-      rubricVersion: 'v1',
-    };
-    await expect((writeAssessment as any).handler(ctx, { ...base, kind: 'bad' })).rejects.toThrow('invalid kind');
-    await expect((writeAssessment as any).handler(ctx, { ...base, score: 2 })).rejects.toThrow('invalid score');
-    await expect((writeAssessment as any).handler(ctx, { ...base, kind: 'per_interaction', interactionId: undefined })).rejects.toThrow('interactionId required');
-    await expect((writeAssessment as any).handler(ctx, { ...base, kind: 'summary', groupId: undefined })).rejects.toThrow('groupId required');
-    await expect((writeAssessment as any).handler(ctx, { ...base, kind: 'multi_turn', category: 'bad' })).rejects.toThrow('invalid category');
-  });
+    } as any
+    const existing = await (checkFinalizeIdempotency as any).handler(ctx, { sessionId: 's1', groupId: 'g1' })
+    expect(existing).not.toBeNull()
+    const res = await (markFinalizeCompleted as any).handler(ctx, { sessionId: 's1', groupId: 'g1' })
+    expect(res).toEqual({ ok: true })
+  })
 });

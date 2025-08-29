@@ -8,6 +8,7 @@ const g = globalThis as unknown as {
     metrics: {
       requestsTotal: client.Counter<string>;
       requestErrorsTotal: client.Counter<string>;
+      rateLimitedTotal: client.Counter<string>;
       requestDurationSeconds: client.Histogram<string>;
       audioBytesIn: client.Counter<string>;
       audioBytesOut: client.Counter<string>;
@@ -39,6 +40,13 @@ function createMetrics() {
   const requestErrorsTotal = new client.Counter({
     name: "coachup_ui_api_request_errors_total",
     help: "Total number of UI API request errors (5xx)",
+    labelNames: labelNames as unknown as string[],
+    registers: [registry],
+  });
+
+  const rateLimitedTotal = new client.Counter({
+    name: "coachup_ui_api_rate_limited_total",
+    help: "Total number of UI API requests rate limited (429)",
     labelNames: labelNames as unknown as string[],
     registers: [registry],
   });
@@ -139,7 +147,7 @@ function createMetrics() {
 
   return {
     registry,
-    metrics: { requestsTotal, requestErrorsTotal, requestDurationSeconds, audioBytesIn, audioBytesOut, storageBytesUploaded, storagePresignBytesPlanned, sttLatencyMs, ttsLatencyMs, chatFirstTokenMs, clientDetectMs, voiceEventsTotal, voiceTtsPlaybackMs },
+    metrics: { requestsTotal, requestErrorsTotal, rateLimitedTotal, requestDurationSeconds, audioBytesIn, audioBytesOut, storageBytesUploaded, storagePresignBytesPlanned, sttLatencyMs, ttsLatencyMs, chatFirstTokenMs, clientDetectMs, voiceEventsTotal, voiceTtsPlaybackMs },
   } as const;
 }
 

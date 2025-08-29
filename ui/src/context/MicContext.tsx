@@ -1,7 +1,11 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { voicePublishState, useVoice } from "./VoiceContext";
+import { useAudio } from "./AudioContext";
+import { useConversation } from "./ConversationContext";
 import { useChat } from "./ChatContext";
+import { useSessionSummary } from "../hooks/useSessionSummary";
 
 // Mic context centralizing voice loop state, recording, STT/TTS, audio queues, and barge-in.
 // This mirrors the logic used in `app/coach/page.tsx` but is decoupled so it can be reused globally.
@@ -27,8 +31,17 @@ type MicContextValue = {
   needsAudioUnlock: boolean;
   // Call on a user gesture to unlock audio and resume pending playback
   unlockAudio: () => void;
+  // Audio playback controls (temporary exposure while extracting to AudioContext)
+  enqueueAudio: (url: string) => void;
+  stopPlaybackAndClear: () => void;
+  pausePlayback: () => void;
+  waitForQueueToDrain: (timeoutMs?: number) => Promise<void>;
   // Fire a chat request with a text prompt (UI/debug helper)
   sendPrompt: (prompt: string) => Promise<string>;
+  // TTS text enqueue (adapter exposure during migration)
+  enqueueTTSSegment: (text: string) => void;
+  // STT adapter during migration
+  sttFromBlob: (b: Blob, detectMs?: number) => Promise<{ text: string }>;
   // Live input VAD state for UI animations
   inputSpeaking: boolean;
   // Show processing ring precisely between STT send and TTS start
@@ -77,6 +90,11 @@ export function useMic() {
 
 export function MicProvider({ children }: { children: React.ReactNode }) {
   const { sessionId } = useChat();
+  const { enqueueTTSSegment, sttFromBlob } = useVoice();
+  const { getHistoryParam, sendPrompt: convoSendPrompt, chatToTextWithTTS } = useConversation();
+  const audio = useAudio();
+  // Session summary (cached, periodic refresh)
+  const { summary: sessionSummary, onTurn: sessionSummaryOnTurn } = useSessionSummary(sessionId);
 
   const [mediaSupported, setMediaSupported] = useState(false);
   const [recording, setRecording] = useState(false);
@@ -104,6 +122,12 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
   const [assessmentChips, setAssessmentChips] = useState<AssessmentChip[]>([]);
   const chipsRef = useRef<AssessmentChip[]>([]);
   useEffect(() => { chipsRef.current = assessmentChips; }, [assessmentChips]);
+  // Nudge session summary refresh on each new turn
+  useEffect(() => {
+    if (interactionTurnCount > 0) {
+      try { sessionSummaryOnTurn(); } catch {}
+    }
+  }, [interactionTurnCount, sessionSummaryOnTurn]);
   const assessPollRef = useRef<boolean>(false);
   // VAD flag for UI (true when incoming audio exceeds threshold)
   const [inputSpeaking, setInputSpeaking] = useState(false);
@@ -122,6 +146,11 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     const envVadGrace = Number(process.env.NEXT_PUBLIC_VOICE_VAD_GRACE_MS ?? 0) || 500;
     return { envVad, envSilence, envBargeRms, envBargeFrames, envMaxUtter, envMinSpeech, envSilenceDebounce, envVadGrace };
   }, []);
+
+  // Publish voice surface to VoiceContext for standalone consumption
+  useEffect(() => {
+    voicePublishState({ busy, processingRing, transcript, assistantText, voiceError });
+  }, [busy, processingRing, transcript, assistantText, voiceError]);
   const [tuning, setTuningState] = useState({
     vadThreshold: 0.02,
     vadMaxSilenceMs: 900,
@@ -181,17 +210,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => { voiceLoopRef.current = voiceLoop; }, [voiceLoop]);
   useEffect(() => { recordingRef.current = recording; }, [recording]);
 
-  // Chat history for context (last 10 messages)
-  const historyRef = useRef<{ role: "user" | "assistant"; content: string }[]>([]);
-
-  // How many recent messages to send to the backend as client-passed history.
-  // Configurable via NEXT_PUBLIC_MESSAGE_CONTEXT_LENGTH and clamped to [1, 10]
-  // since we only persist the last 10 locally.
-  const MAX_HISTORY_FOR_VOICE = (() => {
-    const envN = Number(process.env.NEXT_PUBLIC_MESSAGE_CONTEXT_LENGTH ?? 0) || 2;
-    const n = Math.max(1, Math.min(10, Math.floor(envN)));
-    return n;
-  })();
+  // Chat history now owned by ConversationContext. MicContext no longer stores it locally.
 
   const mediaRef = useRef<MediaRecorder | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -207,9 +226,6 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
   // Audio refs
   const audioQueueRef = useRef<string[]>([]);
   const audioPlayingRef = useRef<boolean>(false);
-  const ttsTextQueueRef = useRef<string[]>([]);
-  const ttsProcessingRef = useRef(false);
-  const ttsCancelRef = useRef(0);
   const pendingAudioUrlRef = useRef<string | null>(null);
   // Telemetry helpers
   const prevInputSpeakingRef = useRef<boolean>(false);
@@ -244,19 +260,6 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
   const SILENCE_DEBOUNCE_FRAMES = Math.max(0, Math.floor(tuning.silenceDebounceFrames));
   const VAD_GRACE_MS = Math.max(0, tuning.vadGraceMs);
   const TTS_TIMEOUT_MS = (Number(process.env.NEXT_PUBLIC_TTS_TIMEOUT_MS ?? 0) || 15000);
-  const STT_TIMEOUT_MS = (Number(process.env.NEXT_PUBLIC_STT_TIMEOUT_MS ?? 0) || 12000);
-  // Adaptive client STT upload controls
-  const STT_DIRECT_UPLOAD_ENABLED = ((): boolean => {
-    const v = String(process.env.NEXT_PUBLIC_STT_DIRECT_UPLOAD_ENABLED || "").toLowerCase();
-    if (v === "0" || v === "false") return false;
-    if (v === "1" || v === "true") return true;
-    // default on
-    return true;
-  })();
-  const STT_DIRECT_UPLOAD_THRESHOLD_BYTES = (() => {
-    const n = Number(process.env.NEXT_PUBLIC_STT_DIRECT_UPLOAD_THRESHOLD_BYTES ?? 0);
-    return (isFinite(n) && n > 0) ? Math.floor(n) : 512 * 1024; // 512 KiB default
-  })();
   const ALWAYS_ON = String(process.env.NEXT_PUBLIC_VOICE_ALWAYS_ON || "").toLowerCase() === "true" || String(process.env.NEXT_PUBLIC_VOICE_ALWAYS_ON || "") === "1";
 
   useEffect(() => {
@@ -538,107 +541,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     }
   }, [enqueueAudio]);
 
-  // --- TTS helpers ---
-  const callTTSChunk = useCallback(async (text: string): Promise<string> => {
-    try {
-      console.log("MicContext: Calling TTS for text:", text);
-      
-      // Helper to perform one TTS request with timeout
-      const doOnce = async (): Promise<Response> => {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), TTS_TIMEOUT_MS);
-        try {
-          const res = await fetch("/api/v1/tts", {
-            method: "POST",
-            headers: { 
-              "content-type": "application/json",
-              "x-request-id": Math.random().toString(36).slice(2)
-            },
-            body: JSON.stringify({ text, sessionId: sessionId || undefined }),
-            signal: controller.signal,
-          });
-          return res;
-        } finally {
-          clearTimeout(timeoutId);
-        }
-      };
-
-      // Try once, and retry one time on timeout
-      let res: Response | null = null;
-      let timedOut = false;
-      try {
-        res = await doOnce();
-      } catch (e: any) {
-        if (e?.name === 'AbortError') timedOut = true; else throw e;
-      }
-      if (!res && timedOut) {
-        console.warn(`MicContext: TTS timed out after ${TTS_TIMEOUT_MS}ms; retrying once`);
-        try { res = await doOnce(); } catch (e) { if ((e as any)?.name === 'AbortError') console.error(`MicContext: TTS timed out again after ${TTS_TIMEOUT_MS}ms`); }
-      }
-      if (!res) return "";
-
-      console.log("MicContext: TTS response status:", res.status);
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        console.error("MicContext: TTS failed:", res.status, data?.error);
-        throw new Error(data?.error || `tts failed: ${res.status}`);
-      }
-      const audioUrl = String(data?.audioUrl || "");
-      const ttsDurationMs = Number(data?.durationMs || 0) || undefined;
-      if (typeof ttsDurationMs === 'number') {
-        try { console.log(JSON.stringify({ type: 'voice.tts.duration', durationMs: ttsDurationMs })); } catch {}
-      }
-      console.log("MicContext: TTS returned audioUrl:", audioUrl);
-      return audioUrl;
-    } catch (e) {
-      if (e instanceof Error && (e.name === 'AbortError')) {
-        console.error(`MicContext: TTS request timed out after ${TTS_TIMEOUT_MS}ms`);
-      } else {
-        console.error("MicContext: TTS error:", e);
-      }
-      return "";
-    }
-  }, [sessionId, TTS_TIMEOUT_MS]);
-
-  const ensureTTSWorker = useCallback(async () => {
-    if (ttsProcessingRef.current) return;
-    console.log("MicContext: Starting TTS worker, queue length:", ttsTextQueueRef.current.length);
-    ttsProcessingRef.current = true;
-    const myGen = ttsCancelRef.current;
-    try {
-      while (ttsTextQueueRef.current.length > 0) {
-        if (ttsCancelRef.current !== myGen) {
-          console.log("MicContext: TTS worker cancelled");
-          break;
-        }
-        const text = ttsTextQueueRef.current.shift()!;
-        console.log("MicContext: Processing TTS for:", text);
-        const url = await callTTSChunk(text);
-        if (ttsCancelRef.current !== myGen) {
-          console.log("MicContext: TTS worker cancelled after TTS call");
-          break;
-        }
-        if (url) {
-          console.log("MicContext: Enqueueing audio URL:", url);
-          enqueueAudio(url);
-        } else {
-          console.log("MicContext: No audio URL returned for text:", text);
-        }
-      }
-    } finally {
-      ttsProcessingRef.current = false;
-      console.log("MicContext: TTS worker finished");
-    }
-  }, [callTTSChunk, enqueueAudio]);
-
-  const enqueueTTSSegment = useCallback((text: string) => {
-    if (!text || !text.trim()) return;
-    console.log("MicContext: TTS enqueueTTSSegment", { text, queueLen: ttsTextQueueRef.current.length });
-    // First TTS segment enqueued -> stop "Thinking" ring
-    try { setProcessingRing(false); } catch {}
-    ttsTextQueueRef.current.push(text.trim());
-    void ensureTTSWorker();
-  }, [ensureTTSWorker]);
+  // TTS handled by VoiceContext via useVoice().
 
   // --- Assessments polling worker ---
   const ensureAssessmentPolling = useCallback(async () => {
@@ -676,7 +579,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     const start = Date.now();
     return new Promise<void>((resolve) => {
       const tick = () => {
-        const empty = audioQueueRef.current.length === 0 && !audioPlayingRef.current && !ttsProcessingRef.current && ttsTextQueueRef.current.length === 0;
+        const empty = audioQueueRef.current.length === 0 && !audioPlayingRef.current;
         if (empty || Date.now() - start > timeoutMs) return resolve();
         setTimeout(tick, 100);
       };
@@ -684,282 +587,57 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  // --- History helpers ---
-  function historyStorageKey(sid: string) {
-    return `chatHistory:${sid}`;
-  }
-
-  function saveHistory() {
-    try {
-      if (!sessionId) return;
-      const items = historyRef.current.slice(-10);
-      localStorage.setItem(historyStorageKey(sessionId), JSON.stringify(items));
-    } catch {}
-  }
-
-  useEffect(() => {
-    if (!sessionId) return;
-    try {
-      const raw = localStorage.getItem(historyStorageKey(sessionId));
-      if (raw) {
-        const arr = JSON.parse(raw);
-        if (Array.isArray(arr)) {
-          historyRef.current = arr
-            .filter((x: any) => x && typeof x.content === "string" && (x.role === "user" || x.role === "assistant"))
-            .slice(-10);
-        }
-      }
-    } catch {}
-  }, [sessionId]);
-
-  function toBase64Url(s: string): string {
-    try {
-      const bytes = new TextEncoder().encode(s);
-      let bin = "";
-      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-      const b64 = btoa(bin);
-      return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-    } catch {
-      try {
-        const b64 = btoa(unescape(encodeURIComponent(s)));
-        return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-      } catch {
-        return "";
-      }
-    }
-  }
-
-  function buildHistoryParam(): string {
-    const maxN = MAX_HISTORY_FOR_VOICE; // Use optimized depth for voice interactions
-    const items = historyRef.current.slice(-maxN).map((m) => ({
-      role: m.role,
-      content: (m.content || "").slice(0, 240),
-    }));
-    try {
-      const json = JSON.stringify(items);
-      return toBase64Url(json);
-    } catch {
-      return "";
-    }
-  }
+  // --- History helpers removed: handled by ConversationContext ---
 
   // --- STT and Chat helpers ---
-  const callSTTMultipart = useCallback(async (b: Blob, detectMs?: number): Promise<{ text: string }> => {
+  const callSTT = useCallback(async (b: Blob, detectMs?: number): Promise<{ text: string }> => {
     setBusy("stt");
     try { setProcessingRing(true); } catch {}
-
-    // Decide path: direct-to-S3 + JSON STT for large blobs, multipart otherwise
-    const shouldDirect = STT_DIRECT_UPLOAD_ENABLED && b.size >= STT_DIRECT_UPLOAD_THRESHOLD_BYTES;
-    if (shouldDirect) {
-      try {
-        // 1) Presign
-        const presignStart = Date.now();
-        const presignRes = await fetch("/api/v1/storage/audio/presign", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ contentType: b.type || "audio/webm", sizeBytes: b.size })
-        });
-        const presignData: any = await presignRes.json().catch(() => ({}));
-        if (!presignRes.ok) throw new Error(presignData?.error || `presign failed: ${presignRes.status}`);
-        const { url, headers: putHeaders = {}, method = "PUT", objectKey } = presignData || {};
-        if (!url || !objectKey) throw new Error("invalid presign payload");
-        try { console.log(JSON.stringify({ type: 'voice.stt.direct.presign_ok', dtMs: Date.now() - presignStart, objectKey, size: b.size })); } catch {}
-
-        // 2) Upload
-        const upStart = Date.now();
-        const putRes = await fetch(url, { method, headers: putHeaders, body: b });
-        if (!putRes.ok) throw new Error(`upload failed: ${putRes.status}`);
-        try { console.log(JSON.stringify({ type: 'voice.stt.direct.upload_ok', dtMs: Date.now() - upStart, objectKey })); } catch {}
-
-        // 3) STT via JSON with timeout + single retry
-        const sttStart = Date.now();
-        const doOnce = async (): Promise<Response> => {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), STT_TIMEOUT_MS);
-          try {
-            const res = await fetch("/api/v1/stt", {
-              method: "POST",
-              headers: {
-                "content-type": "application/json",
-                ...(typeof detectMs === 'number' && isFinite(detectMs) && detectMs >= 0 ? { "x-detect-ms": String(Math.round(detectMs)) } : {}),
-              },
-              body: JSON.stringify({ objectKey, sessionId: sessionId || undefined }),
-              signal: controller.signal,
-            });
-            return res;
-          } finally {
-            clearTimeout(timeoutId);
-          }
-        };
-
-        let res: Response | null = null;
-        let timedOut = false;
-        try { res = await doOnce(); } catch (e: any) { if (e?.name === 'AbortError') timedOut = true; else throw e; }
-        if (!res && timedOut) {
-          try { console.warn(`MicContext: STT (direct) timed out after ${STT_TIMEOUT_MS}ms; retrying once`); } catch {}
-          try { res = await doOnce(); } catch (e) { if ((e as any)?.name === 'AbortError') { try { console.error(`MicContext: STT (direct) timed out again after ${STT_TIMEOUT_MS}ms`); } catch {} } }
-        }
-        if (!res) throw new Error("stt request failed");
-        try { console.log(JSON.stringify({ type: 'voice.stt.response_headers', dtMs: Date.now() - sttStart, status: res.status })); } catch {}
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data?.error || `stt failed: ${res.status}`);
-        try { console.log(JSON.stringify({ type: 'voice.stt.done', latencyMs: Date.now() - sttStart })); } catch {}
-        return { text: String(data?.text || "") };
-      } catch (e) {
-        // Fallback to multipart path on any failure in direct flow
-        try { console.warn("MicContext: direct STT path failed; falling back to multipart", e); } catch {}
-      }
-    }
-
-    // Multipart base64 path (existing behavior)
-    const sttStart = Date.now();
-    const form = new FormData();
-    form.set("audio", b, "utterance.webm");
-    if (sessionId) form.set("sessionId", sessionId);
-    const headers: Record<string, string> = {};
-    if (typeof detectMs === 'number' && isFinite(detectMs) && detectMs >= 0) {
-      headers["x-detect-ms"] = String(Math.round(detectMs));
-    }
-    try { console.log(JSON.stringify({ type: 'voice.stt.request_start', t0: sttStart, bytes: b.size, detectMs })); } catch {}
-
-    const doOnce = async (): Promise<Response> => {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), STT_TIMEOUT_MS);
-      try {
-        const res = await fetch("/api/v1/stt", { method: "POST", body: form, headers, signal: controller.signal });
-        return res;
-      } finally {
-        clearTimeout(timeoutId);
-      }
-    };
-
-    let res: Response | null = null;
-    let timedOut = false;
     try {
-      res = await doOnce();
-    } catch (e: any) {
-      if (e?.name === 'AbortError') timedOut = true; else throw e;
+      const res = await sttFromBlob(b, detectMs);
+      return { text: res?.text || "" };
+    } finally {
+      // state transitions handled by caller
     }
-    if (!res && timedOut) {
-      try { console.warn(`MicContext: STT timed out after ${STT_TIMEOUT_MS}ms; retrying once`); } catch {}
-      try { res = await doOnce(); } catch (e) {
-        if ((e as any)?.name === 'AbortError') {
-          try { console.error(`MicContext: STT timed out again after ${STT_TIMEOUT_MS}ms`); } catch {}
-        }
-      }
-    }
-    if (!res) throw new Error("stt request failed");
+  }, [sttFromBlob]);
 
-    try { console.log(JSON.stringify({ type: 'voice.stt.response_headers', dtMs: Date.now() - sttStart, status: res.status })); } catch {}
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data?.error || `stt failed: ${res.status}`);
-    try { console.log(JSON.stringify({ type: 'voice.stt.done', latencyMs: Date.now() - sttStart })); } catch {}
-    return { text: String(data?.text || "") };
-  }, [sessionId, STT_TIMEOUT_MS, STT_DIRECT_UPLOAD_ENABLED, STT_DIRECT_UPLOAD_THRESHOLD_BYTES]);
+  // Adapters now provided by VoiceContext. No registration needed here.
 
   const chatToText = useCallback(async (promptText: string, opts?: { includeHistory?: boolean }): Promise<string> => {
     setBusy("chat");
-    // Show "Thinking" indicator while waiting for first TTS segment
     try { setProcessingRing(true); } catch {}
-    // Clear assistant text for a fresh streaming response
     try { setAssistantText(""); } catch {}
-    return new Promise<string>((resolve, reject) => {
-      try {
-        const includeHistory = opts?.includeHistory !== false;
-        const hist = includeHistory ? buildHistoryParam() : "";
-        const qs = `?prompt=${encodeURIComponent(promptText)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""}${hist ? `&history=${encodeURIComponent(hist)}` : ""}`;
-        // Ensure any previous stream is closed before starting a new one
-        try { if (chatEsRef.current) { chatEsRef.current.close(); chatEsRef.current = null; } } catch {}
-        const es = new EventSource(`/api/chat${qs}`, { withCredentials: false });
-        chatEsRef.current = es;
-        try { console.log("MicContext: chatToText: EventSource opened", { url: `/api/chat${qs}`, includeHistory }); } catch {}
-        let acc = "";
-        let lastFlushed = 0;
-        const minFlushChars = 12;
-
-        es.onopen = () => {
-          try { console.log("MicContext: chatToText: onopen"); } catch {}
-        };
-        let idleTimer: ReturnType<typeof setTimeout> | null = null;
-        const maybeFlush = (force = false) => {
-          const pending = acc.slice(lastFlushed);
-          if (!force && pending.length < minFlushChars) return;
-          const segment = pending.trim();
-          if (!segment) return;
-          console.log("MicContext: TTS maybeFlush", { force, pendingLen: pending.length, segment });
-          lastFlushed = acc.length;
-          enqueueTTSSegment(segment);
-        };
-        const flushOnPunctuation = () => {
-          const tail = acc.slice(lastFlushed);
-          const idx = Math.max(tail.lastIndexOf("."), tail.lastIndexOf("!"), tail.lastIndexOf("?"), tail.lastIndexOf("\n"));
-          if (idx >= 0) {
-            const cut = lastFlushed + idx + 1;
-            const seg = acc.slice(lastFlushed, cut).trim();
-            if (seg.length >= 1) {
-              console.log("MicContext: TTS flushOnPunctuation", { seg, lastFlushed, idx, cut });
-              lastFlushed = cut;
-              enqueueTTSSegment(seg);
-            }
-          }
-        };
-        es.onmessage = (evt) => {
-          if (evt.data === "[DONE]") {
-            try { console.log("MicContext: chatToText: DONE received", { accLen: acc.length }); } catch {}
-            // Prevent duplicate tail flush by clearing any pending idle flush timer
-            if (idleTimer) { try { clearTimeout(idleTimer); } catch {} idleTimer = null; }
-            try { es.close(); } catch {}
-            try { if (chatEsRef.current === es) chatEsRef.current = null; } catch {}
-            // Mark all content as flushed and enqueue the remaining tail exactly once
-            const tail = acc.slice(lastFlushed).trim();
-            if (tail.length > 0) {
-              enqueueTTSSegment(tail);
-              lastFlushed = acc.length;
-            }
-            // Update history with assistant response
-            if (acc && acc.length > 0) {
-              historyRef.current.push({ role: "assistant", content: acc });
-              if (historyRef.current.length > 10) historyRef.current = historyRef.current.slice(-10);
-              saveHistory();
-            }
-            resolve(acc);
-            return;
-          }
-          acc += evt.data;
-          setAssistantText((prev) => prev + evt.data);
-          flushOnPunctuation();
-          if (idleTimer) { try { clearTimeout(idleTimer); } catch {} }
-          idleTimer = setTimeout(() => { maybeFlush(true); }, 200);
-        };
-        es.onerror = (e) => {
-          try { console.error("MicContext: chatToText: onerror", e); } catch {}
-          try { es.close(); } catch {}
-          try { if (chatEsRef.current === es) chatEsRef.current = null; } catch {}
-          reject(new Error("chat stream failed"));
-        };
-      } catch (e: any) {
-        reject(new Error(e?.message || ERR.chatFailed));
-      }
-    });
-  }, [enqueueTTSSegment]);
-
-  // Public helper to trigger a chat from UI without voice
-  const sendPrompt = useCallback(async (prompt: string): Promise<string> => {
-    if (!prompt || !prompt.trim()) return "";
     try {
-      // Also add to history as a user message for context continuity
-      historyRef.current.push({ role: "user", content: prompt });
-      if (historyRef.current.length > 10) historyRef.current = historyRef.current.slice(-10);
-      saveHistory();
-      const reply = await chatToText(prompt, { includeHistory: true });
+      const reply = await chatToTextWithTTS(promptText, opts);
+      // Accumulate assistantText for UI
+      try { setAssistantText(reply); } catch {}
       return reply;
     } catch (e: any) {
       setVoiceError(e?.message || ERR.chatFailed);
       throw e;
     } finally {
       if (busy === "chat") setBusy("idle");
+      try { setProcessingRing(false); } catch {}
     }
-  }, [chatToText, busy]);
+  }, [chatToTextWithTTS, busy]);
+
+  // Public helper to trigger a chat from UI without voice
+  const sendPrompt = useCallback(async (prompt: string): Promise<string> => {
+    if (!prompt || !prompt.trim()) return "";
+    try {
+      setBusy("chat");
+      setProcessingRing(true);
+      setAssistantText("");
+      const reply = await convoSendPrompt(prompt);
+      return reply;
+    } catch (e: any) {
+      setVoiceError(e?.message || ERR.chatFailed);
+      throw e;
+    } finally {
+      if (busy === "chat") setBusy("idle");
+      setProcessingRing(false);
+    }
+  }, [convoSendPrompt, busy]);
 
   const ingestMessage = useCallback(async (role: "user" | "assistant", content: string) => {
     try {
@@ -1151,14 +829,11 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
               const t0 = recStartTsRef.current || 0;
               const tFirst = recFirstChunkTsRef.current || 0;
               const detectMs = tFirst && t0 ? (tFirst - t0) : undefined;
-              const { text } = await callSTTMultipart(b, detectMs);
+              const { text } = await callSTT(b, detectMs);
               if (text && text.trim()) {
                 console.log("MicContext: STT result:", text);
                 setTranscript(text);
-                // Update history with user message
-                historyRef.current.push({ role: "user", content: text });
-                if (historyRef.current.length > 10) historyRef.current = historyRef.current.slice(-10);
-                saveHistory();
+                // History persistence handled by ConversationContext
                 void ingestMessage("user", text);
                 const reply = await chatToText(text, { includeHistory: true });
                 console.log("MicContext: Chat response:", reply);
@@ -1181,12 +856,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
                 console.log("MicContext: Restarting voice loop after processing");
                 try { await waitForQueueToDrain(6000); } catch {}
                 // Clear any remaining audio state before restarting
-                try {
-                  audioQueueRef.current = [];
-                  ttsTextQueueRef.current = [];
-                  pendingAudioUrlRef.current = null;
-                  ttsCancelRef.current += 1;
-                } catch {}
+                try { audioQueueRef.current = []; pendingAudioUrlRef.current = null; } catch {}
                 try { await startRecording(); } catch {}
               } else {
                 console.log("MicContext: Voice loop disabled or already recording, not restarting");
@@ -1200,15 +870,11 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
               const t0 = recStartTsRef.current || 0;
               const tFirst = recFirstChunkTsRef.current || 0;
               const detectMs = tFirst && t0 ? (tFirst - t0) : undefined;
-              const { text } = await callSTTMultipart(b, detectMs);
-              setProcessingRing(true);
+              const { text } = await callSTT(b, detectMs);
               if (text && text.trim()) {
-                console.log("MicContext: STT result:", text);
+                console.log("MicContext: STT result (one-shot):", text);
                 setTranscript(text);
-                // Update history with user message
-                historyRef.current.push({ role: "user", content: text });
-                if (historyRef.current.length > 10) historyRef.current = historyRef.current.slice(-10);
-                saveHistory();
+                // History persistence handled by ConversationContext
                 void ingestMessage("user", text);
                 const reply = await chatToText(text);
                 console.log("MicContext: Chat response:", reply);
@@ -1350,7 +1016,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
       console.error("MicContext: Mic permission denied:", e);
       setVoiceError(e?.message || ERR.permissionDenied);
     }
-  }, [BARGE_MIN_FRAMES, BARGE_RMS_THRESHOLD, MAX_UTTER_MS, VAD_MAX_SILENCE_MS, VAD_THRESHOLD, busy, callSTTMultipart, chatToText, mediaSupported, recording, stopPlaybackAndClear, waitForQueueToDrain, voiceLoopRef, ingestMessage]);
+  }, [BARGE_MIN_FRAMES, BARGE_RMS_THRESHOLD, MAX_UTTER_MS, VAD_MAX_SILENCE_MS, VAD_THRESHOLD, busy, callSTT, chatToText, mediaSupported, recording, stopPlaybackAndClear, waitForQueueToDrain, voiceLoopRef, ingestMessage]);
 
   // Telemetry: VAD speaking/silence transitions
   useEffect(() => {
@@ -1402,7 +1068,6 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
       try { stopRecording(); } catch (e) { console.error("MicContext: Error stopping recording:", e); }
       try { chatEsRef.current?.close(); chatEsRef.current = null; } catch (e) { console.error("MicContext: Error closing chat:", e); }
       try { stopPlaybackAndClear(); } catch (e) { console.error("MicContext: Error stopping playback:", e); }
-      try { ttsTextQueueRef.current = []; ttsProcessingRef.current = false; } catch (e) { console.error("MicContext: Error clearing TTS queue:", e); }
     } else {
       console.log("MicContext: Starting voice loop");
       setVoiceLoop(true);
@@ -1427,10 +1092,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     // Clear all audio queues and state
     try {
       audioQueueRef.current = [];
-      ttsTextQueueRef.current = [];
       pendingAudioUrlRef.current = null;
-      ttsCancelRef.current += 1;
-      ttsProcessingRef.current = false;
       audioPlayingRef.current = false;
     } catch {}
   }, []);
@@ -1489,9 +1151,6 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
             try { pausePlayback(); } catch {}
             // Clear any queued audio so nothing resumes after interrupt
             try { audioQueueRef.current = []; } catch {}
-            // Cancel any in-flight or queued TTS
-            ttsCancelRef.current += 1;
-            ttsTextQueueRef.current = [];
             pendingAudioUrlRef.current = null;
             try { chatEsRef.current?.close(); chatEsRef.current = null; } catch {}
             try { setBusy("idle"); } catch {}
@@ -1536,9 +1195,15 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     voiceLoop,
     transcript,
     assistantText,
-    needsAudioUnlock,
-    unlockAudio,
+    needsAudioUnlock: audio.needsAudioUnlock,
+    unlockAudio: audio.unlockAudio,
+    enqueueAudio: audio.enqueueAudio,
+    stopPlaybackAndClear: audio.stopPlaybackAndClear,
+    pausePlayback: audio.pausePlayback,
+    waitForQueueToDrain: audio.waitForQueueToDrain,
     sendPrompt,
+    enqueueTTSSegment,
+    sttFromBlob: callSTT,
     inputSpeaking,
     processingRing,
     interactionState,
@@ -1560,7 +1225,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     silenceDebounceFrames: tuning.silenceDebounceFrames,
     vadGraceMs: tuning.vadGraceMs,
     setTuning,
-  }), [assistantText, busy, clear, mediaSupported, recording, startRecording, stopRecording, transcript, voiceError, voiceLoop, toggleVoiceLoop, setVoiceLoopState, tuning, setTuning, resetTuning, inputSpeaking, processingRing, interactionState, interactionGroupId, interactionTurnCount, assessmentChips, needsAudioUnlock, unlockAudio]);
+  }), [assistantText, audio.enqueueAudio, audio.needsAudioUnlock, audio.pausePlayback, audio.stopPlaybackAndClear, audio.unlockAudio, audio.waitForQueueToDrain, busy, clear, mediaSupported, recording, startRecording, stopRecording, transcript, voiceError, voiceLoop, toggleVoiceLoop, setVoiceLoopState, tuning, setTuning, resetTuning, inputSpeaking, processingRing, interactionState, interactionGroupId, interactionTurnCount, assessmentChips]);
 
   return (
     <MicContext.Provider value={value}>{children}</MicContext.Provider>

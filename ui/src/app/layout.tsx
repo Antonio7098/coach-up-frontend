@@ -12,6 +12,9 @@ import "./globals.css";
 import "../styles/theme.css";
 import { ChatProvider } from "../context/ChatContext";
 import { MicProvider } from "../context/MicContext";
+import { AudioProvider } from "../context/AudioContext";
+import { VoiceProvider } from "../context/VoiceContext";
+import { ConversationProvider } from "../context/ConversationContext";
 import GlobalMicButton from "../components/GlobalMicButton";
 import NavDirListener from "./NavDirListener";
 import { MicUIProvider } from "../context/MicUIContext";
@@ -53,15 +56,21 @@ export default function RootLayout({
         >
 
           <ChatProvider>
-            <MicProvider>
-              <MicUIProvider>
-                {/* Global listener to mark popstate as 'back' for entry animations */}
-                <NavDirListener />
-                {children}
-                {/* Global mic renders coach-style UI when inCoach via MicUIContext */}
-                <GlobalMicButton />
-              </MicUIProvider>
-            </MicProvider>
+            <VoiceProvider>
+              <AudioProvider>
+                <ConversationProvider>
+                  <MicProvider>
+                    <MicUIProvider>
+                      {/* Global listener to mark popstate as 'back' for entry animations */}
+                      <NavDirListener />
+                      {children}
+                      {/* Global mic renders coach-style UI when inCoach via MicUIContext */}
+                      <GlobalMicButton />
+                    </MicUIProvider>
+                  </MicProvider>
+                </ConversationProvider>
+              </AudioProvider>
+            </VoiceProvider>
           </ChatProvider>
         </body>
       </html>

@@ -5,6 +5,8 @@ import { createPortal } from "react-dom";
 import { useRouter, usePathname } from "next/navigation";
 import { useChat } from "../../context/ChatContext";
 import { useMic } from "../../context/MicContext";
+import { useAudio } from "../../context/AudioContext";
+import { useVoice } from "../../context/VoiceContext";
 import AudioUnlockBanner from "../../components/AudioUnlockBanner";
 import { useMicUI } from "../../context/MicUIContext";
 import SkillChart from "../../components/SkillChart";
@@ -80,6 +82,8 @@ export default function CoachPage() {
   const pathname = usePathname();
   const { sessionId } = useChat();
   const mic = useMic();
+  const audio = useAudio();
+  const voice = useVoice();
   const { setInCoach, showDashboard, setShowDashboard, setHandlers } = useMicUI();
   const [dashboardMounted, setDashboardMounted] = useState(false);
   const [tracked, setTracked] = useState<TrackedSkill[]>([]);
@@ -172,7 +176,7 @@ export default function CoachPage() {
         },
         onLongPress: () => {
           if (showDashboard) {
-            try { mic.stopRecording(); } catch {}
+            try { audio.stopRecording(); } catch {}
           }
         },
       });
@@ -333,6 +337,9 @@ export default function CoachPage() {
     try {
       router.prefetch("/coach/analytics");
     } catch {}
+    try {
+      router.prefetch("/settings");
+    } catch {}
   }, [router]);
 
   // Hydration-safe entry transition: read navDir on mount and animate new content in
@@ -351,7 +358,7 @@ export default function CoachPage() {
 
   // Chat session id is provided by ChatProvider
 
-  // (Media support detection handled by MicProvider)
+  // (Media support detection handled by MicProvider; consumed via AudioContext)
 
   // (Voice helpers moved to MicProvider)
 
@@ -432,15 +439,15 @@ export default function CoachPage() {
     if (
       ENABLE_VOICE &&
       !showDashboard &&
-      mic.mediaSupported &&
+      audio.mediaSupported &&
       mic.voiceLoop &&
-      !mic.recording &&
-      mic.busy === "idle"
+      !audio.recording &&
+      voice.busy === "idle"
     ) {
       log("auto: voice loop active -> start mic (provider)");
-      void mic.startRecording();
+      void audio.startRecording();
     }
-  }, [ENABLE_VOICE, showDashboard, mic]);
+  }, [ENABLE_VOICE, showDashboard, mic.voiceLoop, audio.mediaSupported, audio.recording, voice.busy]);
 
   // Component-level cleanup on unmount: MicProvider owns mic lifecycle
 
@@ -508,6 +515,30 @@ export default function CoachPage() {
           <div className="absolute -top-40 -left-32 h-80 w-80 rounded-full blur-3xl opacity-30 cu-accent-soft-bg" />
           <div className="absolute -bottom-32 -right-20 h-72 w-72 rounded-full blur-3xl opacity-20 cu-accent-soft-bg" />
         </div>
+      )}
+      {/* Settings button in top right (dashboard only) */}
+      {showDashboard && (
+        <button
+          aria-label="Open settings"
+          className="fixed top-4 right-4 p-3 rounded-full text-foreground cu-surface border cu-border-surface cu-hover-accent-soft-bg active:scale-95 transition-all duration-200 shadow-sm z-40"
+          onMouseEnter={() => { try { router.prefetch('/settings'); } catch {} }}
+          onFocus={() => { try { router.prefetch('/settings'); } catch {} }}
+          onClick={() => navigateForward('/settings')}
+        >
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 24 24"
+            className="w-5 h-5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.33 1.82v.08a2 2 0 1 1-4 0v-.08A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1-.6 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1.82-.33h-.08a2 2 0 1 1 0-4h.08A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1.82-.33l-.06.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6c.18-.69.76-1.2 1.47-1.32h.06a2 2 0 1 1 4 0h.06c.71.12 1.29.63 1.47 1.32a1.65 1.65 0 0 0 1 .6 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06c-.48.48-.62 1.2-.33 1.82.22.43.6.76 1.06.9h.08a2 2 0 1 1 0 4h-.08c-.46.14-.84.47-1.06.9Z" />
+          </svg>
+        </button>
       )}
       {/* Dashboard button in top left */}
       {!showDashboard && (

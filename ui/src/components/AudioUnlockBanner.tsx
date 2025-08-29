@@ -1,11 +1,11 @@
 "use client";
 
 import React from "react";
-import { useMic } from "../context/MicContext";
+import { useAudio } from "../context/AudioContext";
 
 export default function AudioUnlockBanner() {
-  const mic = useMic();
-  if (!mic?.needsAudioUnlock) return null;
+  const audio = useAudio();
+  if (!audio?.needsAudioUnlock) return null;
 
   return (
     <div
@@ -29,7 +29,7 @@ export default function AudioUnlockBanner() {
             <button
               type="button"
               onClick={() => {
-                try { mic.unlockAudio(); } catch {}
+                try { audio.unlockAudio(); } catch {}
               }}
               className="px-3 py-1.5 text-sm font-medium rounded-lg cu-accent-soft-bg border cu-border-surface hover:opacity-90 active:scale-[0.98] transition-all"
               aria-label="Enable audio playback"

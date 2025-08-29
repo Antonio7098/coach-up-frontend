@@ -7,6 +7,7 @@ import {
   listActiveSkills,
   listTrackedSkillsForUser,
   listLevelHistoryForUser,
+  finalizeAssessmentSummary,
 } from '../../../lib/mockConvex';
 
 export async function POST(req: NextRequest) {
@@ -35,6 +36,19 @@ export async function POST(req: NextRequest) {
     sessionIdBase = 'sess_seed',
     groupIdBase = 'grp_seed',
     skillIds: desiredSkillIds,
+    createSummary = false,
+    summaryHighlights = [
+      'Clear problem framing and concise articulation observed',
+      'Used concrete examples to explain trade-offs',
+    ],
+    summaryRecommendations = [
+      'Reduce jargon; emphasize outcomes in first sentence',
+      'Ask one clarifying question before proposing solutions',
+    ],
+    summaryKeyPoints = [
+      'Goal: improve clarity and active listening',
+      'Next: practice problem → action → impact framing',
+    ],
   } = body || {};
 
   if (reset) await __resetAllForTests();
@@ -64,6 +78,28 @@ export async function POST(req: NextRequest) {
   const tracked = await listTrackedSkillsForUser({ userId });
   const history = listLevelHistoryForUser({ userId });
 
+  // Optionally create a real session summary document for the first generated session/group
+  if (createSummary) {
+    try {
+      const firstSkillId = (skills[0]?.id || 'clarity_eloquence');
+      const sessionId = `${sessionIdBase}_${firstSkillId}_0`;
+      const groupId = `${groupIdBase}_${firstSkillId}_0`;
+      await finalizeAssessmentSummary({
+        sessionId,
+        groupId,
+        rubricVersion: 'v2',
+        summary: {
+          highlights: Array.isArray(summaryHighlights) ? summaryHighlights : [String(summaryHighlights || '')].filter(Boolean),
+          recommendations: Array.isArray(summaryRecommendations) ? summaryRecommendations : [String(summaryRecommendations || '')].filter(Boolean),
+          rubricKeyPoints: Array.isArray(summaryKeyPoints) ? summaryKeyPoints : [String(summaryKeyPoints || '')].filter(Boolean),
+        },
+      });
+    } catch (e) {
+      // non-fatal for seed
+      console.warn('mock seed: failed to create summary', e);
+    }
+  }
+
   return new Response(
     JSON.stringify({
       ok: true,
@@ -71,6 +107,7 @@ export async function POST(req: NextRequest) {
       assessmentsInserted: hist.assessmentsInserted,
       trackedCount: tracked.length,
       levelHistoryCount: history.length,
+      summaryCreated: Boolean(createSummary),
     }),
     { status: 200, headers: { 'content-type': 'application/json' } },
   );

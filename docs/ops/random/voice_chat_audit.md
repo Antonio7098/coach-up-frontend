@@ -1,3 +1,13 @@
+## Change Log — 29/08/2025 (update)
+
+- Extracted chat SSE + history to `ConversationContext`:
+  - New module: `ui/src/context/ConversationContext.tsx` maintains per-session client history (10 msgs), integrates session summary, and base64url-encodes the `history` query param.
+  - Provides `sendPrompt(prompt)` and `chatToTextWithTTS(prompt, { includeHistory })` which open SSE to `/api/chat`, stream text, persist `[user, assistant]` to history, and flush TTS segments via `useVoice()`.
+- `MicContext` now delegates chat to Conversation:
+  - `sendPrompt()` wraps `useConversation().sendPrompt`.
+  - `chatToText` wraps `useConversation().chatToTextWithTTS` and updates `assistantText` for UI.
+- Providers wired in `ui/src/app/layout.tsx`: `ChatProvider` → `VoiceProvider` → `AudioProvider` → `ConversationProvider` → `MicProvider` → `MicUIProvider`.
+- Next up: remove duplicate audio playback queue from `MicContext` and rely on `AudioContext` exclusively.
 # Voice Chat Pipeline Audit — Performance & UX Analysis
 
 Based on a comprehensive audit of the voice chat functionality on `/coach` and the underlying pipeline, this document outlines key issues, grounded findings from code, and an actionable plan with progress tracking.
@@ -15,7 +25,7 @@ Based on a comprehensive audit of the voice chat functionality on `/coach` and t
   - [x] Add metrics histograms
   - [ ] Reduce VAD params / presets
   - [x] Device health checks and UX
-  - [ ] Split `MicContext` responsibilities
+  - [~] Split `MicContext` responsibilities
   - [x] Client telemetry ingestion + Grafana panels (voice VAD/pipeline/tts playback)
 
 ---
@@ -37,7 +47,7 @@ Based on a comprehensive audit of the voice chat functionality on `/coach` and t
 - Evidence: Multiple refs guarding state (`voiceLoopRef`, `recordingRef`, `processingRef`, etc.).
 
 - Actions:
-  - [ ] Split responsibilities into focused modules/contexts:
+  - [~] Split responsibilities into focused modules/contexts:
     - `AudioContext` (recording, playback)
     - `VoiceContext` (STT, TTS)
     - `ConversationContext` (chat, history)
@@ -47,7 +57,7 @@ Based on a comprehensive audit of the voice chat functionality on `/coach` and t
 - Impact: Inconsistent behavior during rapid user barge.
 - Evidence: Playback control and barge monitor coordination across multiple refs and timers.
 - Actions:
-  - [ ] Replace with “interrupt + restart” pattern (stop playback immediately, queue new flow deterministically).
+  - [x] Replace with “interrupt + restart” pattern (stop playback immediately, queue new flow deterministically).
 
 3) VAD Sensitivity/Configuration
 - Issue: Many tunables lead to unpredictable start/stop across environments.
@@ -162,10 +172,10 @@ Based on a comprehensive audit of the voice chat functionality on `/coach` and t
 ## Recommended Improvements
 
 - __Simplify State Management__
-  - [ ] Split `MicContext` into focused modules/contexts:
-    - `AudioContext` (recording, playback)
-    - `VoiceContext` (STT, TTS) - in progress
-    - `ConversationContext` (chat, history)
+  - [~] Split `MicContext` into focused modules/contexts:
+    - `AudioContext` (recording, playback) — MicContext now delegates playback controls (unlock/pause/stop/clear/drain) to AudioContext
+    - `VoiceContext` (STT, TTS) — done
+    - `ConversationContext` (chat, history) — SSE chat + history moved
 
 - __Improve Audio Pipeline__
   - [ ] Replace complex barge-in with interrupt + restart pattern.
@@ -201,7 +211,7 @@ Based on a comprehensive audit of the voice chat functionality on `/coach` and t
   - [x] STT timeout + retry; "Thinking" indicator.
 
 - Medium Priority
-  - [ ] Split `MicContext` responsibilities.
+  - [~] Split `MicContext` responsibilities.
   - [x] Add metrics histograms and dashboards.
 
 - Low Priority
@@ -288,6 +298,84 @@ Based on a comprehensive audit of the voice chat functionality on `/coach` and t
   - UI indicators: Verify `inputSpeaking` pulsates correctly and busy ring states align during chat/TTS.
 
 - Summary: Barge-in pipeline simplified to an interrupt + restart model with clear telemetry and removed concatenation code paths. This should improve responsiveness and reduce race conditions.
+
+### Next Steps — 29/08/2025
+
+- SSE and chat resilience
+  - [ ] Add retries/backoff to SSE client with jitter; surface a clear UI hint on reconnect.
+  - [ ] Emit counters for SSE disconnects and retries.
+
+- VAD configuration simplification
+  - [ ] Reduce to 3 knobs and document presets (Quiet, Normal, Noisy) via env.
+  - [ ] Add a lightweight auto-tune suggestion based on initial ambient RMS.
+
+- Code organization
+  - [x] Draft split of `MicContext` into `AudioContext` (recording/playback), `VoiceContext` (STT/TTS), and `ConversationContext` (chat/history) with clear responsibilities.
+  - [ ] Remove duplicated playback logic from `MicContext` and fully delegate to `useAudio()` (`needsAudioUnlock`, `enqueueAudio`, `pausePlayback`, `stopPlaybackAndClear`, `waitForQueueToDrain`).
+  - [ ] Migrate `/coach` and `/chat` pages to read playback/voice/conversation state directly from their respective contexts where appropriate (reduce reliance on `useMic()` façade).
+
+#### MicContext split — 29/08/2025 (plan)
+
+The goal is to decompose `ui/src/context/MicContext.tsx` into three focused contexts with clear boundaries. This reduces state coupling and race conditions, and makes unit testing feasible.
+
+1) AudioContext — recording/playback only
+- Responsibilities:
+  - Own `MediaRecorder` lifecycle, device permission checks, and recording timers/limits.
+  - Own HTMLAudioElement playback queue, autoplay unlock (`needsAudioUnlock`, `unlockAudio()`), pause/stop/clear.
+  - Expose simple signals: `mediaSupported`, `recording`, `inputSpeaking` (optional passthrough if VAD stays here), and `waitForQueueToDrain()`.
+- Public API (proposed):
+  - State: `mediaSupported`, `recording`, `inputSpeaking`, `needsAudioUnlock`.
+  - Methods: `startRecording()`, `stopRecording()`, `enqueueAudio(url)`, `pausePlayback()`, `stopPlaybackAndClear()`, `waitForQueueToDrain(ms?)`, `unlockAudio()`.
+
+2) VoiceContext — STT/TTS adapters and pipeline state
+- Responsibilities:
+  - Wrap provider calls for STT and TTS; no mic or chat logic.
+  - Expose `busy` subset (`'stt' | 'tts' | 'idle'`), `processingRing` semantics, and last `transcript`/`assistantText` plus `voiceError`.
+  - Provide `enqueueTTSSegment(text)` and `sttFromBlob(blob, detectMs?)` with consistent telemetry.
+- Public API (proposed):
+  - State: `busy`, `processingRing`, `transcript`, `assistantText`, `voiceError`.
+  - Methods: `enqueueTTSSegment(text)`, `sttFromBlob(blob, detectMs?)`.
+
+3) ConversationContext — chat SSE + history
+- Responsibilities:
+  - Own chat streaming via `/api/chat` SSE and client-passed context history.
+  - Maintain local history ring (10 msgs) and session summary integration.
+  - Provide `sendPrompt(prompt: string)` which streams, updates history, and resolves final text.
+  - Manage interaction lifecycle state and assessment chip polling hooks.
+- Public API (proposed):
+  - State: `assistantText` (or a stream hook), `interactionState`, `interactionGroupId?`, `interactionTurnCount`, `assessmentChips`.
+  - Methods: `sendPrompt(prompt)`, `clearHistory()`, `setHistoryDepth(n)` (optional), `refreshSessionSummary()` (optional wrapper).
+
+Migration approach
+- Phase 0: Keep `MicContext` as façade that delegates to the three contexts so existing consumers remain working. No behavior changes.
+- Phase 1: Extract playback and unlock into `AudioContext`. `MicContext` calls through to it. Add unit tests for playback queue and autoplay unlock gating.
+- Phase 2: Extract STT/TTS into `VoiceContext`. `MicContext.callSTT()` and TTS enqueue become thin wrappers.
+- Phase 3: Extract chat SSE/history into `ConversationContext`. `MicContext.sendPrompt()` becomes a wrapper.
+- Phase 4: Update consumers (`/coach` and components) to read from the new contexts directly where appropriate and reduce reliance on `useMic()`.
+- Phase 5: Retire deprecated surface from `MicContext` and delete it once all call sites migrate.
+
+Task checklist
+- [x] Define and scaffold providers: `AudioContext`, `VoiceContext`, `ConversationContext` with the proposed TypeScript surfaces.
+- [~] Move autoplay unlock + audio queue from `MicContext` to `AudioContext` with the same telemetry (`voice.tts.playback_*`).
+  - Status: Implemented playback queue and autoplay unlock in `ui/src/context/AudioContext.tsx`. Verification of telemetry parity and removal from `MicContext` pending.
+- [x] Move STT/TTS adapters to `VoiceContext`; keep provider/model headers and metrics unchanged.
+  - Status: Done. `VoiceContext` implements `enqueueTTSSegment()` and `sttFromBlob()`; `MicContext` delegates via `useVoice()`. Voice surface is published via `voicePublishState()`.
+- [x] Move SSE chat + history helpers (`buildHistoryParam`, `sendPrompt`) to `ConversationContext`.
+  - Status: Done. `ui/src/context/ConversationContext.tsx` owns the local 10-msg history ring, builds the base64url `history` param (including session summary), and exposes `sendPrompt()` and `chatToTextWithTTS()` that stream via `/api/chat`. `MicContext` now calls through `useConversation()` for chat.
+- [x] Wire providers in app root (see `ui/src/app/layout.tsx`).
+  - Status: Wired as `ChatProvider` → `VoiceProvider` → `AudioProvider` → `ConversationProvider` → `MicProvider` → `MicUIProvider`. Order differs from the initial proposal but is functionally correct: `ConversationProvider` depends on `VoiceProvider` (for TTS flushes) and `ChatProvider` (for `sessionId`).
+- [ ] Add light unit tests for each context’s public API (happy path + basic error).
+- [ ] Migrate `/coach` and `/chat` pages to consume from split contexts where appropriate (start with playback indicators).
+- [ ] Remove deprecated fields/methods from `MicContext` and delete after final migration.
+
+Risks and mitigations
+- __State duplication__: During Phase 0–3, the façade may mirror some state. Mitigate by using single-source-of-truth hooks inside `MicContext` that read from the split contexts.
+- __Telemetry drift__: Keep existing event names and metrics; validate in Grafana during rollout.
+- __Autoplay regressions__: Preserve unlock flow and banner behavior by migrating that code first (Phase 1) and testing on mobile.
+
+- Backend TTFT timeout docs
+  - [ ] Document `AI_CHAT_TTFT_TIMEOUT_SECONDS` (default 5s) and recommend 12–15s for slower providers/models.
+  - [ ] Optional: document `AI_CHAT_PROMPT_TIMEOUT_SECONDS` (default 2s) for context/prompt builders.
 
 ## Change Log — 28/08/2025 (later update)
 

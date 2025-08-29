@@ -3,13 +3,17 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useMic } from "../context/MicContext";
+import { useAudio } from "../context/AudioContext";
+import { useVoice } from "../context/VoiceContext";
 import { useMicUI } from "../context/MicUIContext";
 
 // Persistent floating mic button. When not in coach, renders a small bottom-right button.
 // When in coach, renders the large center mic with chat<->dashboard transform, driven by MicUIContext.
 export default function GlobalMicButton() {
   const [mounted, setMounted] = useState(false);
-  const { voiceLoop, recording, busy, toggleVoiceLoop, startRecording, stopRecording, inputSpeaking, processingRing } = useMic();
+  const { voiceLoop, toggleVoiceLoop } = useMic();
+  const { recording, startRecording, stopRecording, inputSpeaking } = useAudio();
+  const { busy, processingRing } = useVoice();
   const { inCoach, showDashboard, setShowDashboard, onTap, onLongPress } = useMicUI();
   // Only show speaking pulse when the mic is actively recording
   const speakingPulse = recording && inputSpeaking;

@@ -42,6 +42,9 @@ type LevelHistoryDoc = {
   createdAt: number;
 };
 const _levelHistory: LevelHistoryDoc[] = [];
+// Minimal in-memory users_profile store for MOCK_CONVEX
+type UserProfile = { userId: string; displayName?: string; email?: string; avatarUrl?: string; bio?: string; createdAt: number; updatedAt: number };
+const _usersProfile: Record<string, UserProfile> = Object.create(null);
 type InteractionDoc = {
   sessionId: string;
   groupId?: string;
@@ -567,12 +570,44 @@ export async function __resetAllForTests() {
   _skills.length = 0;
   _tracked.length = 0;
   _levelHistory.length = 0;
+  for (const k of Object.keys(_usersProfile)) delete _usersProfile[k];
   // Clear persistence
   if (typeof global !== 'undefined') {
     try {
       delete (global as any).__mockTrackedSkills;
     } catch {}
   }
+}
+
+// -------------------- Users Profile (mock) --------------------
+export async function getUserProfile(args: { userId: string }) {
+  const p = _usersProfile[args.userId];
+  if (!p) return null;
+  // Return a shallow copy to avoid accidental external mutation
+  return { userId: p.userId, displayName: p.displayName, email: p.email, avatarUrl: p.avatarUrl, bio: p.bio, createdAt: p.createdAt, updatedAt: p.updatedAt };
+}
+
+export async function upsertUserProfile(args: { userId: string; displayName?: string; email?: string; avatarUrl?: string; bio?: string }) {
+  const now = Date.now();
+  const existing = _usersProfile[args.userId];
+  if (!existing) {
+    _usersProfile[args.userId] = {
+      userId: args.userId,
+      displayName: args.displayName,
+      email: args.email,
+      avatarUrl: args.avatarUrl,
+      bio: args.bio,
+      createdAt: now,
+      updatedAt: now,
+    };
+    return { created: true } as const;
+  }
+  existing.displayName = args.displayName ?? existing.displayName;
+  existing.email = args.email ?? existing.email;
+  existing.avatarUrl = args.avatarUrl ?? existing.avatarUrl;
+  existing.bio = args.bio ?? existing.bio;
+  existing.updatedAt = now;
+  return { created: false } as const;
 }
 
 // Test-only: list level history for a user (and optionally a single skill)
@@ -768,4 +803,70 @@ export async function __seedSkillAssessmentHistoryForTests(params: {
     }
   }
   return { ok: true, assessmentsInserted: counter } as const;
+}
+
+// -------------------- Users Goals (mock) --------------------
+type UserGoalDoc = {
+  userId: string;
+  goalId: string;
+  title: string;
+  description?: string;
+  status: 'active' | 'paused' | 'completed';
+  targetDateMs?: number;
+  tags: string[];
+  createdAt: number;
+  updatedAt: number;
+};
+const _userGoals: UserGoalDoc[] = [];
+
+export async function listUserGoals(args: { userId: string }) {
+  const rows = _userGoals.filter(g => g.userId === args.userId);
+  rows.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0) || (b.createdAt ?? 0) - (a.createdAt ?? 0));
+  return rows;
+}
+
+export async function addOrUpdateGoal(args: { userId: string; goalId: string; title: string; description?: string; status: 'active' | 'paused' | 'completed'; targetDateMs?: number; tags?: string[] }) {
+  const now = Date.now();
+  const idx = _userGoals.findIndex(g => g.userId === args.userId && g.goalId === args.goalId);
+  if (idx === -1) {
+    _userGoals.push({
+      userId: args.userId,
+      goalId: args.goalId,
+      title: args.title,
+      description: args.description,
+      status: args.status,
+      targetDateMs: args.targetDateMs,
+      tags: Array.isArray(args.tags) ? args.tags : [],
+      createdAt: now,
+      updatedAt: now,
+    });
+    return { created: true } as const;
+  }
+  const doc = _userGoals[idx];
+  doc.title = args.title;
+  doc.description = args.description;
+  doc.status = args.status;
+  doc.targetDateMs = args.targetDateMs;
+  doc.tags = Array.isArray(args.tags) ? args.tags : (doc.tags ?? []);
+  doc.updatedAt = now;
+  return { created: false } as const;
+}
+
+export async function updateGoal(args: { userId: string; goalId: string; title?: string; description?: string; status?: 'active' | 'paused' | 'completed'; targetDateMs?: number; tags?: string[] }) {
+  const doc = _userGoals.find(g => g.userId === args.userId && g.goalId === args.goalId);
+  if (!doc) throw new Error('goal not found');
+  if (typeof args.title === 'string') doc.title = args.title;
+  if (typeof args.description === 'string' || args.description === undefined) doc.description = args.description;
+  if (args.status) doc.status = args.status;
+  if (typeof args.targetDateMs === 'number') doc.targetDateMs = args.targetDateMs;
+  if (Array.isArray(args.tags)) doc.tags = args.tags;
+  doc.updatedAt = Date.now();
+  return { ok: true } as const;
+}
+
+export async function deleteGoal(args: { userId: string; goalId: string }) {
+  const idx = _userGoals.findIndex(g => g.userId === args.userId && g.goalId === args.goalId);
+  if (idx === -1) return { ok: true, deleted: false } as const;
+  _userGoals.splice(idx, 1);
+  return { ok: true, deleted: true } as const;
 }

@@ -153,4 +153,42 @@ export default defineSchema({
     .index("by_user", ["userId"]) 
     .index("by_user_skill", ["userId", "skillId"]) 
     .index("by_user_order", ["userId", "order"]),
+
+  // Users — profile info
+  users: defineTable({
+    tokenIdentifier: v.string(),
+    name: v.optional(v.string()),
+    email: v.optional(v.string()),
+    pictureUrl: v.optional(v.string()),
+  })
+  .index('by_tokenIdentifier', ['tokenIdentifier']),
+
+  users_profile: defineTable({
+    userId: v.string(),
+    displayName: v.optional(v.string()),
+    email: v.optional(v.string()),
+    avatarUrl: v.optional(v.string()),
+    bio: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+  .index('by_user', ['userId']),
+
+  users_goals: defineTable({
+    userId: v.string(),
+    goalId: v.string(),
+    title: v.string(),
+    description: v.optional(v.string()),
+    status: v.union(
+      v.literal('active'),
+      v.literal('paused'),
+      v.literal('completed')
+    ),
+    targetDateMs: v.optional(v.number()),
+    tags: v.array(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+  .index('by_user', ['userId'])
+  .index('by_user_goal', ['userId', 'goalId']),
 });

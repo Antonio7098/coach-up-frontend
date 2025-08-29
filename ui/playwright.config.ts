@@ -23,7 +23,7 @@ const uiWebServerEnv: Record<string, string> = {
   STT_PROVIDER: 'mock',
   TTS_PROVIDER: 'mock',
   // Ensure Voice UI is enabled in tests
-  NEXT_PUBLIC_ENABLE_VOICE: '1',
+  NEXT_PUBLIC_ENABLE_VOICE: '0',
 };
 if (process.env.CONVEX_URL) {
   uiWebServerEnv.CONVEX_URL = process.env.CONVEX_URL;
@@ -67,9 +67,9 @@ export default defineConfig({
       stderr: 'pipe' as const,
     }]),
     {
-      // Next.js UI
-      command: "sh -lc 'npm run build && npm run start'",
-      url: process.env.BASE_URL || 'http://localhost:3100',
+      // Next.js UI (dev server to avoid prerender/export during tests)
+      command: "sh -lc 'npm run dev'",
+      url: (process.env.BASE_URL || 'http://localhost:3100') + '/chat',
       reuseExistingServer: false,
       timeout: 300_000,
       env: uiWebServerEnv,

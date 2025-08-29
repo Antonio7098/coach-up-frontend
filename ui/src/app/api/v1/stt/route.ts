@@ -170,8 +170,9 @@ export async function POST(request: Request) {
         return respond(413, { error: "Audio too large", maxBytes });
       }
 
-      // Decide path: data URL (privacy-first) vs storage upload (preferred when gating is disabled)
-      const enableDataUrl = process.env.STT_MULTIPART_DATAURL_ENABLED !== "0";
+      // Decide path: data URL (privacy-first) vs storage upload
+      // Default is storage upload unless explicitly enabled via STT_MULTIPART_DATAURL_ENABLED=1
+      const enableDataUrl = process.env.STT_MULTIPART_DATAURL_ENABLED === "1";
       if (enableDataUrl) {
         // Privacy-first: bypass storage entirely by posting bytes directly to the provider.
         // Encode the uploaded blob as a data URL that providers can fetch via standard fetch.
@@ -217,8 +218,8 @@ export async function POST(request: Request) {
       // Upload to storage and pass objectKey to provider (preferred path when privacy gating is disabled)
       const uploaded = await uploadToS3AndGetKey(audio);
       if (!uploaded) {
-        console.log(JSON.stringify({ level: 'error', route: routePath, requestId, status: 500, mode, msg: 'Storage upload not configured', latencyMs: Date.now() - started }));
-        return respond(500, { error: "Storage not configured for STT" });
+        console.log(JSON.stringify({ level: 'error', route: routePath, requestId, status: 501, mode, msg: 'Storage not configured', latencyMs: Date.now() - started }));
+        return respond(501, { error: "Storage not configured" });
       }
       const result = await provider.transcribe({ audioUrl: null, objectKey: uploaded.objectKey, languageHint: languageHint ?? null });
       const payload = {
