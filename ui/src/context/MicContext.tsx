@@ -23,6 +23,10 @@ type MicContextValue = {
   voiceLoop: boolean;
   transcript: string;
   assistantText: string;
+  // Autoplay unlock state for UI banner
+  needsAudioUnlock: boolean;
+  // Call on a user gesture to unlock audio and resume pending playback
+  unlockAudio: () => void;
   // Fire a chat request with a text prompt (UI/debug helper)
   sendPrompt: (prompt: string) => Promise<string>;
   // Live input VAD state for UI animations
@@ -81,6 +85,18 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
   const [voiceLoop, setVoiceLoop] = useState(true);
   const [transcript, setTranscript] = useState("");
   const [assistantText, setAssistantText] = useState("");
+  // Standardized error copy
+  const ERR = {
+    micUnavailable: 'Microphone unavailable. Please check your device settings.',
+    micUnsupported: 'Microphone not supported in this browser',
+    noSpeech: 'No speech detected. Please try again.',
+    finalizeFail: 'Failed to finalize recording',
+    permissionDenied: 'Mic permission denied or unavailable',
+    chatFailed: 'Chat failed',
+    voiceChatFailed: 'Voice chat failed',
+  } as const;
+  // Device health (mic presence + permission)
+  const [deviceStatus, setDeviceStatus] = useState<{ hasMic: boolean; permission: PermissionState | null }>({ hasMic: false, permission: null });
   // Multi-turn interaction and assessments state
   const [interactionState, setInteractionState] = useState<"active" | "idle">("idle");
   const [interactionGroupId, setInteractionGroupId] = useState<string | undefined>(undefined);
@@ -181,6 +197,8 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const stopTimerRef = useRef<number | null>(null);
   const chatEsRef = useRef<EventSource | null>(null);
+  // Expose stopRecording via ref for early effects
+  const stopRecordingFnRef = useRef<() => void>(() => {});
 
   // Timing refs for detection/recording instrumentation
   const recStartTsRef = useRef<number | null>(null);
@@ -193,13 +211,14 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
   const ttsProcessingRef = useRef(false);
   const ttsCancelRef = useRef(0);
   const pendingAudioUrlRef = useRef<string | null>(null);
-  // Pipeline interruption and audio concatenation
-  const pipelineInterruptedRef = useRef<boolean>(false);
-  const interruptedAudioChunksRef = useRef<BlobPart[]>([]);
-  const interruptedMimeTypeRef = useRef<string>("");
+  // Telemetry helpers
+  const prevInputSpeakingRef = useRef<boolean>(false);
+  const lastPipelineStateRef = useRef<string>("idle");
+  const bargeTriggerTsRef = useRef<number | null>(null);
 
   // User interaction + autoplay gating
   const userInteractedRef = useRef<boolean>(false);
+  const [needsAudioUnlock, setNeedsAudioUnlock] = useState<boolean>(false);
 
   // Barge-in helpers
   const bargeArmedRef = useRef<boolean>(false);
@@ -225,12 +244,68 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
   const SILENCE_DEBOUNCE_FRAMES = Math.max(0, Math.floor(tuning.silenceDebounceFrames));
   const VAD_GRACE_MS = Math.max(0, tuning.vadGraceMs);
   const TTS_TIMEOUT_MS = (Number(process.env.NEXT_PUBLIC_TTS_TIMEOUT_MS ?? 0) || 15000);
+  const STT_TIMEOUT_MS = (Number(process.env.NEXT_PUBLIC_STT_TIMEOUT_MS ?? 0) || 12000);
+  // Adaptive client STT upload controls
+  const STT_DIRECT_UPLOAD_ENABLED = ((): boolean => {
+    const v = String(process.env.NEXT_PUBLIC_STT_DIRECT_UPLOAD_ENABLED || "").toLowerCase();
+    if (v === "0" || v === "false") return false;
+    if (v === "1" || v === "true") return true;
+    // default on
+    return true;
+  })();
+  const STT_DIRECT_UPLOAD_THRESHOLD_BYTES = (() => {
+    const n = Number(process.env.NEXT_PUBLIC_STT_DIRECT_UPLOAD_THRESHOLD_BYTES ?? 0);
+    return (isFinite(n) && n > 0) ? Math.floor(n) : 512 * 1024; // 512 KiB default
+  })();
   const ALWAYS_ON = String(process.env.NEXT_PUBLIC_VOICE_ALWAYS_ON || "").toLowerCase() === "true" || String(process.env.NEXT_PUBLIC_VOICE_ALWAYS_ON || "") === "1";
 
   useEffect(() => {
     const ok = typeof window !== "undefined" && !!navigator?.mediaDevices?.getUserMedia && typeof window.MediaRecorder !== "undefined";
     setMediaSupported(ok);
   }, []);
+
+  // Check microphone permission + presence and cache to deviceStatus
+  const checkMicPermission = useCallback(async (): Promise<{ hasMic: boolean; permission: PermissionState } | { hasMic: false; permission: 'denied' } > => {
+    try {
+      const perm = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const hasMic = devices.some((d) => d && d.kind === 'audioinput');
+      const permission = perm.state as PermissionState;
+      setDeviceStatus({ hasMic, permission });
+      return { hasMic, permission };
+    } catch (e) {
+      // On any error, assume no mic/denied
+      setDeviceStatus({ hasMic: false, permission: 'denied' });
+      return { hasMic: false, permission: 'denied' } as const;
+    }
+  }, []);
+
+  // Initial device health evaluation
+  useEffect(() => { void checkMicPermission(); }, [checkMicPermission]);
+
+  // React to device changes (mic added/removed) and permission changes
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.addEventListener) return;
+    let mounted = true;
+    const onChange = async () => {
+      const prev = deviceStatus;
+      const next = await checkMicPermission();
+      try { console.log(JSON.stringify({ type: 'voice.device.change', prev, next })); } catch {}
+      if (!mounted) return;
+      const hasMic = (next as any)?.hasMic === true;
+      const permission = (next as any)?.permission;
+      if ((!hasMic || permission !== 'granted') && (recordingRef.current || recording)) {
+        try { setVoiceError(ERR.micUnavailable); } catch {}
+        try { setVoiceLoop(false); } catch {}
+        try { stopRecordingFnRef.current?.(); } catch {}
+      }
+    };
+    navigator.mediaDevices.addEventListener('devicechange', onChange);
+    return () => {
+      mounted = false;
+      try { navigator.mediaDevices.removeEventListener('devicechange', onChange as any); } catch {}
+    };
+  }, [checkMicPermission, deviceStatus, recording]);
 
   
 
@@ -270,27 +345,49 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
           // Defer playback until a user gesture occurs
           console.warn('MicContext: Deferring audio playback until user interaction due to autoplay policy');
           pendingAudioUrlRef.current = url;
+          setNeedsAudioUnlock(true);
           return;
         }
+        try { console.log(JSON.stringify({ type: 'voice.tts.playback_start', url })); } catch {}
+        try {
+          void fetch('/api/telemetry/voice', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ type: 'voice.tts.playback_start' }),
+            keepalive: true,
+          }).catch(() => {});
+        } catch {}
         await el.play();
         console.log('MicContext: Audio play() succeeded');
       } catch (playError) {
         if ((playError as any)?.name === 'NotAllowedError') {
           console.warn('MicContext: Audio play blocked by autoplay policy; will retry on next user interaction');
           pendingAudioUrlRef.current = url;
+          setNeedsAudioUnlock(true);
           return;
         }
         console.error('MicContext: Audio play() failed:', playError);
         return;
       }
-      
+
       await new Promise<void>((resolve) => {
         const cleanup = () => {
           el!.removeEventListener("ended", onEnded);
           el!.removeEventListener("error", onErr);
           el!.removeEventListener("pause", onPause);
         };
+        const t0 = Date.now();
         const onEnded = () => { 
+          const dt = Date.now() - t0;
+          try { console.log(JSON.stringify({ type: 'voice.tts.playback_end', ok: true, durationMs: dt })); } catch {}
+          try {
+            void fetch('/api/telemetry/voice', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ type: 'voice.tts.playback_end', outcome: 'ok', durationMs: dt }),
+              keepalive: true,
+            }).catch(() => {});
+          } catch {}
           console.log('MicContext: Audio ended normally');
           cleanup(); 
           resolve(); 
@@ -308,11 +405,29 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
             readyState: event?.target?.readyState || 'unknown'
           };
           console.error('MicContext: Audio error event:', errorDetails);
+          try { console.log(JSON.stringify({ type: 'voice.tts.playback_end', ok: false })); } catch {}
+          try {
+            void fetch('/api/telemetry/voice', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ type: 'voice.tts.playback_end', outcome: 'error' }),
+              keepalive: true,
+            }).catch(() => {});
+          } catch {}
           cleanup(); 
           resolve(); 
         };
         const onPause = () => { 
           console.log('MicContext: Audio paused');
+          try { console.log(JSON.stringify({ type: 'voice.pipeline.state', state: 'paused' })); } catch {}
+          try {
+            void fetch('/api/telemetry/voice', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ type: 'voice.pipeline.state', state: 'paused' }),
+              keepalive: true,
+            }).catch(() => {});
+          } catch {}
           cleanup(); 
           resolve(); 
         };
@@ -392,6 +507,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
       if (!userInteractedRef.current) {
         userInteractedRef.current = true;
         console.log("MicContext: User interaction detected; audio playback unlocked");
+        setNeedsAudioUnlock(false);
         const url = pendingAudioUrlRef.current;
         if (url) {
           pendingAudioUrlRef.current = null;
@@ -407,6 +523,19 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
       window.removeEventListener("keydown", markInteracted as any);
       window.removeEventListener("touchstart", markInteracted as any);
     };
+  }, [enqueueAudio]);
+
+  // Allow UI to unlock audio explicitly (e.g., banner button)
+  const unlockAudio = useCallback(() => {
+    if (!userInteractedRef.current) {
+      userInteractedRef.current = true;
+      setNeedsAudioUnlock(false);
+      const url = pendingAudioUrlRef.current;
+      if (url) {
+        pendingAudioUrlRef.current = null;
+        try { enqueueAudio(url); } catch {}
+      }
+    }
   }, [enqueueAudio]);
 
   // --- TTS helpers ---
@@ -505,6 +634,8 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
   const enqueueTTSSegment = useCallback((text: string) => {
     if (!text || !text.trim()) return;
     console.log("MicContext: TTS enqueueTTSSegment", { text, queueLen: ttsTextQueueRef.current.length });
+    // First TTS segment enqueued -> stop "Thinking" ring
+    try { setProcessingRing(false); } catch {}
     ttsTextQueueRef.current.push(text.trim());
     void ensureTTSWorker();
   }, [ensureTTSWorker]);
@@ -616,6 +747,71 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
   const callSTTMultipart = useCallback(async (b: Blob, detectMs?: number): Promise<{ text: string }> => {
     setBusy("stt");
     try { setProcessingRing(true); } catch {}
+
+    // Decide path: direct-to-S3 + JSON STT for large blobs, multipart otherwise
+    const shouldDirect = STT_DIRECT_UPLOAD_ENABLED && b.size >= STT_DIRECT_UPLOAD_THRESHOLD_BYTES;
+    if (shouldDirect) {
+      try {
+        // 1) Presign
+        const presignStart = Date.now();
+        const presignRes = await fetch("/api/v1/storage/audio/presign", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ contentType: b.type || "audio/webm", sizeBytes: b.size })
+        });
+        const presignData: any = await presignRes.json().catch(() => ({}));
+        if (!presignRes.ok) throw new Error(presignData?.error || `presign failed: ${presignRes.status}`);
+        const { url, headers: putHeaders = {}, method = "PUT", objectKey } = presignData || {};
+        if (!url || !objectKey) throw new Error("invalid presign payload");
+        try { console.log(JSON.stringify({ type: 'voice.stt.direct.presign_ok', dtMs: Date.now() - presignStart, objectKey, size: b.size })); } catch {}
+
+        // 2) Upload
+        const upStart = Date.now();
+        const putRes = await fetch(url, { method, headers: putHeaders, body: b });
+        if (!putRes.ok) throw new Error(`upload failed: ${putRes.status}`);
+        try { console.log(JSON.stringify({ type: 'voice.stt.direct.upload_ok', dtMs: Date.now() - upStart, objectKey })); } catch {}
+
+        // 3) STT via JSON with timeout + single retry
+        const sttStart = Date.now();
+        const doOnce = async (): Promise<Response> => {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), STT_TIMEOUT_MS);
+          try {
+            const res = await fetch("/api/v1/stt", {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                ...(typeof detectMs === 'number' && isFinite(detectMs) && detectMs >= 0 ? { "x-detect-ms": String(Math.round(detectMs)) } : {}),
+              },
+              body: JSON.stringify({ objectKey, sessionId: sessionId || undefined }),
+              signal: controller.signal,
+            });
+            return res;
+          } finally {
+            clearTimeout(timeoutId);
+          }
+        };
+
+        let res: Response | null = null;
+        let timedOut = false;
+        try { res = await doOnce(); } catch (e: any) { if (e?.name === 'AbortError') timedOut = true; else throw e; }
+        if (!res && timedOut) {
+          try { console.warn(`MicContext: STT (direct) timed out after ${STT_TIMEOUT_MS}ms; retrying once`); } catch {}
+          try { res = await doOnce(); } catch (e) { if ((e as any)?.name === 'AbortError') { try { console.error(`MicContext: STT (direct) timed out again after ${STT_TIMEOUT_MS}ms`); } catch {} } }
+        }
+        if (!res) throw new Error("stt request failed");
+        try { console.log(JSON.stringify({ type: 'voice.stt.response_headers', dtMs: Date.now() - sttStart, status: res.status })); } catch {}
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.error || `stt failed: ${res.status}`);
+        try { console.log(JSON.stringify({ type: 'voice.stt.done', latencyMs: Date.now() - sttStart })); } catch {}
+        return { text: String(data?.text || "") };
+      } catch (e) {
+        // Fallback to multipart path on any failure in direct flow
+        try { console.warn("MicContext: direct STT path failed; falling back to multipart", e); } catch {}
+      }
+    }
+
+    // Multipart base64 path (existing behavior)
     const sttStart = Date.now();
     const form = new FormData();
     form.set("audio", b, "utterance.webm");
@@ -624,19 +820,47 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     if (typeof detectMs === 'number' && isFinite(detectMs) && detectMs >= 0) {
       headers["x-detect-ms"] = String(Math.round(detectMs));
     }
-    // Log STT request start
     try { console.log(JSON.stringify({ type: 'voice.stt.request_start', t0: sttStart, bytes: b.size, detectMs })); } catch {}
-    const res = await fetch("/api/v1/stt", { method: "POST", body: form, headers });
-    // Log when response headers arrive
+
+    const doOnce = async (): Promise<Response> => {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), STT_TIMEOUT_MS);
+      try {
+        const res = await fetch("/api/v1/stt", { method: "POST", body: form, headers, signal: controller.signal });
+        return res;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    };
+
+    let res: Response | null = null;
+    let timedOut = false;
+    try {
+      res = await doOnce();
+    } catch (e: any) {
+      if (e?.name === 'AbortError') timedOut = true; else throw e;
+    }
+    if (!res && timedOut) {
+      try { console.warn(`MicContext: STT timed out after ${STT_TIMEOUT_MS}ms; retrying once`); } catch {}
+      try { res = await doOnce(); } catch (e) {
+        if ((e as any)?.name === 'AbortError') {
+          try { console.error(`MicContext: STT timed out again after ${STT_TIMEOUT_MS}ms`); } catch {}
+        }
+      }
+    }
+    if (!res) throw new Error("stt request failed");
+
     try { console.log(JSON.stringify({ type: 'voice.stt.response_headers', dtMs: Date.now() - sttStart, status: res.status })); } catch {}
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data?.error || `stt failed: ${res.status}`);
     try { console.log(JSON.stringify({ type: 'voice.stt.done', latencyMs: Date.now() - sttStart })); } catch {}
     return { text: String(data?.text || "") };
-  }, [sessionId]);
+  }, [sessionId, STT_TIMEOUT_MS, STT_DIRECT_UPLOAD_ENABLED, STT_DIRECT_UPLOAD_THRESHOLD_BYTES]);
 
   const chatToText = useCallback(async (promptText: string, opts?: { includeHistory?: boolean }): Promise<string> => {
     setBusy("chat");
+    // Show "Thinking" indicator while waiting for first TTS segment
+    try { setProcessingRing(true); } catch {}
     // Clear assistant text for a fresh streaming response
     try { setAssistantText(""); } catch {}
     return new Promise<string>((resolve, reject) => {
@@ -714,7 +938,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
           reject(new Error("chat stream failed"));
         };
       } catch (e: any) {
-        reject(new Error(e?.message || "chat failed"));
+        reject(new Error(e?.message || ERR.chatFailed));
       }
     });
   }, [enqueueTTSSegment]);
@@ -730,7 +954,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
       const reply = await chatToText(prompt, { includeHistory: true });
       return reply;
     } catch (e: any) {
-      setVoiceError(e?.message || "chat failed");
+      setVoiceError(e?.message || ERR.chatFailed);
       throw e;
     } finally {
       if (busy === "chat") setBusy("idle");
@@ -802,21 +1026,10 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
         console.log("MicContext: Error stopping stream:", e);
       }
     }
-    
-    // Clear timers and intervals
-    if (stopTimerRef.current) { 
-      window.clearTimeout(stopTimerRef.current); 
-      stopTimerRef.current = null; 
-    }
-    if (vadIntervalRef.current) { 
-      window.clearInterval(vadIntervalRef.current); 
-      vadIntervalRef.current = null; 
-    }
-    
-    // Clean up audio context and other refs
-    try { audioCtxRef.current?.close(); audioCtxRef.current = null; } catch {}
-    try { speechFramesRef.current = 0; bargeArmedRef.current = false; } catch {}
   }, []);
+
+  // Expose the latest stopRecording function to early effects
+  useEffect(() => { stopRecordingFnRef.current = stopRecording; }, [stopRecording]);
 
   const startRecording = useCallback(async () => {
     setVoiceError("");
@@ -835,7 +1048,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     }
 
     if (!mediaSupported) {
-      const error = "Microphone not supported in this browser";
+      const error = ERR.micUnsupported;
       console.error("MicContext:", error);
       setVoiceError(error);
       return;
@@ -869,6 +1082,20 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
             recFirstChunkTsRef.current = Date.now();
             const t0 = recStartTsRef.current || recFirstChunkTsRef.current;
             try { console.log(JSON.stringify({ type: 'voice.record.first_chunk', t0, tFirst: recFirstChunkTsRef.current, deltaMs: recFirstChunkTsRef.current - t0 })); } catch {}
+            // If this recording was started due to a barge-in, emit restart latency
+            if (bargeTriggerTsRef.current) {
+              const restartMs = recFirstChunkTsRef.current - bargeTriggerTsRef.current;
+              try { console.log(JSON.stringify({ type: 'voice.barge.restart_ms', restartMs })); } catch {}
+              try {
+                void fetch('/api/telemetry/voice', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ type: 'voice.barge.restart_ms', restartMs }),
+                  keepalive: true,
+                }).catch(() => {});
+              } catch {}
+              bargeTriggerTsRef.current = null;
+            }
           }
         }
       };
@@ -877,42 +1104,28 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
         console.log("MicContext: Recording stopped, processing", chunks.length, "chunks");
         console.log("MicContext: voiceLoopRef.current =", voiceLoopRef.current);
         console.log("MicContext: recordingRef.current =", recordingRef.current);
-        console.log("MicContext: pipelineInterruptedRef.current =", pipelineInterruptedRef.current);
-        
-        // If pipeline was interrupted, store these chunks for concatenation
-        if (pipelineInterruptedRef.current && chunks.length > 0) {
-          console.log("MicContext: Storing interrupted audio chunks for concatenation", {
-            chunkCount: chunks.length,
-            mimeType: mime
-          });
-          interruptedAudioChunksRef.current = [...chunks];
-          interruptedMimeTypeRef.current = mime || "audio/webm";
-          // Don't process this audio yet - it will be concatenated with the next recording
-          try { setRecording(false); } catch {}
-          setBusy("idle");
-          return;
-        }
-        
+
         // Ensure UI state reflects that we are no longer recording.
         // This is critical so the barge monitor can start while assistant is responding.
         try { setRecording(false); } catch {}
-        
+        try { setInputSpeaking(false); } catch {}
+
         // Only skip processing if voice loop is disabled (paused) or already processing
         if (!voiceLoopRef.current) {
           console.log("MicContext: Voice loop disabled, skipping processing");
           setBusy("idle");
           return;
         }
-        
+
         if (processingRef.current) {
           console.log("MicContext: Already processing previous input, skipping");
           setBusy("idle");
           return;
         }
-        
+
         processingRef.current = true;
-        
-        // Clean up stream tracks (already done in stopRecording, but ensure here too)
+
+        // Clean up stream and timers
         try { stream.getTracks().forEach((t) => t.stop()); } catch {}
         if (stopTimerRef.current) { window.clearTimeout(stopTimerRef.current); stopTimerRef.current = null; }
         if (vadIntervalRef.current) { window.clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
@@ -921,25 +1134,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
 
         try {
           const outType = mime && mime.startsWith("audio/webm") ? "audio/webm" : (mime || "audio/webm");
-          
-          // Handle audio concatenation if pipeline was interrupted
-          let finalChunks = chunks;
-          if (pipelineInterruptedRef.current && interruptedAudioChunksRef.current.length > 0) {
-            console.log("MicContext: Concatenating interrupted audio with new audio", {
-              interruptedChunks: interruptedAudioChunksRef.current.length,
-              newChunks: chunks.length,
-              interruptedMime: interruptedMimeTypeRef.current,
-              newMime: outType
-            });
-            // Combine interrupted audio with new audio
-            finalChunks = [...interruptedAudioChunksRef.current, ...chunks];
-            // Clear interrupted audio state
-            interruptedAudioChunksRef.current = [];
-            interruptedMimeTypeRef.current = "";
-            pipelineInterruptedRef.current = false;
-          }
-          
-          const b = new Blob(finalChunks, { type: outType });
+          const b = new Blob(chunks, { type: outType });
           console.log("MicContext: Created audio blob, size:", b.size, "type:", outType);
           try {
             const t0 = recStartTsRef.current || 0;
@@ -971,12 +1166,12 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
                 void ingestMessage("assistant", reply);
               } else {
                 console.log("MicContext: No speech detected");
-                setVoiceError("No speech detected. Please try again.");
+                setVoiceError(ERR.noSpeech);
                 try { setProcessingRing(false); } catch {}
               }
             } catch (e: any) {
               console.error("MicContext: Voice chat failed:", e);
-              setVoiceError(e?.message || "Voice chat failed");
+              setVoiceError(e?.message || ERR.voiceChatFailed);
             } finally {
               processingRef.current = false;
               setBusy("idle");
@@ -1021,12 +1216,12 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
                 void ingestMessage("assistant", reply);
               } else {
                 console.log("MicContext: No speech detected (one-shot)");
-                setVoiceError("No speech detected. Please try again.");
+                setVoiceError(ERR.noSpeech);
                 try { setProcessingRing(false); } catch {}
               }
             } catch (e: any) {
               console.error("MicContext: One-shot voice chat failed:", e);
-              setVoiceError(e?.message || "Voice chat failed");
+              setVoiceError(e?.message || ERR.voiceChatFailed);
             } finally {
               processingRef.current = false;
               setBusy("idle");
@@ -1039,7 +1234,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
           }
         } catch (e) {
           console.error("MicContext: Failed to finalize recording:", e);
-          setVoiceError("Failed to finalize recording");
+          setVoiceError(ERR.finalizeFail);
           processingRef.current = false;
           setBusy("idle");
           try { setProcessingRing(false); } catch {}
@@ -1085,6 +1280,15 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
         let lastSpeechTs = Date.now();
         let firstSpeechTs: number | null = null;
         let silenceFrames = 0;
+        try { console.log(JSON.stringify({ type: 'voice.vad.state', state: 'init', VAD_THRESHOLD, VAD_MAX_SILENCE_MS, MIN_SPEECH_MS, SILENCE_DEBOUNCE_FRAMES, VAD_GRACE_MS })); } catch {}
+        try {
+          void fetch('/api/telemetry/voice', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ type: 'voice.vad.state', state: 'init' }),
+            keepalive: true,
+          }).catch(() => {});
+        } catch {}
         // Attach mute/unmute listeners on the primary audio track
         try {
           const t = stream.getAudioTracks?.()[0];
@@ -1144,9 +1348,50 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
 
     } catch (e: any) {
       console.error("MicContext: Mic permission denied:", e);
-      setVoiceError(e?.message || "Mic permission denied or unavailable");
+      setVoiceError(e?.message || ERR.permissionDenied);
     }
   }, [BARGE_MIN_FRAMES, BARGE_RMS_THRESHOLD, MAX_UTTER_MS, VAD_MAX_SILENCE_MS, VAD_THRESHOLD, busy, callSTTMultipart, chatToText, mediaSupported, recording, stopPlaybackAndClear, waitForQueueToDrain, voiceLoopRef, ingestMessage]);
+
+  // Telemetry: VAD speaking/silence transitions
+  useEffect(() => {
+    if (!recording) return; // only emit during recording session
+    const prev = prevInputSpeakingRef.current;
+    if (prev !== inputSpeaking) {
+      prevInputSpeakingRef.current = inputSpeaking;
+      try { console.log(JSON.stringify({ type: 'voice.vad.state', state: inputSpeaking ? 'speaking' : 'silence' })); } catch {}
+      try {
+        void fetch('/api/telemetry/voice', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ type: 'voice.vad.state', state: inputSpeaking ? 'speaking' : 'silence' }),
+          keepalive: true,
+        }).catch(() => {});
+      } catch {}
+    }
+  }, [inputSpeaking, recording]);
+
+  // Telemetry: pipeline state transitions
+  useEffect(() => {
+    // Derive pipeline state from recording/busy
+    let state: 'idle' | 'listening' | 'processing' | 'speaking' | 'error' = 'idle';
+    if (voiceError) state = 'error';
+    else if (recording) state = 'listening';
+    else if (busy === 'stt' || busy === 'chat') state = 'processing';
+    else if (busy === 'tts') state = 'speaking';
+    const prev = lastPipelineStateRef.current;
+    if (prev !== state) {
+      lastPipelineStateRef.current = state;
+      try { console.log(JSON.stringify({ type: 'voice.pipeline.state', state, busy, recording })); } catch {}
+      try {
+        void fetch('/api/telemetry/voice', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ type: 'voice.pipeline.state', state }),
+          keepalive: true,
+        }).catch(() => {});
+      } catch {}
+    }
+  }, [busy, recording, voiceError]);
 
   const toggleVoiceLoop = useCallback(() => {
     console.log("MicContext: toggleVoiceLoop called, current state:", { voiceLoop, recording, busy });
@@ -1190,7 +1435,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     } catch {}
   }, []);
 
-  // --- Barge-in monitor (placed after startRecording to avoid forward refs) ---
+  // --- Simplified Barge-in monitor (interrupt + restart pattern) ---
   const stopBargeMonitor = useCallback(() => {
     try { if (bargeIntervalRef.current) { window.clearInterval(bargeIntervalRef.current); bargeIntervalRef.current = null; } } catch {}
     try { bargeAudioCtxRef.current?.close(); } catch {}
@@ -1228,25 +1473,18 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
           if (bargeArmedRef.current && rms >= BARGE_RMS_THRESHOLD) {
             console.log("MicContext: BARGE-IN TRIGGERED (immediate)", { rms, BARGE_RMS_THRESHOLD });
             bargeArmedRef.current = false;
-            
-            // Check if we're in the pipeline phase before TTS starts (chat streaming or processing)
-            const inPipelinePhase = busy === "chat" || busy === "stt" || (processingRef.current && !audioPlayingRef.current);
-            
-            if (inPipelinePhase) {
-              console.log("MicContext: Pipeline interrupted before TTS - will concatenate audio");
-              pipelineInterruptedRef.current = true;
-              // Capture any current recording chunks if recording is active
-              const currentRecorder = mediaRef.current;
-              if (currentRecorder && currentRecorder.state === "recording") {
-                console.log("MicContext: Stopping current recording to capture chunks for concatenation");
-                try {
-                  currentRecorder.stop();
-                } catch (e) {
-                  console.log("MicContext: Error stopping recorder for interruption:", e);
-                }
-              }
-            }
-            
+            // Telemetry: barge trigger
+            bargeTriggerTsRef.current = Date.now();
+            try { console.log(JSON.stringify({ type: 'voice.barge.trigger' })); } catch {}
+            try {
+              void fetch('/api/telemetry/voice', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ type: 'voice.barge.trigger' }),
+                keepalive: true,
+              }).catch(() => {});
+            } catch {}
+
             // Interrupt playback and chat immediately
             try { pausePlayback(); } catch {}
             // Clear any queued audio so nothing resumes after interrupt
@@ -1276,11 +1514,11 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     }
   }, [BARGE_MIN_FRAMES, BARGE_RMS_THRESHOLD, startRecording, stopBargeMonitor]);
 
-  // Start/stop barge monitor only when assistant audio is playing.
-  // Avoid monitoring during text streaming (busy === 'chat') to prevent premature interrupts.
+  // Start/stop barge monitor when assistant is speaking OR streaming text.
+  // We now also monitor during text streaming (busy === 'chat') so the user can barge-in before TTS starts.
   useEffect(() => {
-    const shouldMonitor = voiceLoop && !recording && audioPlayingRef.current;
-    try { console.log("MicContext: Barge monitor check", { voiceLoop, recording, audioPlaying: audioPlayingRef.current, busy }); } catch {}
+    const shouldMonitor = voiceLoop && !recording && (audioPlayingRef.current || busy === 'chat');
+    try { console.log("MicContext: Barge monitor check", { voiceLoop, recording, audioPlaying: audioPlayingRef.current, busy, shouldMonitor }); } catch {}
     if (shouldMonitor) {
       void startBargeMonitor();
     } else {
@@ -1298,6 +1536,8 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     voiceLoop,
     transcript,
     assistantText,
+    needsAudioUnlock,
+    unlockAudio,
     sendPrompt,
     inputSpeaking,
     processingRing,
@@ -1320,7 +1560,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     silenceDebounceFrames: tuning.silenceDebounceFrames,
     vadGraceMs: tuning.vadGraceMs,
     setTuning,
-  }), [assistantText, busy, clear, mediaSupported, recording, startRecording, stopRecording, transcript, voiceError, voiceLoop, toggleVoiceLoop, setVoiceLoopState, tuning, setTuning, resetTuning, inputSpeaking, processingRing, interactionState, interactionGroupId, interactionTurnCount, assessmentChips]);
+  }), [assistantText, busy, clear, mediaSupported, recording, startRecording, stopRecording, transcript, voiceError, voiceLoop, toggleVoiceLoop, setVoiceLoopState, tuning, setTuning, resetTuning, inputSpeaking, processingRing, interactionState, interactionGroupId, interactionTurnCount, assessmentChips, needsAudioUnlock, unlockAudio]);
 
   return (
     <MicContext.Provider value={value}>{children}</MicContext.Provider>

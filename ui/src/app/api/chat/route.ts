@@ -1,5 +1,6 @@
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+import { promMetrics } from "../lib/metrics";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -68,15 +69,31 @@ export async function GET(request: Request) {
 
   const { readable, writable } = new TransformStream();
 
-  // Pipe upstream SSE bytes through unchanged
-  upstream.body
-    .pipeTo(writable)
-    .catch(() => {
-      // Ignore errors during pipe (client disconnect or abort)
+  // Measure time-to-first-byte from upstream, then pipe through
+  const firstByteStart = Date.now();
+  const labels = { route: "/api/chat", method: "GET", status: "200", mode: upstream.headers.get("X-Chat-Provider") || upstream.headers.get("x-chat-provider") || "-" } as const;
+  try {
+    const [forMeasure, forPipe] = upstream.body.tee();
+    const reader = forMeasure.getReader();
+    // Read exactly one chunk to measure first token/byte latency
+    reader.read().then(({ value, done }) => {
       try {
-        controller.abort();
+        promMetrics.chatFirstTokenMs.labels(labels.route, labels.method, labels.status, labels.mode as string).observe(Date.now() - firstByteStart);
       } catch {}
-    });
+      // Cancel further reads so the other branch can flow
+      try { reader.cancel(); } catch {}
+    }).catch(() => {});
+
+    // Pipe the other branch through to the client
+    forPipe
+      .pipeTo(writable)
+      .catch(() => { try { controller.abort(); } catch {} });
+  } catch {
+    // Fallback: if tee/read fails, just pipe through
+    upstream.body
+      .pipeTo(writable)
+      .catch(() => { try { controller.abort(); } catch {} });
+  }
 
   // Build response headers, passing through provider/model if set upstream
   const respHeaders: Record<string, string> = {

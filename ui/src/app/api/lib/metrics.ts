@@ -13,6 +13,12 @@ const g = globalThis as unknown as {
       audioBytesOut: client.Counter<string>;
       storageBytesUploaded: client.Counter<string>;
       storagePresignBytesPlanned: client.Counter<string>;
+      sttLatencyMs: client.Histogram<string>;
+      ttsLatencyMs: client.Histogram<string>;
+      chatFirstTokenMs: client.Histogram<string>;
+      clientDetectMs: client.Histogram<string>;
+      voiceEventsTotal: client.Counter<string>;
+      voiceTtsPlaybackMs: client.Histogram<string>;
     };
   };
 };
@@ -78,9 +84,62 @@ function createMetrics() {
     registers: [registry],
   });
 
+  // Latency histograms (milliseconds)
+  const commonMsBuckets = [25, 50, 75, 100, 150, 250, 400, 600, 800, 1200, 2000, 3000, 5000, 8000, 12000];
+
+  const sttLatencyMs = new client.Histogram({
+    name: "coachup_ui_stt_latency_ms",
+    help: "End-to-end STT latency in milliseconds (UI API)",
+    labelNames: labelNames as unknown as string[],
+    buckets: commonMsBuckets,
+    registers: [registry],
+  });
+
+  const ttsLatencyMs = new client.Histogram({
+    name: "coachup_ui_tts_latency_ms",
+    help: "End-to-end TTS latency in milliseconds (UI API)",
+    labelNames: labelNames as unknown as string[],
+    buckets: commonMsBuckets,
+    registers: [registry],
+  });
+
+  const chatFirstTokenMs = new client.Histogram({
+    name: "coachup_ui_chat_first_token_ms",
+    help: "Latency to first token from upstream chat SSE in milliseconds",
+    labelNames: labelNames as unknown as string[],
+    buckets: commonMsBuckets,
+    registers: [registry],
+  });
+
+  const clientDetectMs = new client.Histogram({
+    name: "coachup_ui_client_detect_ms",
+    help: "Client-reported mic detection time in milliseconds",
+    labelNames: labelNames as unknown as string[],
+    buckets: [50, 100, 200, 300, 500, 800, 1200, 2000, 3000, 5000],
+    registers: [registry],
+  });
+
+  // Client voice telemetry
+  // Counter for client-side voice events (e.g., vad state, pipeline state, tts playback events)
+  const voiceEventsTotal = new client.Counter({
+    name: "coachup_ui_voice_events_total",
+    help: "Total number of client voice events ingested",
+    labelNames: ["event", "state", "outcome", "route", "method", "status", "mode"] as unknown as string[],
+    registers: [registry],
+  });
+
+  // Histogram for client-reported TTS playback durations
+  const voiceTtsPlaybackMs = new client.Histogram({
+    name: "coachup_ui_voice_tts_playback_ms",
+    help: "Client-reported TTS playback duration in milliseconds",
+    labelNames: ["outcome", "route", "method", "status", "mode"] as unknown as string[],
+    buckets: commonMsBuckets,
+    registers: [registry],
+  });
+
   return {
     registry,
-    metrics: { requestsTotal, requestErrorsTotal, requestDurationSeconds, audioBytesIn, audioBytesOut, storageBytesUploaded, storagePresignBytesPlanned },
+    metrics: { requestsTotal, requestErrorsTotal, requestDurationSeconds, audioBytesIn, audioBytesOut, storageBytesUploaded, storagePresignBytesPlanned, sttLatencyMs, ttsLatencyMs, chatFirstTokenMs, clientDetectMs, voiceEventsTotal, voiceTtsPlaybackMs },
   } as const;
 }
 
