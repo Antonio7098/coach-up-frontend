@@ -31,7 +31,7 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
   const pendingAudioUrlRef = useRef<string | null>(null);
   const [needsAudioUnlock, setNeedsAudioUnlock] = useState<boolean>(false);
 
-  const playAudio = useCallback(async (url: string) => {
+  const playAudio = useCallback(async (url: string): Promise<boolean> => {
     try {
       let el = audioRef.current;
       if (!el) {
@@ -47,16 +47,18 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
         if (!userInteractedRef.current) {
           pendingAudioUrlRef.current = url;
           setNeedsAudioUnlock(true);
-          return;
+          try { console.log("AudioContext: Autoplay locked before play(); deferring"); } catch {}
+          return false;
         }
         await el.play();
       } catch (e: any) {
         if (e?.name === "NotAllowedError") {
           pendingAudioUrlRef.current = url;
           setNeedsAudioUnlock(true);
-          return;
+          try { console.log("AudioContext: play() NotAllowedError; deferring until unlock"); } catch {}
+          return false;
         }
-        return;
+        return false;
       }
       await new Promise<void>((resolve) => {
         const cleanup = () => {
@@ -71,7 +73,10 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
         el!.addEventListener("error", onErr, { once: true });
         el!.addEventListener("pause", onPause, { once: true });
       });
-    } catch {}
+      return true;
+    } catch {
+      return false;
+    }
   }, []);
 
   const stopPlaybackAndClear = useCallback(() => {
@@ -83,7 +88,7 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
         try { el.src = ""; } catch {}
       }
     } catch {}
-    pendingAudioUrlRef.current = null;
+    // Keep pendingAudioUrlRef as-is; a pending URL might resume after unlock.
     audioQueueRef.current = [];
     audioPlayingRef.current = false;
   }, []);
@@ -98,14 +103,21 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
 
   const ensureAudioWorker = useCallback(async () => {
     if (audioPlayingRef.current) return;
-    const next = audioQueueRef.current.shift();
+    const next = audioQueueRef.current[0];
     if (!next) return;
     audioPlayingRef.current = true;
+    let played = false;
     try {
-      await playAudio(next);
+      played = await playAudio(next);
     } finally {
       audioPlayingRef.current = false;
-      if (audioQueueRef.current.length > 0) void ensureAudioWorker();
+      if (played) {
+        // Remove the item only after successful playback run
+        audioQueueRef.current.shift();
+        if (audioQueueRef.current.length > 0) void ensureAudioWorker();
+      } else {
+        // Deferred due to autoplay; keep queue intact and wait for unlock
+      }
     }
   }, [playAudio]);
 
@@ -121,11 +133,9 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
       if (!userInteractedRef.current) {
         userInteractedRef.current = true;
         setNeedsAudioUnlock(false);
-        const url = pendingAudioUrlRef.current;
-        if (url) {
-          pendingAudioUrlRef.current = null;
-          enqueueAudio(url);
-        }
+        // Clear any stale pending pointer and try to resume queued playback
+        pendingAudioUrlRef.current = null;
+        void ensureAudioWorker();
       }
     };
     window.addEventListener("pointerdown", mark, { passive: true } as any);
@@ -136,19 +146,17 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
       window.removeEventListener("keydown", mark as any);
       window.removeEventListener("touchstart", mark as any);
     };
-  }, [enqueueAudio]);
+  }, [ensureAudioWorker]);
 
   const unlockAudio = useCallback(() => {
     if (!userInteractedRef.current) {
       userInteractedRef.current = true;
       setNeedsAudioUnlock(false);
-      const url = pendingAudioUrlRef.current;
-      if (url) {
-        pendingAudioUrlRef.current = null;
-        enqueueAudio(url);
-      }
+      // Clear any stale pending pointer and resume queued playback
+      pendingAudioUrlRef.current = null;
+      void ensureAudioWorker();
     }
-  }, [enqueueAudio]);
+  }, [ensureAudioWorker]);
 
   const waitForQueueToDrain = useCallback(async (timeoutMs = 15000): Promise<void> => {
     const start = Date.now();

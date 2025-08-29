@@ -11,10 +11,10 @@ import { useMicUI } from "../context/MicUIContext";
 // When in coach, renders the large center mic with chat<->dashboard transform, driven by MicUIContext.
 export default function GlobalMicButton() {
   const [mounted, setMounted] = useState(false);
-  const { voiceLoop, toggleVoiceLoop } = useMic();
-  const { recording, startRecording, stopRecording, inputSpeaking } = useAudio();
+  const { voiceLoop, toggleVoiceLoop, recording, startRecording, stopRecording, inputSpeaking, setVoiceLoop } = useMic();
   const { busy, processingRing } = useVoice();
   const { inCoach, showDashboard, setShowDashboard, onTap, onLongPress } = useMicUI();
+  const audio = useAudio();
   // Only show speaking pulse when the mic is actively recording
   const speakingPulse = recording && inputSpeaking;
 
@@ -33,6 +33,8 @@ export default function GlobalMicButton() {
   const isActive = recording || (voiceLoop && busy !== "idle");
   const LONG_PRESS_MS = 500;
   const onDown = () => {
+    // Ensure first gesture unlocks audio autoplay in browsers
+    try { audio.unlockAudio(); } catch {}
     if (!inCoach) return; // only relevant for coach mic UI
     pressLongRef.current = false;
     if (pressTimerRef.current) { window.clearTimeout(pressTimerRef.current); }
@@ -40,14 +42,17 @@ export default function GlobalMicButton() {
       pressLongRef.current = true;
       if (onLongPress) onLongPress();
       else {
-        // default: while on dashboard, long-press stops recording
+        // default: while on dashboard, long-press mutes then stops
         if (showDashboard) {
+          try { setVoiceLoop(false); } catch {}
           try { stopRecording(); } catch {}
         }
       }
     }, LONG_PRESS_MS);
   };
   const onUp = () => {
+    // Redundant unlock on pointer up in case pointerdown wasn't captured
+    try { audio.unlockAudio(); } catch {}
     if (!inCoach) return; // small button has its own click handler
     if (pressTimerRef.current) { window.clearTimeout(pressTimerRef.current); pressTimerRef.current = null; }
     if (pressLongRef.current) return;
@@ -161,33 +166,35 @@ export default function GlobalMicButton() {
   );
 
   const onSmallDown = () => {
+    // Ensure first gesture unlocks audio on non-coach pages
+    try { audio.unlockAudio(); } catch {}
     if (inCoach) return; // only for non-coach pages
     smallPressLongRef.current = false;
     if (smallPressTimerRef.current) { window.clearTimeout(smallPressTimerRef.current); }
     smallPressTimerRef.current = window.setTimeout(() => {
       smallPressLongRef.current = true;
+      try { setVoiceLoop(false); } catch {}
       try { stopRecording(); } catch {}
     }, LONG_PRESS_MS);
   };
   const onSmallUp = () => {
+    // Redundant unlock on pointer up
+    try { audio.unlockAudio(); } catch {}
     if (inCoach) return;
     if (smallPressTimerRef.current) { window.clearTimeout(smallPressTimerRef.current); smallPressTimerRef.current = null; }
     if (smallPressLongRef.current) return; // consume long-press
-    // short click: existing behavior (often navigates back to chat externally); keep toggle for safety
+    // Short click: toggle mute/unmute (voiceLoop)
+    try { toggleVoiceLoop(); } catch {}
   };
 
   const globalButton = (
     <button
       type="button"
-      aria-label={isActive ? "Pause voice" : "Start voice"}
-      title={isActive ? "Pause voice" : "Start voice"}
+      aria-label={isActive ? "Pause voice (click) or hold to stop" : "Resume voice (click)"}
+      title={isActive ? "Pause voice (click) or hold to stop" : "Resume voice (click)"}
       onPointerDown={onSmallDown}
       onPointerUp={onSmallUp}
-      onClick={() => {
-        // In non-coach pages, clicks typically navigate back to chat. Do not toggle here.
-        // Long-press is used to pause/stop. No-op on short click.
-        return;
-      }}
+      onClick={() => { /* handled by onPointerUp for consistent long-press detection */ return; }}
       className="fixed z-[1000] right-5 bottom-[calc(env(safe-area-inset-bottom,0)+20px)] h-14 w-14 rounded-full shadow-lg flex items-center justify-center text-white select-none border-2 cu-accent-border"
       style={{
         boxShadow: isActive ? "0 0 0 8px rgba(0,0,0,0.08)" : undefined,

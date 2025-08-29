@@ -12,6 +12,8 @@ export type ConversationContextValue = {
   getHistoryParam: () => string;
   // Chat with streaming and TTS flushing for voice flows
   chatToTextWithTTS: (prompt: string, opts?: { includeHistory?: boolean }) => Promise<string>;
+  // Cancel any active chat SSE stream (used for barge-in)
+  cancelActiveChatStream: () => void;
   // Multi-turn interaction state (for assessments orchestration UI)
   interactionState: "active" | "idle";
   interactionGroupId?: string;
@@ -34,6 +36,8 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
 
   // Local history ring (10 msgs) — mirrors MicContext shape for compatibility
   const historyRef = useRef<{ role: "user" | "assistant"; content: string }[]>([]);
+  // Track the active chat SSE stream for cancellation
+  const activeChatEsRef = useRef<EventSource | null>(null);
 
   function historyStorageKey(sid: string) {
     return `chatHistory:${sid}`;
@@ -113,13 +117,18 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
       try {
         const hist = buildHistoryParam();
         const qs = `?prompt=${encodeURIComponent(prompt)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""}${hist ? `&history=${encodeURIComponent(hist)}` : ""}`;
+        // Cancel any previous active stream before starting a new one
+        try { activeChatEsRef.current?.close(); } catch {}
+        activeChatEsRef.current = null;
         let es: EventSource | null = null;
         try { es = new EventSource(`/api/chat${qs}`, { withCredentials: false }); } catch {}
         if (!es) { reject(new Error("chat stream failed")); return; }
+        activeChatEsRef.current = es;
         let acc = "";
         es.onmessage = (evt) => {
           if (evt.data === "[DONE]") {
             try { es?.close(); } catch {}
+            if (activeChatEsRef.current === es) activeChatEsRef.current = null;
             // Persist assistant message
             if (acc) {
               historyRef.current.push({ role: "assistant", content: acc });
@@ -133,6 +142,7 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
         };
         es.onerror = () => {
           try { es?.close(); } catch {}
+          if (activeChatEsRef.current === es) activeChatEsRef.current = null;
           reject(new Error("chat stream failed"));
         };
       } catch (e: any) {
@@ -153,9 +163,13 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
         const includeHistory = opts?.includeHistory !== false;
         const hist = includeHistory ? buildHistoryParam() : "";
         const qs = `?prompt=${encodeURIComponent(promptText)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""}${hist ? `&history=${encodeURIComponent(hist)}` : ""}`;
+        // Cancel any previous active stream before starting a new one
+        try { activeChatEsRef.current?.close(); } catch {}
+        activeChatEsRef.current = null;
         let es: EventSource | null = null;
         try { es = new EventSource(`/api/chat${qs}`, { withCredentials: false }); } catch {}
         if (!es) { reject(new Error("chat stream failed")); return; }
+        activeChatEsRef.current = es;
         let acc = "";
         let lastFlushed = 0;
         const minFlushChars = 12;
@@ -183,6 +197,7 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
         es.onmessage = (evt) => {
           if (evt.data === "[DONE]") {
             try { es?.close(); } catch {}
+            if (activeChatEsRef.current === es) activeChatEsRef.current = null;
             // Prevent duplicate tail flush
             if (idleTimer) { try { clearTimeout(idleTimer); } catch {} idleTimer = null; }
             const tail = acc.slice(lastFlushed).trim();
@@ -207,6 +222,8 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
         };
         es.onerror = () => {
           try { es?.close(); } catch {}
+          if (idleTimer) { try { clearTimeout(idleTimer); } catch {} idleTimer = null; }
+          if (activeChatEsRef.current === es) activeChatEsRef.current = null;
           reject(new Error("chat stream failed"));
         };
       } catch (e: any) {
@@ -215,10 +232,16 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
     });
   }, [buildHistoryParam, enqueueTTSSegment, sessionId]);
 
+  const cancelActiveChatStream = useCallback(() => {
+    try { activeChatEsRef.current?.close(); } catch {}
+    activeChatEsRef.current = null;
+  }, []);
+
   const value = useMemo<ConversationContextValue>(() => ({
     sendPrompt,
     getHistoryParam: buildHistoryParam,
     chatToTextWithTTS,
+    cancelActiveChatStream,
     interactionState: "idle",
     interactionGroupId: undefined,
     interactionTurnCount: 0,
@@ -227,6 +250,7 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
     sendPrompt,
     buildHistoryParam,
     chatToTextWithTTS,
+    cancelActiveChatStream,
   ]);
 
   return <ConversationCtx.Provider value={value}>{children}</ConversationCtx.Provider>;

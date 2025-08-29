@@ -14,6 +14,8 @@ export type VoiceContextValue = {
   voiceError: string;
   // Minimal TTS enqueue adapter during migration
   enqueueTTSSegment: (text: string) => void;
+  // Cancel TTS worker and clear queued segments
+  cancelTTS: () => void;
   // STT adapter during migration
   sttFromBlob: (b: Blob, detectMs?: number) => Promise<{ text: string }>;
 };
@@ -147,6 +149,12 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
     void ensureTTSWorker();
   }, [ensureTTSWorker]);
 
+  const cancelTTSImpl = useCallback(() => {
+    // Bump generation to abort current worker loop and clear queue
+    ttsCancelRef.current++;
+    ttsTextQueueRef.current = [];
+  }, []);
+
   // --- STT helper (built-in) ---
   const sttFromBlobImpl = useCallback(async (b: Blob, detectMs?: number): Promise<{ text: string }> => {
     // Decide path: direct-to-S3 + JSON STT for large blobs, multipart otherwise
@@ -239,9 +247,11 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
     transcript: state.transcript,
     assistantText: state.assistantText,
     voiceError: state.voiceError,
-    enqueueTTSSegment: adapters.enqueueTTSSegment,
-    sttFromBlob: adapters.sttFromBlob,
-  }), [state.busy, state.processingRing, state.transcript, state.assistantText, state.voiceError]);
+    // Expose concrete implementations directly to avoid race with adapters useEffect
+    enqueueTTSSegment: enqueueTTSSegmentImpl,
+    cancelTTS: cancelTTSImpl,
+    sttFromBlob: sttFromBlobImpl,
+  }), [state.busy, state.processingRing, state.transcript, state.assistantText, state.voiceError, enqueueTTSSegmentImpl, cancelTTSImpl, sttFromBlobImpl]);
 
   return <VoiceCtx.Provider value={value}>{children}</VoiceCtx.Provider>;
 }

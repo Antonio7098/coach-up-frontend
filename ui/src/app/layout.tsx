@@ -18,6 +18,7 @@ import { ConversationProvider } from "../context/ConversationContext";
 import GlobalMicButton from "../components/GlobalMicButton";
 import NavDirListener from "./NavDirListener";
 import { MicUIProvider } from "../context/MicUIContext";
+import ConvexClientProvider from "./ConvexClientProvider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -55,23 +56,25 @@ export default function RootLayout({
           className={`${geistSans.variable} ${geistMono.variable} antialiased`}
         >
 
-          <ChatProvider>
-            <VoiceProvider>
-              <AudioProvider>
-                <ConversationProvider>
-                  <MicProvider>
-                    <MicUIProvider>
-                      {/* Global listener to mark popstate as 'back' for entry animations */}
-                      <NavDirListener />
-                      {children}
-                      {/* Global mic renders coach-style UI when inCoach via MicUIContext */}
-                      <GlobalMicButton />
-                    </MicUIProvider>
-                  </MicProvider>
-                </ConversationProvider>
-              </AudioProvider>
-            </VoiceProvider>
-          </ChatProvider>
+          <ConvexClientProvider>
+            <ChatProvider>
+              <VoiceProvider>
+                <AudioProvider>
+                  <ConversationProvider>
+                    <MicProvider>
+                      <MicUIProvider>
+                        {/* Global listener to mark popstate as 'back' for entry animations */}
+                        <NavDirListener />
+                        {children}
+                        {/* Global mic renders coach-style UI when inCoach via MicUIContext */}
+                        <GlobalMicButton />
+                      </MicUIProvider>
+                    </MicProvider>
+                  </ConversationProvider>
+                </AudioProvider>
+              </VoiceProvider>
+            </ChatProvider>
+          </ConvexClientProvider>
         </body>
       </html>
     </ClerkProvider>

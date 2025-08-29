@@ -4,9 +4,9 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useState, useRef } from 
 import { createPortal } from "react-dom";
 import { useRouter, usePathname } from "next/navigation";
 import { useChat } from "../../context/ChatContext";
-import { useMic } from "../../context/MicContext";
 import { useAudio } from "../../context/AudioContext";
 import { useVoice } from "../../context/VoiceContext";
+import { useMic } from "../../context/MicContext";
 import AudioUnlockBanner from "../../components/AudioUnlockBanner";
 import { useMicUI } from "../../context/MicUIContext";
 import SkillChart from "../../components/SkillChart";
@@ -81,9 +81,9 @@ export default function CoachPage() {
   const router = useRouter();
   const pathname = usePathname();
   const { sessionId } = useChat();
-  const mic = useMic();
   const audio = useAudio();
   const voice = useVoice();
+  const mic = useMic();
   const { setInCoach, showDashboard, setShowDashboard, setHandlers } = useMicUI();
   const [dashboardMounted, setDashboardMounted] = useState(false);
   const [tracked, setTracked] = useState<TrackedSkill[]>([]);
@@ -116,8 +116,6 @@ export default function CoachPage() {
   const ENABLE_MODEL_SELECTOR = false;
   // When returning from a subpage (skills/analytics), skip the initial dashboard entrance animation
   const [skipNextDashboardAnim, setSkipNextDashboardAnim] = useState(false);
-
-  // Mic logic moved to MicProvider. Coach page only consumes via `useMic()` and controls UI/animation.
 
   // Debug panel & logs
   const [debugOpen, setDebugOpen] = useState(false);
@@ -156,8 +154,6 @@ export default function CoachPage() {
     } catch {}
   }, []);
 
-  // (Preamble logging removed; MicProvider handles voice pipeline.)
-
   // Mark that we are on the coach page so GlobalMicButton switches to coach UI
   useEffect(() => {
     setInCoach(true);
@@ -171,12 +167,29 @@ export default function CoachPage() {
           if (showDashboard) {
             setShowDashboard(false);
           } else {
-            mic.toggleVoiceLoop();
+            // Immediate controls using MicContext
+            // - If recording: stop the recorder (sets stopReason='user' to skip STT)
+            // - Else if assistant is speaking/streaming (busy !== 'idle'): toggle voice loop to cancel TTS/chat
+            // - Else: enable loop and start recording
+            if (mic.recording) {
+              // Important: also disable the voice loop so onstop does not auto-restart
+              try { mic.setVoiceLoop(false); } catch {}
+              try { mic.stopRecording(); } catch {}
+            } else if (mic.busy !== 'idle') {
+              // If assistant is speaking/streaming, only toggle to cancel when loop is currently on
+              if (mic.voiceLoop) {
+                try { mic.toggleVoiceLoop(); } catch {}
+              }
+            } else {
+              try { mic.setVoiceLoop(true); } catch {}
+              try { void mic.startRecording(); } catch {}
+            }
           }
         },
         onLongPress: () => {
           if (showDashboard) {
-            try { audio.stopRecording(); } catch {}
+            try { mic.setVoiceLoop(false); } catch {}
+            try { mic.stopRecording(); } catch {}
           }
         },
       });
@@ -439,15 +452,14 @@ export default function CoachPage() {
     if (
       ENABLE_VOICE &&
       !showDashboard &&
-      audio.mediaSupported &&
+      mic.mediaSupported &&
       mic.voiceLoop &&
-      !audio.recording &&
       voice.busy === "idle"
     ) {
-      log("auto: voice loop active -> start mic (provider)");
-      void audio.startRecording();
+      log("auto: voice loop active -> start mic (mic provider)");
+      void mic.startRecording();
     }
-  }, [ENABLE_VOICE, showDashboard, mic.voiceLoop, audio.mediaSupported, audio.recording, voice.busy]);
+  }, [ENABLE_VOICE, showDashboard, mic.mediaSupported, mic.voiceLoop, voice.busy, mic]);
 
   // Component-level cleanup on unmount: MicProvider owns mic lifecycle
 
@@ -1004,7 +1016,7 @@ export default function CoachPage() {
                     <div className="flex items-center justify-between mb-2">
                       <div className="text-sm font-medium">Logs</div>
                       <div className="flex items-center gap-2">
-                        <span className="text-[11px] cu-muted">sessionId={sessionId} · mediaSupported={String(mic.mediaSupported)} · recording={String(mic.recording)} · busy={mic.busy}</span>
+                        <span className="text-[11px] cu-muted">sessionId={sessionId} · mediaSupported={String(mic.mediaSupported)} · recording={String(mic.recording)} · busy={voice.busy}</span>
                         <button
                           type="button"
                           onClick={() => setLogs([])}
@@ -1022,9 +1034,9 @@ export default function CoachPage() {
           )}
 
           {/* Inline mic error toast */}
-          {mic.voiceError && (
+          {voice.voiceError && (
             <div className="fixed bottom-4 left-1/2 -translate-x-1/2 px-3 py-2 rounded cu-error-bg text-sm shadow">
-              {mic.voiceError}
+              {voice.voiceError}
             </div>
           )}
         </>,
@@ -1060,16 +1072,16 @@ export default function CoachPage() {
               <div className="flex items-center justify-between mb-1">
                 <div className="text-sm font-semibold">Assistant</div>
                 <div className="text-[11px] cu-muted">
-                  busy={mic.busy} · recording={String(mic.recording)}
+                  busy={voice.busy} · recording={String(mic.recording)}
                 </div>
               </div>
               <div className="text-sm whitespace-pre-wrap break-words min-h-[2.5rem]">
-                {mic.assistantText || <span className="cu-muted">(waiting for response…)</span>}
+                {voice.assistantText || <span className="cu-muted">(waiting for response…)</span>}
               </div>
-              {mic.transcript ? (
+              {voice.transcript ? (
                 <div className="mt-2 border-t cu-border-surface pt-2 text-xs">
                   <div className="cu-muted mb-0.5">You</div>
-                  <div className="whitespace-pre-wrap break-words">{mic.transcript}</div>
+                  <div className="whitespace-pre-wrap break-words">{voice.transcript}</div>
                 </div>
               ) : null}
 

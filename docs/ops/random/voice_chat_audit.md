@@ -8,6 +8,11 @@
   - `chatToText` wraps `useConversation().chatToTextWithTTS` and updates `assistantText` for UI.
 - Providers wired in `ui/src/app/layout.tsx`: `ChatProvider` → `VoiceProvider` → `AudioProvider` → `ConversationProvider` → `MicProvider` → `MicUIProvider`.
 - Next up: remove duplicate audio playback queue from `MicContext` and rely on `AudioContext` exclusively.
+ - Added explicit cancellation APIs and integrated barge-in cancellation:
+   - `ConversationContext`: `cancelActiveChatStream()` closes the active SSE and clears the ref on finish/error.
+   - `VoiceContext`: `cancelTTS()` bumps a cancel generation and clears the TTS text queue.
+   - `MicContext`: calls `conversation.cancelActiveChatStream()` and `voice.cancelTTS()` on barge-in trigger inside `startBargeMonitor()` and when toggling voice loop off in `toggleVoiceLoop()`.
+   - Removed legacy `chatEsRef` from `MicContext`.
 # Voice Chat Pipeline Audit — Performance & UX Analysis
 
 Based on a comprehensive audit of the voice chat functionality on `/coach` and the underlying pipeline, this document outlines key issues, grounded findings from code, and an actionable plan with progress tracking.
@@ -27,6 +32,7 @@ Based on a comprehensive audit of the voice chat functionality on `/coach` and t
   - [x] Device health checks and UX
   - [~] Split `MicContext` responsibilities
   - [x] Client telemetry ingestion + Grafana panels (voice VAD/pipeline/tts playback)
+  - [x] Robust cancellation for chat SSE and TTS on barge-in (wired via ConversationContext.cancelActiveChatStream and VoiceContext.cancelTTS)
 
 ---
 
@@ -344,7 +350,7 @@ The goal is to decompose `ui/src/context/MicContext.tsx` into three focused cont
   - Manage interaction lifecycle state and assessment chip polling hooks.
 - Public API (proposed):
   - State: `assistantText` (or a stream hook), `interactionState`, `interactionGroupId?`, `interactionTurnCount`, `assessmentChips`.
-  - Methods: `sendPrompt(prompt)`, `clearHistory()`, `setHistoryDepth(n)` (optional), `refreshSessionSummary()` (optional wrapper).
+  - Methods: `sendPrompt(prompt)`, `clearHistory()`, `setHistoryDepth(n)` (optional), `refreshSessionSummary()` (optional wrapper). 
 
 Migration approach
 - Phase 0: Keep `MicContext` as façade that delegates to the three contexts so existing consumers remain working. No behavior changes.

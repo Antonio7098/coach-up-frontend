@@ -10,13 +10,17 @@ export default defineSchema({
     userId: v.string(),
     sessionId: v.string(),
     groupId: v.optional(v.string()),
-    skillHash: v.string(), // required for kind="skill_assessment"
+    // Optional to support legacy v1 rows that didn't include a skill hash
+    skillHash: v.optional(v.string()), // required for kind="skill_assessment" in v2
+    // Widen kind to accept legacy records
     kind: v.union(
       v.literal("skill_assessment"),
       v.literal("summary"),
+      v.literal("multi_turn")
     ),
     level: v.optional(v.number()), // 0..10 for per-skill rows
-    rubricVersion: v.literal("v2"),
+    // Accept both v1 and v2 legacy rows
+    rubricVersion: v.union(v.literal("v1"), v.literal("v2")),
     summary: v.optional(
       v.object({
         highlights: v.array(v.string()),
@@ -31,9 +35,10 @@ export default defineSchema({
         ),
       })
     ),
-    feedback: v.array(v.string()),
-    metCriteria: v.array(v.string()),
-    unmetCriteria: v.array(v.string()),
+    // These are optional in legacy rows
+    feedback: v.optional(v.array(v.string())),
+    metCriteria: v.optional(v.array(v.string())),
+    unmetCriteria: v.optional(v.array(v.string())),
     trackedSkillIdHash: v.optional(v.string()),
     createdAt: v.number(), // ms since epoch
     updatedAt: v.number(), // ms since epoch
