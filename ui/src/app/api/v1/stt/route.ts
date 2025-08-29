@@ -170,13 +170,57 @@ export async function POST(request: Request) {
         return respond(413, { error: "Audio too large", maxBytes });
       }
 
-      // Privacy-first: bypass storage entirely by posting bytes directly to the provider.
-      // Encode the uploaded blob as a data URL that providers can fetch via standard fetch.
-      const ab = await audio.arrayBuffer();
-      const b64 = Buffer.from(ab).toString('base64');
-      const dataUrl = `data:${mime};base64,${b64}`;
+      // Decide path: data URL (privacy-first) vs storage upload (preferred when gating is disabled)
+      const enableDataUrl = process.env.STT_MULTIPART_DATAURL_ENABLED !== "0";
+      if (enableDataUrl) {
+        // Privacy-first: bypass storage entirely by posting bytes directly to the provider.
+        // Encode the uploaded blob as a data URL that providers can fetch via standard fetch.
+        const ab = await audio.arrayBuffer();
+        const b64 = Buffer.from(ab).toString('base64');
+        const dataUrl = `data:${mime};base64,${b64}`;
 
-      const result = await provider.transcribe({ audioUrl: dataUrl, objectKey: null, languageHint: languageHint ?? null });
+        const result = await provider.transcribe({ audioUrl: dataUrl, objectKey: null, languageHint: languageHint ?? null });
+        const payload = {
+          provider: result.provider || mode,
+          text: result.text,
+          confidence: result.confidence ?? undefined,
+          language: result.language ?? languageHint ?? undefined,
+          model: result.model ?? undefined,
+          clientDetectMs: typeof clientDetectMs === 'number' && isFinite(clientDetectMs) ? clientDetectMs : undefined,
+          sessionId: sessionId ?? null,
+          groupId: groupId ?? null,
+          audioUrl: null,
+          objectKey: null,
+        } as const;
+
+        // Persist transcript only (no audioUrl/objectKey for privacy)
+        persistInteraction({ sessionId, groupId, requestId, text: result.text ?? null, audioUrl: null, objectKey: null }).catch(() => {});
+
+        // Metrics: audio bytes in (multipart path)
+        try {
+          const labels = { route: routePath, method, status: "200", mode } as const;
+          promMetrics.audioBytesIn.labels(labels.route, labels.method, labels.status, labels.mode).inc(size);
+        } catch {}
+
+        // Metrics: clientDetectMs and sttLatencyMs
+        try {
+          const labels = { route: routePath, method, status: "200", mode } as const;
+          if (typeof clientDetectMs === 'number' && isFinite(clientDetectMs) && clientDetectMs >= 0) {
+            promMetrics.clientDetectMs.labels(labels.route, labels.method, labels.status, labels.mode).observe(clientDetectMs);
+          }
+          promMetrics.sttLatencyMs.labels(labels.route, labels.method, labels.status, labels.mode).observe(Date.now() - started);
+        } catch {}
+        console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, mode, sessionId, groupId, multipart: true, size, mime, model: result.model, clientDetectMs, usedDataUrl: true, latencyMs: Date.now() - started }));
+        return respond(200, payload);
+      }
+
+      // Upload to storage and pass objectKey to provider (preferred path when privacy gating is disabled)
+      const uploaded = await uploadToS3AndGetKey(audio);
+      if (!uploaded) {
+        console.log(JSON.stringify({ level: 'error', route: routePath, requestId, status: 500, mode, msg: 'Storage upload not configured', latencyMs: Date.now() - started }));
+        return respond(500, { error: "Storage not configured for STT" });
+      }
+      const result = await provider.transcribe({ audioUrl: null, objectKey: uploaded.objectKey, languageHint: languageHint ?? null });
       const payload = {
         provider: result.provider || mode,
         text: result.text,
@@ -186,12 +230,12 @@ export async function POST(request: Request) {
         clientDetectMs: typeof clientDetectMs === 'number' && isFinite(clientDetectMs) ? clientDetectMs : undefined,
         sessionId: sessionId ?? null,
         groupId: groupId ?? null,
-        audioUrl: null,
-        objectKey: null,
+        audioUrl: uploaded.audioUrl ?? null,
+        objectKey: uploaded.objectKey ?? null,
       } as const;
 
-      // Persist transcript only (no audioUrl/objectKey for privacy)
-      persistInteraction({ sessionId, groupId, requestId, text: result.text ?? null, audioUrl: null, objectKey: null }).catch(() => {});
+      // Persist with audio metadata when stored
+      persistInteraction({ sessionId, groupId, requestId, text: result.text ?? null, audioUrl: uploaded.audioUrl ?? null, objectKey: uploaded.objectKey ?? null }).catch(() => {});
 
       // Metrics: audio bytes in (multipart path)
       try {
@@ -199,7 +243,15 @@ export async function POST(request: Request) {
         promMetrics.audioBytesIn.labels(labels.route, labels.method, labels.status, labels.mode).inc(size);
       } catch {}
 
-      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, mode, sessionId, groupId, multipart: true, size, mime, model: result.model, clientDetectMs, latencyMs: Date.now() - started }));
+      // Metrics: clientDetectMs and sttLatencyMs
+      try {
+        const labels = { route: routePath, method, status: "200", mode } as const;
+        if (typeof clientDetectMs === 'number' && isFinite(clientDetectMs) && clientDetectMs >= 0) {
+          promMetrics.clientDetectMs.labels(labels.route, labels.method, labels.status, labels.mode).observe(clientDetectMs);
+        }
+        promMetrics.sttLatencyMs.labels(labels.route, labels.method, labels.status, labels.mode).observe(Date.now() - started);
+      } catch {}
+      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, mode, sessionId, groupId, multipart: true, size, mime, model: result.model, clientDetectMs, usedDataUrl: false, objectKey: uploaded.objectKey, latencyMs: Date.now() - started }));
       return respond(200, payload);
     } catch (err: any) {
       if (err?.name === 'ProviderNotConfiguredError' || err instanceof ProviderNotConfiguredError) {
@@ -277,6 +329,14 @@ export async function POST(request: Request) {
       }
     } catch {}
 
+    // Metrics: clientDetectMs and sttLatencyMs
+    try {
+      const labels = { route: routePath, method, status: "200", mode } as const;
+      if (typeof clientDetectMs === 'number' && isFinite(clientDetectMs) && clientDetectMs >= 0) {
+        promMetrics.clientDetectMs.labels(labels.route, labels.method, labels.status, labels.mode).observe(clientDetectMs);
+      }
+      promMetrics.sttLatencyMs.labels(labels.route, labels.method, labels.status, labels.mode).observe(Date.now() - started);
+    } catch {}
     console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, mode, sessionId, groupId, hasAudioUrl: !!audioUrl, hasObjectKey: !!objectKey, model: result.model, clientDetectMs, latencyMs: Date.now() - started }));
     return respond(200, payload);
   } catch (err: any) {

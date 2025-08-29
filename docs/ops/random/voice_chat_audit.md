@@ -9,13 +9,14 @@ Based on a comprehensive audit of the voice chat functionality on `/coach` and t
 - Overall status: [ ] Not started  [x] In progress  [ ] Done
 
 - Milestones:
-  - [ ] Simplify barge-in logic
-  - [ ] Clarify processing states in UI
-  - [ ] Add STT timeout + retry
-  - [ ] Add metrics histograms
+  - [x] Simplify barge-in logic (baseline interrupt + restart implemented)
+  - [x] Clarify processing states in UI (added "Thinking" indicator during chat)
+  - [x] Add STT timeout + retry (client-side Abort + single retry)
+  - [x] Add metrics histograms
   - [ ] Reduce VAD params / presets
-  - [ ] Device health checks and UX
+  - [x] Device health checks and UX
   - [ ] Split `MicContext` responsibilities
+  - [x] Client telemetry ingestion + Grafana panels (voice VAD/pipeline/tts playback)
 
 ---
 
@@ -74,20 +75,20 @@ Based on a comprehensive audit of the voice chat functionality on `/coach` and t
 - Impact: “Silent responses” if user hasn’t interacted.
 - Evidence: Deferral via `userInteractedRef`/`pendingAudioUrlRef` in [MicContext.tsx](cci:7://file:///home/antonio/programming/coach-up/coach-up-frontend/ui/src/context/MicContext.tsx:0:0-0:0) (playback path around 200–205, 268–281, 389–400).
 - Actions:
-  - [ ] Show a persistent “Enable audio” banner/button until unlocked.
+  - [x] Show a persistent “Enable audio” banner/button until unlocked.
 
 2) Processing State Visibility
 - Issue: Multiple busy states (`idle`, `stt`, `chat`, `tts`) not consistently reflected in UI.
 - Impact: User uncertainty during chat streaming.
 - Evidence: Ring shown between STT and TTS; not shown during chat SSE accumulation.
 - Actions:
-  - [ ] Add distinct “Thinking” indicator while `busy === 'chat'` until first TTS segment enqueues.
+  - [x] Add distinct “Thinking” indicator while `busy === 'chat'` until first TTS segment enqueues. Implemented by toggling `processingRing` on chat start and clearing on first TTS enqueue in `ui/src/context/MicContext.tsx`.
 
 3) Error Handling Consistency
 - Issue: STT/TTS/chat surface errors inconsistently.
 - Impact: Some failures appear as “hangs” or quiet drops.
 - Actions:
-  - [ ] Normalize error reporting with explicit, user-friendly copy and retry options per stage.
+  - [x] Normalize error reporting with explicit, user-friendly copy and retry options per stage (standardized copy in `MicContext.tsx`).
 
 ---
 
@@ -98,8 +99,8 @@ Based on a comprehensive audit of the voice chat functionality on `/coach` and t
 - Impact: CPU/memory overhead and added latency for large blobs.
 - Evidence: [ui/src/app/api/v1/stt/route.ts](cci:7://file:///home/antonio/programming/coach-up/coach-up-frontend/ui/src/app/api/v1/stt/route.ts:0:0-0:0) builds `data:${mime};base64,...` (around 173–180).
 - Actions:
-  - [ ] Gate this path behind an env flag.
-  - [ ] Prefer JSON path with `objectKey` when privacy policy allows (already supported).
+  - [x] Gate this path behind an env flag.
+  - [x] Prefer JSON path with `objectKey` when privacy policy allows (already supported) when gating is disabled.
 
 2) Chat Streaming Proxy
 - Bottleneck: Frontend acts as a simple SSE proxy.
@@ -150,11 +151,11 @@ Based on a comprehensive audit of the voice chat functionality on `/coach` and t
 
 ## Immediate Next Steps (Low-Risk, High-Value)
 
-- [ ] Add STT timeout + single retry in `MicContext.callSTTMultipart()` and show specific timeout error copy.
-- [ ] Show visible “Thinking” state during chat streaming (`busy === 'chat'`) until first TTS segment enqueues.
-- [ ] Add Prometheus histograms: `stt_latency_ms`, `tts_latency_ms`, `chat_first_token_ms`, `client_detect_ms`.
-- [ ] Gate multipart base64 path with env (prefer `objectKey` JSON path when allowed) and document behavior.
-- [ ] Add `navigator.mediaDevices.ondevicechange` listener to detect mic loss/change and prompt the user.
+- [x] Add STT timeout + single retry in `MicContext.callSTTMultipart()` and show specific timeout error copy.
+- [x] Show visible “Thinking” state during chat streaming (`busy === 'chat'`) until first TTS segment enqueues.
+- [x] Add Prometheus histograms: `stt_latency_ms`, `tts_latency_ms`, `chat_first_token_ms`, `client_detect_ms`.
+- [x] Gate multipart base64 path with env (prefer `objectKey` JSON path when allowed) and document behavior.
+- [x] Add `navigator.mediaDevices.ondevicechange` listener to detect mic loss/change and prompt the user.
 
 ---
 
@@ -163,7 +164,7 @@ Based on a comprehensive audit of the voice chat functionality on `/coach` and t
 - __Simplify State Management__
   - [ ] Split `MicContext` into focused modules/contexts:
     - `AudioContext` (recording, playback)
-    - `VoiceContext` (STT, TTS)
+    - `VoiceContext` (STT, TTS) - in progress
     - `ConversationContext` (chat, history)
 
 - __Improve Audio Pipeline__
@@ -192,18 +193,16 @@ Based on a comprehensive audit of the voice chat functionality on `/coach` and t
   - [ ] Device health checks and graceful fallbacks.
   - [ ] Add redaction where needed to preserve privacy.
 
----
-
 ## Priority Implementation Order
 
 - High Priority
   - [ ] Simplify barge-in logic (interrupt + restart).
-  - [ ] Harmonize error handling and UI states.
-  - [ ] STT timeout + retry; “Thinking” indicator.
+  - [ ] Harmonize error handling and UI states (in progress).
+  - [x] STT timeout + retry; "Thinking" indicator.
 
 - Medium Priority
   - [ ] Split `MicContext` responsibilities.
-  - [ ] Add metrics histograms and dashboards.
+  - [x] Add metrics histograms and dashboards.
 
 - Low Priority
   - [ ] WebRTC exploration.
@@ -213,16 +212,24 @@ Based on a comprehensive audit of the voice chat functionality on `/coach` and t
 
 ## Metrics & Instrumentation Plan
 
-- New histograms:
-  - [ ] `stt_latency_ms` (server)
-  - [ ] `tts_latency_ms` (server)
-  - [ ] `chat_first_token_ms` (server)
-  - [ ] `client_detect_ms` (server; from header passthrough)
+- New histograms (UI API, Prometheus names in parentheses):
+  - [x] STT latency ms (`coachup_ui_stt_latency_ms`)
+  - [x] TTS latency ms (`coachup_ui_tts_latency_ms`)
+  - [x] Chat first token ms (`coachup_ui_chat_first_token_ms`)
+  - [x] Client mic detection ms (`coachup_ui_client_detect_ms`)
 
 - Client events:
-  - [ ] `voice.stt.request_start`, `voice.stt.response_headers`, `voice.stt.done`
-  - [ ] `voice.tts.duration`
-  - [ ] UI state transitions (recording, thinking, speaking)
+  - [x] `voice.stt.request_start`, `voice.stt.response_headers`, `voice.stt.done` (in place; now includes timeout+retry logs)
+  - [x] `voice.tts.duration` (reported from TTS response JSON)
+  - [x] `voice.device.change` (mic added/removed)
+  - [x] `voice.vad.state` (init/speaking/silence/stop)
+  - [x] `voice.pipeline.state` (idle/listening/processing/speaking/error)
+  - [x] UI state transitions (recording, thinking, speaking) — implied via `busy`, `processingRing`, and `recording` transitions
+  - [x] `voice.tts.playback_start` / `voice.tts.playback_end` with playback duration
+  - [x] Ingestion to Prometheus via `/api/telemetry/voice` with metrics:
+    - `coachup_ui_voice_events_total{event,state,outcome,...}`
+    - `coachup_ui_voice_tts_playback_ms_bucket{outcome,...}`
+  - [x] Grafana panels added to `ui-api-speech.json` to visualize events rate and p95 playback duration
 
 ---
 
@@ -230,7 +237,7 @@ Based on a comprehensive audit of the voice chat functionality on `/coach` and t
 
 - Tech owner: [assign]
 - Design owner: [assign]
-- Review cadence: Weekly until all High Priority items are complete, then bi-weekly.
+- Review cadence: Weekly until all High Priority items are complete, then bi-weekly. Next review: 2025-09-04
 
 ---
 
@@ -240,3 +247,73 @@ Based on a comprehensive audit of the voice chat functionality on `/coach` and t
 - [ui/src/app/api/v1/stt/route.ts](cci:7://file:///home/antonio/programming/coach-up/coach-up-frontend/ui/src/app/api/v1/stt/route.ts:0:0-0:0)
 - [ui/src/app/api/v1/tts/route.ts](cci:7://file:///home/antonio/programming/coach-up/coach-up-frontend/ui/src/app/api/v1/tts/route.ts:0:0-0:0)
 - [ui/src/app/api/chat/route.ts](cci:7://file:///home/antonio/programming/coach-up/coach-up-frontend/ui/src/app/api/chat/route.ts:0:0-0:0)
+- [ui/src/app/api/telemetry/voice/route.ts](cci:7://file:///home/antonio/programming/coach-up/coach-up-frontend/ui/src/app/api/telemetry/voice/route.ts:0:0-0:0)
+- [infra/monitoring/grafana/dashboards/ui-api-speech.json](cci:7://file:///home/antonio/programming/coach-up/infra/monitoring/grafana/dashboards/ui-api-speech.json:0:0-0:0)
+
+---
+
+## Change Log — 28/08/2025
+
+- Implemented client-side STT timeout with single retry in `MicContext.callSTTMultipart()`.
+  - New env: `NEXT_PUBLIC_STT_TIMEOUT_MS` (default 12000ms).
+  - Logs enriched: `voice.stt.request_start`, `voice.stt.response_headers`, `voice.stt.done`, timeout warnings.
+- Added “Thinking” state during chat streaming by setting `processingRing` when `busy === 'chat'` and clearing on first TTS enqueue.
+ - Added Prometheus histograms and dashboards:
+   - Metrics: `coachup_ui_stt_latency_ms`, `coachup_ui_tts_latency_ms`, `coachup_ui_chat_first_token_ms`, `coachup_ui_client_detect_ms`.
+   - Grafana: updated `ui-api-speech.json` to plot STT/TTS latency and client detect; added `ui-api-chat.json` for first-token latency. Prometheus scrape includes `coachup-ui-api` at `/api/metrics`.
+
+## Change Log — 29/08/2025
+
+- Changes applied to `ui/src/context/MicContext.tsx`:
+  - Simplified `rec.onstop`: Restored a clean `rec.onstop` handler inside `startRecording()` that:
+    - Ends UI recording state and speaking indicator immediately.
+    - Skips processing if voice loop is disabled or already processing.
+    - Finalizes the blob, calls STT, updates history/assistant response, and restarts the loop if still enabled.
+    - Cleans up timers, audio context, and state without any concatenation logic.
+  - Removed leftover concatenation/interruption code: Deleted remaining references to `pipelineInterruptedRef` and any concatenation paths in the barge-in flow (`startBargeMonitor()`), resolving the “Cannot find name 'pipelineInterruptedRef'” error.
+  - Barge-in behavior now strictly interrupt + restart:
+    - On barge trigger: pause playback, clear audio queues, cancel TTS, close chat SSE, set busy to idle, stop the barge monitor, and immediately `startRecording()`.
+  - Telemetry additions:
+    - Emit `voice.barge.trigger` when barge is detected.
+    - Record `bargeTriggerTsRef` timestamp and emit `voice.barge.restart_ms` on the first chunk of the next recording to measure restart latency.
+    - All telemetry is fire-and-forget to `/api/telemetry/voice` with `keepalive: true`.
+  - Notes on lints:
+    - `pipelineInterruptedRef` not found: Fixed by removing its last usages in `startBargeMonitor()`.
+    - “)` expected” at line 1588: The file ends earlier now (~1553), so stale IDE lint; re-open the file or re-run TypeScript checks to refresh diagnostics.
+
+- What to test:
+  - Barge-in responsiveness: While TTS is playing, speak; playback should pause immediately, chat/TTS stop, and recording restart quickly.
+  - Restart latency metric: Confirm `voice.barge.restart_ms` logs appear and values are reasonable.
+  - Voice loop flow: After processing a user utterance, the loop should restart only if still enabled and not already recording.
+  - UI indicators: Verify `inputSpeaking` pulsates correctly and busy ring states align during chat/TTS.
+
+- Summary: Barge-in pipeline simplified to an interrupt + restart model with clear telemetry and removed concatenation code paths. This should improve responsiveness and reduce race conditions.
+
+## Change Log — 28/08/2025 (later update)
+
+- Device health checks and device change detection implemented in `ui/src/context/MicContext.tsx`:
+  - Added `checkMicPermission()` and initial health evaluation on mount.
+  - Added `navigator.mediaDevices.devicechange` listener; when mic is lost or permission revoked mid-recording, we stop recording, disable voice loop, and show a friendly error.
+  - Logged device change telemetry (`voice.device.change`).
+- Autoplay UX clarified:
+  - Added `needsAudioUnlock` state and `unlockAudio()` in `MicContext`.
+  - Created `ui/src/components/AudioUnlockBanner.tsx` and mounted on `/coach` chat mode to prompt enabling audio.
+- Normalized error copy across STT/TTS/chat and recording lifecycle via `ERR` constants in `MicContext.tsx`.
+
+### Telemetry additions — 28/08/2025 (later update)
+
+- `ui/src/context/MicContext.tsx` now emits client telemetry events:
+  - `voice.vad.state` on init, speaking/silence changes, and stop.
+  - `voice.pipeline.state` on transitions among idle/listening/processing/speaking/error.
+  - `voice.tts.duration` on TTS response, and `voice.tts.playback_start` / `voice.tts.playback_end` around the HTMLAudioElement playback with duration.
+  - Also logs user-interaction unlock deferrals and playback errors for improved observability.
+
+### Telemetry ingestion & dashboards — 28/08/2025 (final update)
+
+- Implemented client telemetry ingestion endpoint at `/api/telemetry/voice`.
+  - Records counters in `coachup_ui_voice_events_total` with labels `event`, `state`, `outcome`.
+  - Records playback durations in `coachup_ui_voice_tts_playback_ms` (histogram).
+- Updated Grafana dashboard `ui-api-speech.json` with new panels:
+  - Voice events/sec by type & state.
+  - Voice pipeline state rate by state.
+  - P95 client TTS playback duration (ms).

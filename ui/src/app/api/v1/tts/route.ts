@@ -149,6 +149,11 @@ export async function POST(request: Request) {
       }
     } catch {}
 
+    // Metrics: ttsLatencyMs
+    try {
+      const labels = { route: routePath, method, status: "200", mode } as const;
+      promMetrics.ttsLatencyMs.labels(labels.route, labels.method, labels.status, labels.mode).observe(Date.now() - started);
+    } catch {}
     console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, mode, sessionId, groupId, voiceId: payload.voiceId, format: payload.format, latencyMs: Date.now() - started }));
     return respond(200, payload);
   } catch (err: any) {

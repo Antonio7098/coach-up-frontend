@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { useRouter, usePathname } from "next/navigation";
 import { useChat } from "../../context/ChatContext";
 import { useMic } from "../../context/MicContext";
+import AudioUnlockBanner from "../../components/AudioUnlockBanner";
 import { useMicUI } from "../../context/MicUIContext";
 import SkillChart from "../../components/SkillChart";
 type Skill = {
@@ -499,6 +500,8 @@ export default function CoachPage() {
           : "translateX(0)",
       }}
     >
+      {/* Autoplay unlock banner only during chat mode */}
+      {ENABLE_VOICE && !showDashboard && <AudioUnlockBanner />}
       {/* Ambient background accents (dashboard only) */}
       {dashboardMounted && (
         <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
