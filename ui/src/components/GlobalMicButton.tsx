@@ -30,7 +30,9 @@ export default function GlobalMicButton() {
 
   if (!mounted) return null;
 
-  const isActive = recording || (voiceLoop && busy !== "idle");
+  // Consider the mic UI active if voice mode is enabled or we are currently recording.
+  // Avoid tying this to `busy` because it can change rapidly during processing and cause flicker.
+  const isActive = voiceLoop || recording;
   const LONG_PRESS_MS = 500;
   const onDown = () => {
     // Ensure first gesture unlocks audio autoplay in browsers

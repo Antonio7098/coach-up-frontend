@@ -31,7 +31,7 @@ export function useConversation() {
 
 export function ConversationProvider({ children }: { children: React.ReactNode }) {
   const { sessionId } = useChat();
-  const { summary } = useSessionSummary(sessionId);
+  const { summary } = useSessionSummary(sessionId, { autoloadOnMount: false });
   const { enqueueTTSSegment } = useVoice();
 
   // Local history ring (10 msgs) — mirrors MicContext shape for compatibility
@@ -143,7 +143,17 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
         es.onerror = () => {
           try { es?.close(); } catch {}
           if (activeChatEsRef.current === es) activeChatEsRef.current = null;
-          reject(new Error("chat stream failed"));
+          // If we have partial assistant text, persist and resolve with it
+          if (acc) {
+            try {
+              historyRef.current.push({ role: "assistant", content: acc });
+              if (historyRef.current.length > 10) historyRef.current = historyRef.current.slice(-10);
+              saveHistory();
+            } catch {}
+            resolve(acc);
+          } else {
+            reject(new Error("chat stream failed"));
+          }
         };
       } catch (e: any) {
         reject(new Error(e?.message || "chat stream failed"));
@@ -158,7 +168,7 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
     if (historyRef.current.length > 10) historyRef.current = historyRef.current.slice(-10);
     saveHistory();
 
-    return new Promise<string>((resolve, reject) => {
+    const attempt = (retry: boolean): Promise<string> => new Promise<string>((resolve, reject) => {
       try {
         const includeHistory = opts?.includeHistory !== false;
         const hist = includeHistory ? buildHistoryParam() : "";
@@ -174,17 +184,25 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
         let lastFlushed = 0;
         const minFlushChars = 12;
         let idleTimer: ReturnType<typeof setTimeout> | null = null;
+        const cleanup = () => {
+          try { es?.close(); } catch {}
+          if (activeChatEsRef.current === es) activeChatEsRef.current = null;
+          if (idleTimer) { try { clearTimeout(idleTimer); } catch {} idleTimer = null; }
+        };
         const maybeFlush = (force = false) => {
           const pending = acc.slice(lastFlushed);
-          if (!force && pending.length < minFlushChars) return;
+          if (!force) {
+            if (pending.length < minFlushChars) return;
+          }
           const segment = pending.trim();
           if (!segment) return;
           lastFlushed = acc.length;
           enqueueTTSSegment(segment);
         };
         const flushOnPunctuation = () => {
+          // Only flush on clear terminal punctuation to avoid cutting off after a colon and newline
           const tail = acc.slice(lastFlushed);
-          const idx = Math.max(tail.lastIndexOf("."), tail.lastIndexOf("!"), tail.lastIndexOf("?"), tail.lastIndexOf("\n"));
+          const idx = Math.max(tail.lastIndexOf("."), tail.lastIndexOf("!"), tail.lastIndexOf("?"));
           if (idx >= 0) {
             const cut = lastFlushed + idx + 1;
             const seg = acc.slice(lastFlushed, cut).trim();
@@ -196,16 +214,12 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
         };
         es.onmessage = (evt) => {
           if (evt.data === "[DONE]") {
-            try { es?.close(); } catch {}
-            if (activeChatEsRef.current === es) activeChatEsRef.current = null;
-            // Prevent duplicate tail flush
-            if (idleTimer) { try { clearTimeout(idleTimer); } catch {} idleTimer = null; }
+            cleanup();
             const tail = acc.slice(lastFlushed).trim();
             if (tail.length > 0) {
               enqueueTTSSegment(tail);
               lastFlushed = acc.length;
             }
-            // Persist assistant message
             if (acc) {
               historyRef.current.push({ role: "assistant", content: acc });
               if (historyRef.current.length > 10) historyRef.current = historyRef.current.slice(-10);
@@ -215,21 +229,45 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
             return;
           }
           acc += evt.data;
-          // TTS flushing logic while streaming
           flushOnPunctuation();
           if (idleTimer) { try { clearTimeout(idleTimer); } catch {} }
-          idleTimer = setTimeout(() => { maybeFlush(true); }, 200);
+          // Restore lower idle delay for snappier TTS without extra grace logic
+          idleTimer = setTimeout(() => { maybeFlush(false); }, 200);
         };
         es.onerror = () => {
-          try { es?.close(); } catch {}
-          if (idleTimer) { try { clearTimeout(idleTimer); } catch {} idleTimer = null; }
-          if (activeChatEsRef.current === es) activeChatEsRef.current = null;
-          reject(new Error("chat stream failed"));
+          const hadAny = acc.length > 0;
+          // Clean up current connection
+          cleanup();
+          // On error, flush any remaining unspoken text
+          try {
+            const tail = acc.slice(lastFlushed).trim();
+            if (tail.length > 0) {
+              enqueueTTSSegment(tail);
+              lastFlushed = acc.length;
+            }
+          } catch {}
+          if (hadAny) {
+            try {
+              historyRef.current.push({ role: "assistant", content: acc });
+              if (historyRef.current.length > 10) historyRef.current = historyRef.current.slice(-10);
+              saveHistory();
+            } catch {}
+            resolve(acc);
+          } else if (retry) {
+            // One-time quick retry to mitigate transient disconnects (e.g., Fast Refresh)
+            setTimeout(() => {
+              attempt(false).then(resolve).catch(reject);
+            }, 200);
+          } else {
+            reject(new Error("chat stream failed"));
+          }
         };
       } catch (e: any) {
         reject(new Error(e?.message || "chat stream failed"));
       }
     });
+
+    return attempt(true);
   }, [buildHistoryParam, enqueueTTSSegment, sessionId]);
 
   const cancelActiveChatStream = useCallback(() => {

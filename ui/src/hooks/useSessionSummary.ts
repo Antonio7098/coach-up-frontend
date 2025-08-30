@@ -21,6 +21,12 @@ export type UseSessionSummaryResult = {
   thresholds: { turns: number; seconds: number };
 };
 
+export type UseSessionSummaryOptions = {
+  // When true, performs a background fetch immediately on mount if no cache is found.
+  // When false, the hook will wait for onTurn() or an explicit refresh() call.
+  autoloadOnMount?: boolean;
+};
+
 function storageKey(sessionId: string) {
   return `cu.sessionSummary:${sessionId}`;
 }
@@ -32,11 +38,17 @@ function parseEnvInt(v: string | undefined, def: number): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : def;
 }
 
-export function useSessionSummary(sessionId?: string | null): UseSessionSummaryResult {
+export function useSessionSummary(sessionId?: string | null, opts?: UseSessionSummaryOptions): UseSessionSummaryResult {
   const [summary, setSummary] = useState<SessionSummary | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [error, setError] = useState<string | undefined>(undefined);
   const turnsSinceRefreshRef = useRef<number>(0);
+  const autoloadOnMount = (opts?.autoloadOnMount ?? true);
+  // Retry state for transient 404 while backend finalizes summary
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryAttemptsRef = useRef<number>(0);
+  const maxRetryAttempts = parseEnvInt(process.env.NEXT_PUBLIC_SUMMARY_RETRY_ATTEMPTS, 3);
+  const retryDelayMs = parseEnvInt(process.env.NEXT_PUBLIC_SUMMARY_RETRY_DELAY_MS, 1500);
 
   const thresholds = useMemo(() => ({
     turns: parseEnvInt(process.env.NEXT_PUBLIC_SUMMARY_REFRESH_TURNS, 8),
@@ -49,6 +61,9 @@ export function useSessionSummary(sessionId?: string | null): UseSessionSummaryR
     setStatus("idle");
     setSummary(null);
     turnsSinceRefreshRef.current = 0;
+    // Clear any pending retry from previous session
+    try { if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; } } catch {}
+    retryAttemptsRef.current = 0;
     if (!sessionId) return;
     try {
       const raw = sessionStorage.getItem(storageKey(sessionId));
@@ -64,8 +79,10 @@ export function useSessionSummary(sessionId?: string | null): UseSessionSummaryR
       }
       try { console.log(JSON.stringify({ type: "summary.cache", event: "miss", sessionId })); } catch {}
     } catch {}
-    // If nothing cached, kick off a background fetch
-    void (async () => { await doFetch(); })();
+    // If nothing cached, optionally kick off a background fetch
+    if (autoloadOnMount) {
+      void (async () => { await doFetch(); })();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
@@ -96,11 +113,21 @@ export function useSessionSummary(sessionId?: string | null): UseSessionSummaryR
         retryAfter: res.headers.get("retry-after"),
       };
       if (res.status === 404) {
-        // No summary yet (cacheable-miss)
+        // No summary yet (cacheable-miss). Schedule a short, capped retry in case backend is finalizing.
         try { console.log(JSON.stringify({ type: "summary.refresh", event: "not_found", sessionId, status: res.status, rl })); } catch {}
         setStatus("ready");
         setSummary(null);
         ok = true;
+        // Retry with small delay if under cap
+        if (retryAttemptsRef.current < maxRetryAttempts) {
+          const attempt = retryAttemptsRef.current + 1;
+          retryAttemptsRef.current = attempt;
+          try { if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); } } catch {}
+          retryTimerRef.current = setTimeout(() => {
+            try { console.log(JSON.stringify({ type: "summary.refresh", event: "retry", attempt, sessionId })); } catch {}
+            void doFetch();
+          }, retryDelayMs);
+        }
         return;
       }
       if (!res.ok) {
@@ -116,10 +143,16 @@ export function useSessionSummary(sessionId?: string | null): UseSessionSummaryR
       setSummary(next);
       save(sessionId, next);
       setStatus("ready");
+      // Success: clear retry state
+      try { if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; } } catch {}
+      retryAttemptsRef.current = 0;
       ok = true;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setStatus((cur) => (cur === "ready" ? cur : "error"));
+      // On error (non-404), clear any scheduled retry
+      try { if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; } } catch {}
+      retryAttemptsRef.current = 0;
     } finally {
       try { console.log(JSON.stringify({ type: "summary.refresh", event: "end", ok, dtMs: nowMs() - t0, sessionId })); } catch {}
       turnsSinceRefreshRef.current = 0;

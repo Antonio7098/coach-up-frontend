@@ -286,8 +286,6 @@ export default function CoachPage() {
         const rect = el ? el.getBoundingClientRect() : null;
         const comp = el ? window.getComputedStyle(el).transform : "";
         const info = { leaving, enterDir, rect, comp, vw: window.innerWidth, vh: window.innerHeight, dpr: window.devicePixelRatio, vis: document.visibilityState };
-        console.log("[coach] resetPosition: pre", info);
-        log(`diag: pre reset rect=${rect ? `${Math.round(rect.x)},${Math.round(rect.y)} ${Math.round(rect.width)}x${Math.round(rect.height)}` : 'null'} transform='${comp || 'none'}' vw=${window.innerWidth} vh=${window.innerHeight}`);
       } catch {}
       try {
         if (leaving) log("nav: pageshow/popstate -> reset leaving=false");
@@ -303,20 +301,14 @@ export default function CoachPage() {
           requestAnimationFrame(() => {
             // allow future transitions
             if (el) el.style.transition = "";
-            try {
-              const rect2 = el.getBoundingClientRect();
-              const comp2 = window.getComputedStyle(el).transform;
-              console.log("[coach] resetPosition: post", { rect: rect2, comp: comp2 });
-              log(`diag: post reset rect=${rect2 ? `${Math.round(rect2.x)},${Math.round(rect2.y)} ${Math.round(rect2.width)}x${Math.round(rect2.height)}` : 'null'} transform='${comp2 || 'none'}'`);
-            } catch {}
           });
         }
       } catch {}
     };
-    const onPageShow = () => { console.log("[coach] pageshow"); resetPosition(); };
-    const onPopState = () => { console.log("[coach] popstate"); resetPosition(); };
-    const onVisibility = () => { console.log("[coach] visibilitychange", document.visibilityState); if (document.visibilityState === "visible") resetPosition(); };
-    const onFocus = () => { console.log("[coach] focus"); resetPosition(); };
+    const onPageShow = () => { resetPosition(); };
+    const onPopState = () => { resetPosition(); };
+    const onVisibility = () => { if (document.visibilityState === "visible") resetPosition(); };
+    const onFocus = () => { resetPosition(); };
     window.addEventListener("pageshow", onPageShow);
     window.addEventListener("popstate", onPopState);
     window.addEventListener("visibilitychange", onVisibility);
@@ -548,7 +540,7 @@ export default function CoachPage() {
             strokeLinejoin="round"
           >
             <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.33 1.82v.08a2 2 0 1 1-4 0v-.08A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1-.6 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1.82-.33h-.08a2 2 0 1 1 0-4h.08A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1.82-.33l-.06.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6c.18-.69.76-1.2 1.47-1.32h.06a2 2 0 1 1 4 0h.06c.71.12 1.29.63 1.47 1.32a1.65 1.65 0 0 0 1 .6 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06c-.48.48-.62 1.2-.33 1.82.22.43.6.76 1.06.9h.08a2 2 0 1 1 0 4h-.08c-.46.14-.84.47-1.06.9Z" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.33 1.82v.08a2 2 0 1 1-4 0v-.08A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1-.6 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1.82-.33h-.08a2 2 0 1 1 0-4h.08A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1.82-.33l-.06.06a2 2 0 1 1 2.83-2.83l.06-.06A1.65 1.65 0 0 0 9 4.6c.18-.69.76-1.2 1.47-1.32h.06a2 2 0 1 1 4 0h.06c.71.12 1.29.63 1.47 1.32a1.65 1.65 0 0 0 1 .6 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06c-.48.48-.62 1.2-.33 1.82.22.43.6.76 1.06.9h.08a2 2 0 1 1 0 4h-.08c-.46.14-.84.47-1.06.9Z" />
           </svg>
         </button>
       )}

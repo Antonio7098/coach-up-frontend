@@ -84,8 +84,8 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
   const { enqueueTTSSegment, sttFromBlob, cancelTTS } = useVoice();
   const { getHistoryParam, sendPrompt: convoSendPrompt, chatToTextWithTTS, cancelActiveChatStream } = useConversation();
   const audio = useAudio();
-  // Session summary (cached, periodic refresh)
-  const { summary: sessionSummary, onTurn: sessionSummaryOnTurn } = useSessionSummary(sessionId);
+  // Session summary (cached, periodic refresh) — don't autoload on mount to avoid early fetch
+  const { summary: sessionSummary, onTurn: sessionSummaryOnTurn } = useSessionSummary(sessionId, { autoloadOnMount: false });
 
   const [mediaSupported, setMediaSupported] = useState(false);
   const [recording, setRecording] = useState(false);
@@ -200,6 +200,9 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
   const trackMutedRef = useRef<boolean>(false); // Track brief hardware/browser mutes
   useEffect(() => { voiceLoopRef.current = voiceLoop; }, [voiceLoop]);
   useEffect(() => { recordingRef.current = recording; }, [recording]);
+  // Mirror busy in a ref so callbacks always see the latest value
+  const busyRef = useRef<MicBusyState>(busy);
+  useEffect(() => { busyRef.current = busy; }, [busy]);
 
   // Chat history now owned by ConversationContext. MicContext no longer stores it locally.
 
@@ -364,7 +367,8 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
       setVoiceError(e?.message || ERR.chatFailed);
       throw e;
     } finally {
-      if (busy === "chat") setBusy("idle");
+      // Use functional setter to avoid stale-closure checks
+      setBusy((prev) => (prev === "chat" ? "idle" : prev));
       try { setProcessingRing(false); } catch {}
     }
   }, [chatToTextWithTTS, busy]);
@@ -382,7 +386,8 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
       setVoiceError(e?.message || ERR.chatFailed);
       throw e;
     } finally {
-      if (busy === "chat") setBusy("idle");
+      // Use functional setter to avoid stale-closure checks
+      setBusy((prev) => (prev === "chat" ? "idle" : prev));
       setProcessingRing(false);
     }
   }, [convoSendPrompt, busy]);
@@ -447,7 +452,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
       // Clear the reference to prevent further events
       mediaRef.current = null;
     }
-    
+
     // Stop all media stream tracks
     const stream = streamRef.current;
     if (stream) {
@@ -473,15 +478,17 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     // Reset stop reason at the start of a fresh recording
     stopReasonRef.current = null;
 
+
     // Check if already recording
-    if (recording) {
-      console.log("MicContext: Already recording, ignoring start request");
+    if (recordingRef.current) {
+      // removed noisy log: Already recording, ignoring start request
       return;
     }
 
+
     // Check if busy with other operations or processing
-    if (busy !== "idle" || processingRef.current) {
-      console.log("MicContext: Busy with", busy, "or processing, ignoring start request");
+    if (busyRef.current !== "idle" || processingRef.current) {
+      // removed noisy log: Busy with operation, ignoring start request
       return;
     }
 
@@ -493,12 +500,12 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     }
 
     try {
-      console.log("MicContext: Requesting microphone permission...");
+      // removed noisy log: Requesting microphone permission
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       streamRef.current = stream;
-      console.log("MicContext: Microphone permission granted");
+      // removed noisy log: Microphone permission granted
 
       const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : (MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "");
       const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
@@ -507,24 +514,22 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
       let chunkBytes = 0;
       recStartTsRef.current = Date.now();
       recFirstChunkTsRef.current = null;
-      try { console.log(JSON.stringify({ type: 'voice.record.start', t0: recStartTsRef.current })); } catch {}
+      // removed voice.record.start JSON debug log
       rec.ondataavailable = (ev) => {
         // Check if recording is still active before processing chunks
         if (!recordingRef.current || !mediaRef.current) {
-          console.log("MicContext: Ignoring data chunk - recording stopped");
+          // removed noisy log: Ignoring data chunk - recording stopped
           return;
         }
-        console.log("MicContext: Received audio data chunk, size:", ev.data?.size);
+        // removed noisy log: received audio data chunk size
         if (ev.data && ev.data.size > 0) {
           chunks.push(ev.data);
           chunkBytes += ev.data.size;
-          if (chunks.length % 10 === 0) {
-            console.log("MicContext: chunks total bytes so far:", chunkBytes);
-          }
+          // removed periodic chunk bytes log
           if (!recFirstChunkTsRef.current) {
             recFirstChunkTsRef.current = Date.now();
             const t0 = recStartTsRef.current || recFirstChunkTsRef.current;
-            try { console.log(JSON.stringify({ type: 'voice.record.first_chunk', t0, tFirst: recFirstChunkTsRef.current, deltaMs: recFirstChunkTsRef.current - t0 })); } catch {}
+            // removed first_chunk JSON debug log
             // If this recording was started due to a barge-in, emit restart latency
             if (bargeTriggerTsRef.current) {
               const restartMs = recFirstChunkTsRef.current - bargeTriggerTsRef.current;
@@ -544,17 +549,19 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
       };
 
       rec.onstop = async () => {
-        console.log("MicContext: Recording stopped, processing", chunks.length, "chunks");
-        console.log("MicContext: voiceLoopRef.current =", voiceLoopRef.current);
-        console.log("MicContext: recordingRef.current =", recordingRef.current);
+        // removed noisy log: Recording stopped, processing chunks
+        // removed noisy log: voiceLoopRef.current =
+        // removed noisy log: recordingRef.current =
 
         const reason = stopReasonRef.current;
         stopReasonRef.current = null;
-        console.log("MicContext: onstop reason:", reason);
+        // removed noisy log: onstop reason
 
         // Ensure UI state reflects that we are no longer recording.
         // This is critical so the barge monitor can start while assistant is responding.
         try { setRecording(false); } catch {}
+        // Force-sync ref so any immediate checks in this callback see the updated state
+        recordingRef.current = false;
         try { setInputSpeaking(false); } catch {}
 
         // Clean up stream and timers (always)
@@ -566,13 +573,13 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
 
         // Skip STT unless stopped by VAD or timeout, and ensure not already processing
         if (!voiceLoopRef.current || (reason !== 'vad' && reason !== 'timeout')) {
-          console.log("MicContext: Skipping STT due to reason or voiceLoop off", { reason });
+          // removed noisy log: Skipping STT due to reason or voiceLoop off
           setBusy("idle");
           try { setProcessingRing(false); } catch {}
           return;
         }
         if (processingRef.current) {
-          console.log("MicContext: Already processing previous input, skipping");
+          // removed noisy log: Already processing previous input, skipping
           setBusy("idle");
           try { setProcessingRing(false); } catch {}
           return;
@@ -582,12 +589,12 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
         try {
           const outType = mime && mime.startsWith("audio/webm") ? "audio/webm" : (mime || "audio/webm");
           const b = new Blob(chunks, { type: outType });
-          console.log("MicContext: Created audio blob, size:", b.size, "type:", outType);
+          // removed noisy log: Created audio blob, size and type
           try {
             const t0 = recStartTsRef.current || 0;
             const tFirst = recFirstChunkTsRef.current || 0;
             const tStop = Date.now();
-            console.log(JSON.stringify({ type: 'voice.record.finalize', t0, tFirst, tStop, elapsedMs: tStop - t0, firstDeltaMs: tFirst && t0 ? tFirst - t0 : undefined, bytes: b.size }));
+            // removed voice.record.finalize JSON debug log
           } catch {}
 
           if (b.size > 0 && voiceLoopRef.current) {
@@ -609,7 +616,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
                 setAssistantText(reply);
                 void ingestMessage("assistant", reply);
               } else {
-                console.log("MicContext: No speech detected");
+                // removed noisy log: No speech detected
                 setVoiceError(ERR.noSpeech);
                 try { setProcessingRing(false); } catch {}
               }
@@ -620,9 +627,12 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
               processingRef.current = false;
               setBusy("idle");
               try { setProcessingRing(false); } catch {}
-              // restart loop only if still enabled and not already recording
-              if (voiceLoopRef.current && !recordingRef.current) {
-                console.log("MicContext: Restarting voice loop after processing");
+              // Force-sync refs to avoid stale gating before restart
+              recordingRef.current = false;
+              busyRef.current = "idle";
+              // restart loop only if still enabled; startRecording will further gate if already recording
+              if (voiceLoopRef.current) {
+                // removed noisy log: Restarting voice loop after processing
                 try { await audio.waitForQueueToDrain(6000); } catch {}
                 // Clear any remaining audio state before restarting
                 try {
@@ -634,7 +644,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
                 } catch {}
                 try { await startRecording(); } catch {}
               } else {
-                console.log("MicContext: Voice loop disabled or already recording, not restarting");
+                console.log("MicContext: Voice loop disabled, not restarting");
               }
             }
           } else if (b.size > 0) {
@@ -683,7 +693,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
       };
 
       rec.start(100);
-      console.log("MicContext: Recording started");
+      // removed noisy log: Recording started
       setRecording(true);
       // Reset speaking indicator on start
       try { setInputSpeaking(false); } catch {}
@@ -691,7 +701,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
       if (!ALWAYS_ON) {
         if (stopTimerRef.current) { window.clearTimeout(stopTimerRef.current); }
         stopTimerRef.current = window.setTimeout(() => {
-          console.log("MicContext: Auto-stop timer triggered");
+          // removed noisy log: Auto-stop timer triggered
           stopReasonRef.current = 'timeout';
           if (vadIntervalRef.current) { window.clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
           try { if (rec.state === "recording") rec.stop(); } catch {}
@@ -699,7 +709,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
       } else {
         // In always-on mode, disable the max utterance auto-stop timer
         if (stopTimerRef.current) { window.clearTimeout(stopTimerRef.current); stopTimerRef.current = null; }
-        console.log("MicContext: Always-on mode - max utterance auto-stop disabled");
+        // removed noisy log: Always-on mode - max utterance auto-stop disabled
       }
 
       // Simple VAD - enable trailing-silence based auto-stop
@@ -708,7 +718,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
         audioCtxRef.current = audioCtx;
         try {
           audioCtx.onstatechange = () => {
-            try { console.log("MicContext: AudioContext state:", audioCtx.state); } catch {}
+            // removed noisy AudioContext state log
             if (audioCtx.state === "suspended") {
               // Some browsers may suspend on focus/tab switches; try to resume.
               audioCtx.resume().catch(() => {});
@@ -724,6 +734,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
         let firstSpeechTs: number | null = null;
         let silenceFrames = 0;
         try { console.log(JSON.stringify({ type: 'voice.vad.state', state: 'init', VAD_THRESHOLD, VAD_MAX_SILENCE_MS, MIN_SPEECH_MS, SILENCE_DEBOUNCE_FRAMES, VAD_GRACE_MS })); } catch {}
+        // removed voice.vad.state JSON debug log
         try {
           void fetch('/api/telemetry/voice', {
             method: 'POST',
@@ -736,8 +747,8 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
         try {
           const t = stream.getAudioTracks?.()[0];
           if (t) {
-            t.onmute = () => { trackMutedRef.current = true; try { console.log("MicContext: MediaStreamTrack muted"); } catch {} };
-            t.onunmute = () => { trackMutedRef.current = false; try { console.log("MicContext: MediaStreamTrack unmuted"); } catch {} };
+            t.onmute = () => { trackMutedRef.current = true; /* removed noisy MediaStreamTrack muted log */ };
+            t.onunmute = () => { trackMutedRef.current = false; /* removed noisy MediaStreamTrack unmuted log */ };
           }
         } catch {}
         vadIntervalRef.current = window.setInterval(() => {
@@ -764,14 +775,10 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
               silenceFrames = 0;
               if (!firstSpeechTs) {
                 firstSpeechTs = lastSpeechTs;
-                try { console.log("MicContext: VAD firstSpeech", { rms, threshold: VAD_THRESHOLD }); } catch {}
+                // removed VAD firstSpeech log
               }
               // Periodic speaking tick
-              try {
-                if (speechFramesRef.current % 5 === 0) {
-                  console.log("MicContext: VAD speaking tick", { rms, frames: speechFramesRef.current, threshold: VAD_THRESHOLD });
-                }
-              } catch {}
+              // removed VAD speaking tick log
               // Mark speaking when over threshold
               try { setInputSpeaking(true); } catch {}
             } else {
@@ -787,29 +794,21 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
               // VAD-based segmentation should occur in both normal and ALWAYS_ON modes.
               // ALWAYS_ON only disables the max-utterance timeout, not VAD stops.
               // Periodic debug while silent
-              try {
-                if (silenceFrames % Math.max(1, SILENCE_DEBOUNCE_FRAMES) === 0) {
-                  console.log("MicContext: VAD silence tick", {
-                    rms, hadSpeech, graceOk, minSpeechOk,
-                    silenceMs: now - lastSpeechTs, silenceFrames,
-                    VAD_THRESHOLD, MIN_SPEECH_MS, VAD_MAX_SILENCE_MS, SILENCE_DEBOUNCE_FRAMES, VAD_GRACE_MS,
-                  });
-                }
-              } catch {}
+              // removed VAD silence tick log
               if (hadSpeech && graceOk && minSpeechOk && sustainedSilence) {
-                console.log("MicContext: VAD auto-stop triggered", { rms, VAD_THRESHOLD, silenceMs: now - lastSpeechTs, silenceFrames, SILENCE_DEBOUNCE_FRAMES, MIN_SPEECH_MS, VAD_GRACE_MS });
+                // removed noisy VAD auto-stop triggered log
                 stopReasonRef.current = 'vad';
                 if (vadIntervalRef.current) { window.clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
                 try { if (rec.state === "recording") rec.stop(); } catch {}
               }
             }
           } catch (e) {
-            console.log("MicContext: VAD interval error:", e);
+            // removed noisy VAD interval error log
           }
         }, 100);
-        console.log("MicContext: VAD enabled", { VAD_THRESHOLD, VAD_MAX_SILENCE_MS, MIN_SPEECH_MS, SILENCE_DEBOUNCE_FRAMES, VAD_GRACE_MS, ALWAYS_ON });
+        // removed VAD enabled log
       } catch (e) {
-        console.log("MicContext: Failed to initialize VAD:", e);
+        // removed noisy Failed to initialize VAD log
       }
 
     } catch (e: any) {
@@ -824,7 +823,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     const prev = prevInputSpeakingRef.current;
     if (prev !== inputSpeaking) {
       prevInputSpeakingRef.current = inputSpeaking;
-      try { console.log(JSON.stringify({ type: 'voice.vad.state', state: inputSpeaking ? 'speaking' : 'silence' })); } catch {}
+      // removed voice.vad.state JSON console log
       try {
         void fetch('/api/telemetry/voice', {
           method: 'POST',
@@ -847,7 +846,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     const prev = lastPipelineStateRef.current;
     if (prev !== state) {
       lastPipelineStateRef.current = state;
-      try { console.log(JSON.stringify({ type: 'voice.pipeline.state', state, busy, recording })); } catch {}
+      // removed voice.pipeline.state JSON debug log
       try {
         void fetch('/api/telemetry/voice', {
           method: 'POST',
@@ -860,16 +859,19 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
   }, [busy, recording, voiceError]);
 
   const toggleVoiceLoop = useCallback(() => {
-    console.log("MicContext: toggleVoiceLoop called, current state:", { voiceLoop, recording, busy });
+    // removed noisy toggleVoiceLoop called log
 
     if (voiceLoop) {
-      console.log("MicContext: Stopping voice loop");
+      // removed noisy Stopping voice loop log
       setVoiceLoop(false);
       voiceLoopRef.current = false; // sync immediately to avoid STT/restart on user mute
       try { stopRecording(); } catch (e) { console.error("MicContext: Error stopping recording:", e); }
       try { cancelActiveChatStream(); } catch (e) { console.error("MicContext: Error canceling chat stream:", e); }
       try { cancelTTS(); } catch (e) { console.error("MicContext: Error canceling TTS:", e); }
       try { audio.stopPlaybackAndClear(); } catch (e) { console.error("MicContext: Error clearing playback:", e); }
+      // Ensure downstream checks see an idle state immediately after muting
+      try { setBusy("idle"); } catch {}
+      try { setInputSpeaking(false); } catch {}
       // Also clear any residual timers if not already cleared by stopRecording
       try {
         if (stopTimerRef.current) { window.clearTimeout(stopTimerRef.current); stopTimerRef.current = null; }
@@ -877,20 +879,23 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
         if (audioCtxRef.current) { audioCtxRef.current.close().catch?.(() => {}); audioCtxRef.current = null; }
       } catch {}
     } else {
-      console.log("MicContext: Starting voice loop");
+      // removed noisy Starting voice loop log
       setVoiceLoop(true);
       voiceLoopRef.current = true; // sync for immediate checks in callbacks
+      // Ensure busy is idle so startRecording isn't blocked by stale states like 'chat' or 'tts'
+      try { setBusy("idle"); } catch {}
+      try { setInputSpeaking(false); } catch {}
       if (!recording) {
-        console.log("MicContext: Not recording, starting recording...");
+        // removed noisy Not recording, starting recording log
         void startRecording();
       } else {
-        console.log("MicContext: Already recording, not starting again");
+        // removed noisy Already recording, not starting again log
       }
     }
   }, [recording, startRecording, stopRecording, audio.stopPlaybackAndClear, voiceLoop, cancelActiveChatStream, cancelTTS]);
 
   const setVoiceLoopState = useCallback((v: boolean) => {
-    console.log("MicContext: setVoiceLoop called with:", v);
+    // removed noisy setVoiceLoop called log
     setVoiceLoop(v);
   }, []);
 
@@ -938,11 +943,11 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
           const rms = Math.sqrt(sum / Math.max(1, count));
           // Immediate barge-in: trigger on the first frame above threshold
           if (bargeArmedRef.current && rms >= BARGE_RMS_THRESHOLD) {
-            console.log("MicContext: BARGE-IN TRIGGERED (immediate)", { rms, BARGE_RMS_THRESHOLD });
+            // removed noisy BARGE-IN TRIGGERED log
             bargeArmedRef.current = false;
             // Telemetry: barge trigger
             bargeTriggerTsRef.current = Date.now();
-            try { console.log(JSON.stringify({ type: 'voice.barge.trigger' })); } catch {}
+            // removed voice.barge.trigger JSON debug log
             try {
               void fetch('/api/telemetry/voice', {
                 method: 'POST',
@@ -968,12 +973,12 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
             speechFramesRef.current = Math.max(0, speechFramesRef.current - 1);
           }
         } catch (e) {
-          console.log("MicContext: barge monitor error", e);
+          // removed noisy barge monitor error log
         }
       }, 50);
-      console.log("MicContext: Barge monitor started", { BARGE_RMS_THRESHOLD, intervalMs: 50 });
+      // removed noisy Barge monitor started log
     } catch (e) {
-      console.log("MicContext: Failed to start barge monitor", e);
+      // removed noisy Failed to start barge monitor log
       stopBargeMonitor();
     }
   }, [BARGE_MIN_FRAMES, BARGE_RMS_THRESHOLD, startRecording, stopBargeMonitor, cancelActiveChatStream, cancelTTS]);
@@ -982,7 +987,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
   // We now also monitor during text streaming (busy === 'chat') so the user can barge-in before TTS starts.
   useEffect(() => {
     const shouldMonitor = voiceLoop && !recording && (busy === 'chat');
-    try { console.log("MicContext: Barge monitor check", { voiceLoop, recording, busy, shouldMonitor }); } catch {}
+    // removed noisy Barge monitor check log
     if (shouldMonitor) {
       void startBargeMonitor();
     } else {

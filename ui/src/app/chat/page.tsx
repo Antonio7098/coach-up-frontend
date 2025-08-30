@@ -29,7 +29,8 @@ export default function ChatPage() {
     }
   }, []);
 
-  const { summary } = useSessionSummary(sessionId);
+  // Do not autoload summary on first mount; fetch only after turns or explicit actions
+  const { summary } = useSessionSummary(sessionId, { autoloadOnMount: false });
 
   function storageKey(sid: string) {
     return `chat:history:${sid}`;
