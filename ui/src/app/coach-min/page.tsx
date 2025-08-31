@@ -15,6 +15,17 @@ function Content() {
   const convo = useMinimalConversation();
   const { sessionId } = useMinimalSession();
   const { summary, status: summaryStatus, refresh } = useSessionSummary(sessionId, { autoloadOnMount: false });
+  const createSummary = React.useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      await fetch('/api/assessments/run', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId }),
+      });
+    } catch {}
+    try { await refresh(); } catch {}
+  }, [sessionId, refresh]);
   React.useEffect(() => {
     // Auto-start VAD loop on mount
     if (!mic.vadLoop) {
@@ -65,7 +76,7 @@ function Content() {
           <div className="p-3 border rounded">
             <div className="flex items-center justify-between mb-1">
               <div className="text-sm font-medium">Summary</div>
-              <button type="button" onClick={() => refresh()} className="px-2 py-1 text-xs border rounded">Refresh</button>
+              <button type="button" onClick={createSummary} className="px-2 py-1 text-xs border rounded">Create summary</button>
             </div>
             <div className="text-[11px] text-zinc-600 mb-2">status={summaryStatus}{summary?.updatedAt ? ` · updated ${new Date(summary.updatedAt).toLocaleTimeString()}` : ""}</div>
             <div className="text-xs whitespace-pre-wrap min-h-[64px]">{summary?.text || <span className="text-zinc-500">(none)</span>}</div>
