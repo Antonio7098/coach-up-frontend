@@ -43,3 +43,12 @@ History rollout (incremental):
 - [ ] UI: add History panel on `/coach-min` showing: last N turns, current summarized history (with refresh), and when it last updated; collapsible.
 - [ ] UI polish: highlight current turn, provide manual refresh + auto-refresh on new turns (via `onTurn()`); show loading/empty states.
 - [ ] Observability: log prompt components lengths; add counters for summary 404/429; ensure no PII in logs.
+
+Behavioral details:
+- Immediate history cache: keep last N=4 turns in-memory on the client (no network); compose into the prompt every turn. Configurable via `NEXT_PUBLIC_HISTORY_TURNS`.
+- Summary refresh policy: do NOT fetch per turn. Use `useSessionSummary(sessionId, { autoloadOnMount: false })` and call `onTurn()` after each completed turn. Refresh when either: turns since last ≥ T (default 8) or age ≥ S seconds (default 120). Fetch runs in background and never blocks chat.
+- Composition policy: if a summary is available, include it first, then append last N immediate turns. If not available (404/429/in-flight), send immediate turns only.
+- Latency and waiting: default is non-blocking (zero extra wait). Optionally support a soft-wait budget (e.g., 0–200ms) before opening SSE only if a fresh summary promise is already resolving; default=0 to keep TTFT low.
+- Retry/consistency: when summary endpoint returns 404 (not ready), schedule capped retries (existing hook: attempts=3, delay=1500ms). When it later resolves, it will be used on subsequent turns automatically.
+- Budgets/limits: bound composed prompt by chars/tokens (start with char budget, e.g., 2000 chars for summary + immediate). Trim oldest immediate turns first, then trim summary tail if needed.
+- UI panel: display last N immediate turns and the current summary with a timestamp (updatedAt), show loading/empty states, and a manual Refresh button (calls `refresh()`). The panel is collapsible and does not affect the voice loop.
