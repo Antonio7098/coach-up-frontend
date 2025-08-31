@@ -18,6 +18,8 @@ function Content() {
   const [fresh, setFresh] = React.useState<{ text: string; updatedAt: number; version: number } | null>(null);
   const [freshStatus, setFreshStatus] = React.useState<"idle" | "loading" | "ready" | "error">("idle");
   const [freshErr, setFreshErr] = React.useState<string | undefined>(undefined);
+  const [dbgOpen, setDbgOpen] = React.useState<boolean>(false);
+  const [dbgPrompt, setDbgPrompt] = React.useState<{ prevSummary: string; messages: Array<{ role: 'user'|'assistant'; content: string }> } | null>(null);
   // Track assistant-completed turns since last summary refresh to display turns-until-due
   const [turnsSince, setTurnsSince] = React.useState<number>(0);
   const thresholdTurns = Number.parseInt(process.env.NEXT_PUBLIC_SUMMARY_REFRESH_TURNS || "8", 10) || 8;
@@ -64,6 +66,8 @@ function Content() {
       }
       // If still no messages, skip generation
       if (!recentMessages || recentMessages.length === 0) return;
+      // Save debug prompt details for the panel
+      try { setDbgPrompt({ prevSummary: prev, messages: recentMessages }); } catch {}
       try { console.log("[fresh] POST start", { sessionId, prevLen: prev.length, msgs: recentMessages.length }); } catch {}
       const aiApiBase = (process.env.NEXT_PUBLIC_AI_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
       const res = await fetch(`${aiApiBase}/api/v1/session-summary/generate`, {
@@ -192,6 +196,25 @@ function Content() {
           </div>
           <div className="text-xs whitespace-pre-wrap min-h-[64px]">{fresh?.text || <span className="text-zinc-500">(none)</span>}</div>
           {freshErr ? <div className="text-[11px] text-red-600 mt-1">error: {freshErr}</div> : null}
+          {/* Debug prompt details */}
+          <div className="mt-2">
+            <button type="button" onClick={() => setDbgOpen(o => !o)} className="px-2 py-1 text-[10px] border rounded">{dbgOpen ? 'Hide' : 'Show'} LLM prompt debug</button>
+            {dbgOpen && (
+              <div className="mt-2 text-[10px] text-zinc-700 space-y-1">
+                <div className="font-medium">Prev summary (preview):</div>
+                <div className="whitespace-pre-wrap bg-zinc-50 p-2 border rounded">{dbgPrompt?.prevSummary ? (dbgPrompt.prevSummary.length > 300 ? dbgPrompt.prevSummary.slice(0,300) + '…' : dbgPrompt.prevSummary) : '(none)'}</div>
+                <div className="font-medium mt-2">Recent messages ({dbgPrompt?.messages?.length ?? 0}):</div>
+                <div className="space-y-1">
+                  {(dbgPrompt?.messages || []).slice(0, 6).map((m, i) => (
+                    <div key={i} className="bg-zinc-50 p-2 border rounded">
+                      <span className="font-medium">{m.role}:</span> {m.content.length > 120 ? m.content.slice(0,120) + '…' : m.content}
+                    </div>
+                  ))}
+                  {(dbgPrompt?.messages || []).length > 6 ? <div className="text-zinc-500">…and more</div> : null}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
