@@ -6,6 +6,7 @@ import { useMinimalSession } from "./MinimalSessionContext";
 
 export type MinimalConversationContextValue = {
   chatToText: (prompt: string) => Promise<string>;
+  getImmediateHistory: () => Array<{ role: "user" | "assistant"; content: string }>;
 };
 
 const Ctx = createContext<MinimalConversationContextValue | undefined>(undefined);
@@ -84,7 +85,11 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     return reply;
   }, [chatToText]);
 
-  const value = useMemo<MinimalConversationContextValue>(() => ({ chatToText: chatToTextWithHistory }), [chatToTextWithHistory]);
+  const getImmediateHistory = useCallback(() => {
+    return historyRef.current.slice(-2);
+  }, []);
+
+  const value = useMemo<MinimalConversationContextValue>(() => ({ chatToText: chatToTextWithHistory, getImmediateHistory }), [chatToTextWithHistory, getImmediateHistory]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
