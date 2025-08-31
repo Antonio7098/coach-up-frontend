@@ -34,4 +34,4 @@ Changelog:
 - [x] Add autoplay banner + simple queue (unlock prompt + queued playback)
 - [x] Add barge‑in (serialized lifecycle): detect speech → cancel TTS + stop playback; stop-and-resume capture (discard pre‑speech), STT on post‑barge‑in speech end
 - [x] Fix STT after barge‑in: skip STT for pre‑barge‑in buffer, auto‑restart capture, then run STT after silence
-- [ ] Add TTFT/metrics
+- [x] Add TTFT/metrics (UI API): chatFirstTokenMs in `/api/chat`; sttLatencyMs & ttsLatencyMs in `/api/v1/stt` and `/api/v1/tts`; `/api/metrics` export enabled
