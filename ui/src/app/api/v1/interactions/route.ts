@@ -234,6 +234,21 @@ export async function POST(request: Request) {
         kind: 'interaction_appended',
         payload: { messageId: body.messageId, role: body.role },
       });
+      // Ingest-driven cadence: on assistant message, nudge cadence state
+      try {
+        if (body.role === 'assistant') {
+          await mockConvex.logEvent({
+            userId: effectiveUserId,
+            sessionId: body.sessionId,
+            groupId: body.groupId,
+            requestId,
+            trackedSkillIdHash,
+            kind: 'summary_cadence_onAssistantMessage',
+            payload: { messageId: body.messageId },
+          });
+          // No mock Convex state; UI cadence v1 still active. This log is for observability only.
+        }
+      } catch {}
       return new Response(JSON.stringify({ ok: true, id: res?.id ?? null }), {
         status: 200,
         headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
@@ -259,6 +274,22 @@ export async function POST(request: Request) {
       kind: 'interaction_appended',
       payload: { messageId: body.messageId, role: body.role },
     });
+
+    // Ingest-driven cadence: when assistant message finalized, ask Convex to update cadence state
+    if (body.role === 'assistant') {
+      try {
+        await client.mutation("functions/summary_state:onAssistantMessage", { sessionId: body.sessionId });
+        await client.mutation("events:logEvent", {
+          userId: effectiveUserId,
+          sessionId: body.sessionId,
+          groupId: body.groupId,
+          requestId,
+          trackedSkillIdHash,
+          kind: 'summary_cadence_onAssistantMessage",
+          payload: { messageId: body.messageId },
+        });
+      } catch {}
+    }
 
     return new Response(JSON.stringify({ ok: true, id }), {
       status: 200,
