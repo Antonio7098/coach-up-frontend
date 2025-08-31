@@ -38,18 +38,28 @@ Changelog:
 
 History rollout (incremental):
 - [ ] History v1 (immediate only, minimal): include last N=2 turns (user/assistant) in `MinimalConversationContext` history param. Keep simple char-bounded trimming.
+
 - [ ] History v2 (background summary): wire `useSessionSummary(sessionId, { autoloadOnMount: false })`; call `onTurn()` after each turn to refresh in background by thresholds (turns/seconds). Expose cached `summary?.text` to `MinimalConversationContext`.
+- [ ] UI v1 (panel minimal): add History panel on `/coach-min` showing last N turns and current cached summary with updatedAt; collapsible; manual Refresh button.
 - [ ] History v3 (cached composition, non-blocking): compose prompt as [cached summary if present] + [last N immediate]. If no cached summary yet, send immediate-only. Never block chat; optional soft-wait budget default=0ms.
 - [ ] History v4 (budgets & trimming): enforce char/token budgets across summary+immediate; trim oldest immediate first, then summary tail.
-- [ ] UI v1 (panel minimal): add History panel on `/coach-min` showing last N turns and current cached summary with updatedAt; collapsible; manual Refresh button.
 - [ ] UI v2 (polish): highlight current turn; auto-refresh on new turns via `onTurn()`; loading/empty states.
 - [ ] Observability: log component lengths, count summary 404/429; ensure no PII in logs.
 
 Behavioral details:
-- Immediate history cache: keep last N=4 turns in-memory on the client (no network); compose into the prompt every turn. Configurable via `NEXT_PUBLIC_HISTORY_TURNS`.
+- Immediate history cache: keep last N=2 turns in-memory on the client (no network); compose into the prompt every turn. Configurable via `NEXT_PUBLIC_HISTORY_TURNS`.
 - Summary refresh policy: do NOT fetch per turn. Use `useSessionSummary(sessionId, { autoloadOnMount: false })` and call `onTurn()` after each completed turn. Refresh when either: turns since last ≥ T (default 8) or age ≥ S seconds (default 120). Fetch runs in background and never blocks chat.
 - Composition policy: prepend the latest cached summary if present (even if a fresh refresh is in-flight or failed/404/429), then append last N immediate turns. If no cached summary exists yet (e.g., very first turns), send immediate turns only.
 - Latency and waiting: default is non-blocking (zero extra wait). Optionally support a soft-wait budget (e.g., 0–200ms) before opening SSE only if a fresh summary promise is already resolving; default=0 to keep TTFT low.
 - Retry/consistency: when summary endpoint returns 404 (not ready), schedule capped retries (existing hook: attempts=3, delay=1500ms). When it later resolves, it will be used on subsequent turns automatically.
-- Budgets/limits: bound composed prompt by chars/tokens (start with char budget, e.g., 2000 chars for summary + immediate). Trim oldest immediate turns first, then trim summary tail if needed.
+- Budgets/limits: prefer token-budgeting (e.g., with a lightweight tokenizer) with a fallback char budget (e.g., 2000 chars) for dev. Trim order: oldest immediate turns first, then summary tail. Expose `NEXT_PUBLIC_HISTORY_TOKEN_BUDGET` when ready.
+- Prompt template: structure prompt with clear sections:
+  - "Summary:" (cached summary text)
+  - "Recent messages:" (most recent N user/assistant turns)
+  This helps the model weight context correctly while keeping composition simple.
+- De-duplication: if the latest assistant/user turn is already covered in the cached summary, avoid duplicating it in the immediate list (simple string overlap check).
+- URL size guardrails: since history is sent in a query string today, keep total URL length small (< ~1500–2000 chars). If composition exceeds this, truncate per budget rules; consider a future POST proxy variant if needed.
 - UI panel: display last N immediate turns and the current summary with a timestamp (updatedAt), show loading/empty states, and a manual Refresh button (calls `refresh()`). The panel is collapsible and does not affect the voice loop.
+
+Additional observability:
+- Record `summary_age_at_use_ms`, `included_summary_bytes`, and `prompt_bytes_total` (best-effort) to validate budgets and freshness (UI-side logs/metrics only, no PII).
