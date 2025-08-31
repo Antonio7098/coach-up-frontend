@@ -39,12 +39,12 @@ Changelog:
 History rollout (incremental):
 - [ ] History v1 (immediate only, minimal): include last N=2 turns (user/assistant) in `MinimalConversationContext` history param. Keep simple char-bounded trimming.
 
-- [ ] History v2 (background summary): wire `useSessionSummary(sessionId, { autoloadOnMount: false })`; call `onTurn()` after each turn to refresh in background by thresholds (turns/seconds). Expose cached `summary?.text` to `MinimalConversationContext`.
-- [ ] UI v1 (panel minimal): add History panel on `/coach-min` showing last N turns and current cached summary with updatedAt; collapsible; manual Refresh button.
-- [ ] History v3 (cached composition, non-blocking): compose prompt as [cached summary if present] + [last N immediate]. If no cached summary yet, send immediate-only. Never block chat; optional soft-wait budget default=0ms.
+- [x] History v2 (background summary): wire `useSessionSummary(sessionId, { autoloadOnMount: false })`; call `onTurn()` after each turn to refresh in background by thresholds (turns/seconds). Expose cached `summary?.text` to `MinimalConversationContext`.
+- [x] UI v1 (panel minimal): add History panel on `/coach-min` showing last N turns and current cached summary with updatedAt; collapsible; manual Refresh button.
+- [x] History v3 (cached composition, non-blocking): compose prompt as [cached summary if present] + [last N immediate]. If no cached summary yet, send immediate-only. Never block chat; optional soft-wait budget default=0ms.
 - [ ] History v4 (budgets & trimming): enforce char/token budgets across summary+immediate; trim oldest immediate first, then summary tail.
-- [ ] UI v2 (polish): highlight current turn; auto-refresh on new turns via `onTurn()`; loading/empty states.
-- [ ] Observability: log component lengths, count summary 404/429; ensure no PII in logs.
+- [x] UI v2 (polish): highlight current turn; auto-refresh on new turns via `onTurn()`; loading/empty states.
+- [x] Observability: log component lengths, count summary 404/429; ensure no PII in logs.
 
 Behavioral details:
 - Immediate history cache: keep last N=2 turns in-memory on the client (no network); compose into the prompt every turn. Configurable via `NEXT_PUBLIC_HISTORY_TURNS`.
@@ -59,7 +59,7 @@ Behavioral details:
   This helps the model weight context correctly while keeping composition simple.
 - De-duplication: if the latest assistant/user turn is already covered in the cached summary, avoid duplicating it in the immediate list (simple string overlap check).
 - URL size guardrails: since history is sent in a query string today, keep total URL length small (< ~1500–2000 chars). If composition exceeds this, truncate per budget rules; consider a future POST proxy variant if needed.
-- UI panel: display last N immediate turns and the current summary with a timestamp (updatedAt), show loading/empty states, and a manual Refresh button (calls `refresh()`). The panel is collapsible and does not affect the voice loop.
+- UI panel: display last N immediate turns and the current summary with a timestamp (updatedAt), show loading/empty states, and a manual Refresh button (calls `refresh()`). The panel is collapsible and does not affect the voice loop. Added expandable local Summary History and LLM prompt debug (prev summary preview + messages).
 
 Additional observability:
 - Record `summary_age_at_use_ms`, `included_summary_bytes`, and `prompt_bytes_total` (best-effort) to validate budgets and freshness (UI-side logs/metrics only, no PII).
