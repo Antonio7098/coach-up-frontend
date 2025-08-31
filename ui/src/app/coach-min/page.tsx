@@ -20,6 +20,9 @@ function Content() {
   const [freshErr, setFreshErr] = React.useState<string | undefined>(undefined);
   const [dbgOpen, setDbgOpen] = React.useState<boolean>(false);
   const [dbgPrompt, setDbgPrompt] = React.useState<{ prevSummary: string; messages: Array<{ role: 'user'|'assistant'; content: string }> } | null>(null);
+  // Local in-session history of summaries (ascending by version)
+  const [history, setHistory] = React.useState<Array<{ version: number; updatedAt: number; text: string }>>([]);
+  const [openMap, setOpenMap] = React.useState<Record<number, boolean>>({});
   // Track assistant-completed turns since last summary refresh to display turns-until-due
   const [turnsSince, setTurnsSince] = React.useState<number>(0);
   const thresholdTurns = Number.parseInt(process.env.NEXT_PUBLIC_SUMMARY_REFRESH_TURNS || "8", 10) || 8;
@@ -46,6 +49,12 @@ function Content() {
       };
       try { console.log("[fresh] GET ok", { len: next.text.length, version: next.version, updatedAt: next.updatedAt }); } catch {}
       setFresh(next);
+      setHistory((cur) => {
+        const exists = cur.some((h) => h.version === next.version);
+        const arr = exists ? cur : [...cur, { version: next.version, updatedAt: next.updatedAt, text: next.text }];
+        arr.sort((a,b) => a.version - b.version);
+        return arr;
+      });
       setFreshStatus("ready");
     } catch (e) {
       try { console.log("[fresh] GET error", { err: e instanceof Error ? e.message : String(e) }); } catch {}
@@ -85,6 +94,12 @@ function Content() {
       setFresh(next);
       setFreshStatus("ready");
       try { console.log("[fresh] POST ok", { len: next.text.length, version: next.version }); } catch {}
+      setHistory((cur) => {
+        const exists = cur.some((h) => h.version === next.version);
+        const arr = exists ? cur : [...cur, { version: next.version, updatedAt: next.updatedAt, text: next.text }];
+        arr.sort((a,b) => a.version - b.version);
+        return arr;
+      });
     } catch {}
   }, [sessionId, fresh?.text, fresh?.version, convo, mic.transcript, mic.assistantText]);
   // v1 cadence: UI-side trigger when due (by turns/seconds), non-blocking
@@ -215,6 +230,30 @@ function Content() {
               </div>
             )}
           </div>
+        </div>
+        {/* Local Summary History (expandable) */}
+        <div className="mt-3 p-3 border rounded">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-sm font-medium">Summary history (local)</div>
+            <div className="text-[11px] text-zinc-600">{history.length} versions</div>
+          </div>
+          {history.length === 0 ? (
+            <div className="text-[11px] text-zinc-500">(empty)</div>
+          ) : (
+            <div className="space-y-2">
+              {history.map((h) => (
+                <div key={h.version} className="border rounded">
+                  <div className="flex items-center justify-between px-2 py-1 bg-zinc-50">
+                    <div className="text-[11px] text-zinc-700">v{h.version} · {new Date(h.updatedAt).toLocaleTimeString()}</div>
+                    <button type="button" className="text-[10px] px-2 py-0.5 border rounded" onClick={() => setOpenMap((m) => ({ ...m, [h.version]: !m[h.version] }))}>{openMap[h.version] ? 'Hide' : 'Show'}</button>
+                  </div>
+                  {openMap[h.version] ? (
+                    <div className="p-2 text-[12px] whitespace-pre-wrap">{h.text}</div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
