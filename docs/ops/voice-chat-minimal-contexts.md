@@ -32,7 +32,7 @@ Changelog:
 - [x] Remove timer-based loop; keep VAD-only loop
 - [x] Add playback pipeline status and pipelined TTS enqueue
 - [x] Add autoplay banner + simple queue (unlock prompt + queued playback)
-- [ ] Add barge‑in (serialized lifecycle)
+- [x] Add barge‑in (serialized lifecycle): detect speech → cancel TTS + stop playback; recording continues
 - [ ] Add TTFT/metrics
 
 

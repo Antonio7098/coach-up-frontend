@@ -74,9 +74,6 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
     try {
       startingRef.current = true;
       try { console.log("MinimalMic: startRecording() vadLoop=", vadLoopRef.current, "forceVad=", forceVad); } catch {}
-      // Barge-in: stop any ongoing playback and cancel queued TTS
-      try { voice.cancelTTS?.(); } catch {}
-      try { audio.stop?.(); } catch {}
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
       const rec = new MediaRecorder(stream);
@@ -107,13 +104,12 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
             setAssistantText(reply); try { console.log("MinimalMic: Chat done; replyLen=", (reply || "").length); } catch {}
             setStatus("playback"); try { console.log("MinimalMic: TTS enqueue start"); } catch {}
             try { voice.cancelTTS?.(); } catch {}
-            await voice.enqueueTTSSegment(reply);
-            try { console.log("MinimalMic: TTS enqueue done"); } catch {}
-          }
-          if (!shouldSkip && vadLoopRef.current) {
-            // Restart recording for next turn
-            try { await startRecording(); } catch {}
-            return;
+            // Fire-and-forget TTS enqueue to allow immediate barge-in recording
+            try { void voice.enqueueTTSSegment(reply); } catch {}
+            if (vadLoopRef.current) {
+              // Start next capture immediately while playback runs
+              try { void startRecording(); } catch {}
+            }
           }
         } catch {}
         finally {
@@ -151,7 +147,13 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
               sum += v * v;
             }
             const rms = Math.sqrt(sum / data.length);
-            if (rms > speechThreshold && !hasSpeech) { hasSpeech = true; silenceMs = 0; try { console.log("MinimalMic: VAD speech start; rms=", rms.toFixed(3)); } catch {} }
+            if (rms > speechThreshold && !hasSpeech) {
+              hasSpeech = true; silenceMs = 0;
+              // Barge-in: on first detected speech, cancel TTS and stop playback
+              try { voice.cancelTTS?.(); } catch {}
+              try { audio.stop?.(); } catch {}
+              try { console.log("MinimalMic: VAD speech start; barge-in; rms=", rms.toFixed(3)); } catch {}
+            }
             else if (hasSpeech && rms < silenceThreshold) { silenceMs += 100; if (silenceMs === 300) { try { console.log("MinimalMic: VAD accumulating silenceMs=", silenceMs, "rms=", rms.toFixed(3)); } catch {} } }
             else { silenceMs = 0; }
             if (hasSpeech && silenceMs >= endSilenceMs) {
