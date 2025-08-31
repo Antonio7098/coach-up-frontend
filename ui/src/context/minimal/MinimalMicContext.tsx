@@ -40,6 +40,8 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
   const vadNodesRef = useRef<{ ac: AudioContext | null; src: MediaStreamAudioSourceNode | null; analyser: AnalyserNode | null } | null>(null);
   const skipSttOnStopRef = useRef<boolean>(false);
   const startingRef = useRef<boolean>(false);
+  const playbackActiveRef = useRef<boolean>(false);
+  React.useEffect(() => { playbackActiveRef.current = audio.isPlaybackActive; }, [audio.isPlaybackActive]);
 
   const stopRecording = useCallback(() => {
     try { console.log("MinimalMic: stopRecording() called; recording=", recording); } catch {}
@@ -132,10 +134,14 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
           const data = new Uint8Array(analyser.fftSize);
           let silenceMs = 0;
           let hasSpeech = false;
-          const speechThreshold = 0.03; // start-of-speech threshold
+          let speechMs = 0;
+          const baseSpeechThreshold = 0.03;
+          const playbackSpeechThreshold = 0.06; // stricter threshold during playback to avoid echo-trigger
           const silenceThreshold = 0.015; // end-of-speech threshold
+          const minSpeechMsBase = 150;  // require at least 150ms of voiced frames
+          const minSpeechMsPlayback = 300; // require longer voiced duration during playback
           const endSilenceMs = 700; // stop after ~0.7s silence following speech
-          try { console.log("MinimalMic: VAD loop started", { speechThreshold, silenceThreshold, endSilenceMs }); } catch {}
+          try { console.log("MinimalMic: VAD loop started", { baseSpeechThreshold, playbackSpeechThreshold, silenceThreshold, endSilenceMs }); } catch {}
           const tick = () => {
             // Use recorder state and vadLoopRef to avoid stale React state in closure
             if (rec.state !== "recording" || !vadLoopRef.current) return;
@@ -146,14 +152,17 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
               sum += v * v;
             }
             const rms = Math.sqrt(sum / data.length);
-            if (rms > speechThreshold && !hasSpeech) {
+            const speechThreshold = playbackActiveRef.current ? playbackSpeechThreshold : baseSpeechThreshold;
+            const minSpeechMs = playbackActiveRef.current ? minSpeechMsPlayback : minSpeechMsBase;
+            if (rms > speechThreshold && !hasSpeech) { speechMs += 100; } else if (!hasSpeech) { speechMs = 0; }
+            if (!hasSpeech && speechMs >= minSpeechMs) {
               hasSpeech = true; silenceMs = 0;
-              // Barge-in: on first detected speech, cancel TTS and stop playback
+              // Barge-in: on sustained speech, cancel TTS and stop playback
               try { voice.cancelTTS?.(); } catch {}
               try { audio.stop?.(); } catch {}
-              try { console.log("MinimalMic: VAD speech start; barge-in; rms=", rms.toFixed(3)); } catch {}
+              try { console.log("MinimalMic: VAD speech start; barge-in; rms=", rms.toFixed(3), "speechMs=", speechMs, "thr=", speechThreshold); } catch {}
             }
-            else if (hasSpeech && rms < silenceThreshold) { silenceMs += 100; if (silenceMs === 300) { try { console.log("MinimalMic: VAD accumulating silenceMs=", silenceMs, "rms=", rms.toFixed(3)); } catch {} } }
+            if (hasSpeech && rms < silenceThreshold) { silenceMs += 100; if (silenceMs === 300) { try { console.log("MinimalMic: VAD accumulating silenceMs=", silenceMs, "rms=", rms.toFixed(3)); } catch {} } }
             else { silenceMs = 0; }
             if (hasSpeech && silenceMs >= endSilenceMs) {
               try { console.log("MinimalMic: VAD end-of-speech; stopping recorder; silenceMs=", silenceMs); } catch {}

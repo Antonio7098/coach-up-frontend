@@ -36,3 +36,36 @@ Changelog:
 - [ ] Add TTFT/metrics
 
 
+
+## Next: VAD hardening to avoid noise-triggered barge-in (least disruptive first)
+
+Phased plan (apply in order; stop when behavior is stable):
+
+1) Hysteresis + debounce (minimal change)
+   - Require N consecutive voiced frames before declaring “speech” (e.g., 200 ms when idle; 300–400 ms during playback).
+   - Require M consecutive silence frames to end speech (M > N). Add 100–150 ms debounce before cancelling TTS to avoid transient cutouts.
+
+2) Dynamic threshold with rolling noise floor (still minimal)
+   - Track RMS exponential moving average (EMA) as noise floor; use threshold = noiseFloor + margin.
+   - Keep separate margins for idle vs during playback.
+
+3) Simple spectral features
+   - Add zero‑crossing rate (ZCR) and 300–3000 Hz band‑energy ratio checks; reject broadband/impulse spikes.
+
+4) Playback echo guard
+   - Measure playback RMS via `createMediaElementSource(audioEl)`.
+   - During playback, only barge‑in when mic RMS exceeds playback RMS by +X dB for Y ms and voiced features pass.
+
+5) Recovery on false trigger (safety)
+   - If barge‑in triggers but STT returns < 3 chars and no confirm within 500 ms, resume the interrupted TTS from next segment.
+
+6) Optional stronger VAD (if needed)
+   - Evaluate a lightweight WASM VAD (e.g., WebRTC‑VAD via `@ricky0123/vad` or `rnnoise-wasm`). Run in a Web Worker; expose boolean/probability.
+
+7) Telemetry for tuning
+   - Log mic RMS, playback RMS, ZCR, band energy ratio, and decision states (noise/speech/echo) with reasons. Gate via env flag.
+
+Acceptance checks
+- Background noise during playback does not interrupt.
+- Speaking at normal volume during playback interrupts within <150 ms.
+- No overlapping audio after barge‑in; previous playback fully stopped.
