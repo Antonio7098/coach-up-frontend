@@ -78,7 +78,17 @@ function Content() {
               <div className="text-sm font-medium">Summary</div>
               <button type="button" onClick={createSummary} className="px-2 py-1 text-xs border rounded">Create summary</button>
             </div>
-            <div className="text-[11px] text-zinc-600 mb-2">status={summaryStatus}{summary?.updatedAt ? ` · updated ${new Date(summary.updatedAt).toLocaleTimeString()}` : ""}</div>
+            {(() => {
+              const meta = convo.getSummaryMeta();
+              return (
+                <div className="text-[11px] text-zinc-600 mb-2">
+                  status={summaryStatus}
+                  {meta.updatedAt ? ` · updated ${new Date(meta.updatedAt).toLocaleTimeString()}` : ""}
+                  {` · turns until due: ${meta.turnsUntilDue}`}
+                  {` · ready: ${meta.ready}`}
+                </div>
+              );
+            })()}
             <div className="text-xs whitespace-pre-wrap min-h-[64px]">{summary?.text || <span className="text-zinc-500">(none)</span>}</div>
           </div>
         </div>

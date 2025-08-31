@@ -7,6 +7,7 @@ import { useMinimalSession } from "./MinimalSessionContext";
 export type MinimalConversationContextValue = {
   chatToText: (prompt: string) => Promise<string>;
   getImmediateHistory: () => Array<{ role: "user" | "assistant"; content: string }>;
+  getSummaryMeta: () => { ready: boolean; updatedAt?: number; turnsUntilDue: number; thresholdTurns: number };
 };
 
 const Ctx = createContext<MinimalConversationContextValue | undefined>(undefined);
@@ -21,7 +22,16 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
   // Minimal in-memory history of last 2 messages (role: user|assistant)
   const historyRef = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
   const { sessionId } = useMinimalSession();
-  const { summary, onTurn } = useSessionSummary(sessionId, { autoloadOnMount: false });
+  const { summary, onTurn, thresholds } = useSessionSummary(sessionId, { autoloadOnMount: false });
+  const [turnsSinceRefresh, setTurnsSinceRefresh] = React.useState<number>(0);
+  const lastUpdatedRef = React.useRef<number | undefined>(undefined);
+  React.useEffect(() => {
+    const upd = typeof summary?.updatedAt === "number" ? summary.updatedAt : undefined;
+    if (upd && upd !== lastUpdatedRef.current) {
+      lastUpdatedRef.current = upd;
+      setTurnsSinceRefresh(0);
+    }
+  }, [summary?.updatedAt]);
 
   function toBase64Url(s: string): string {
     try {
@@ -83,6 +93,7 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
       if (historyRef.current.length > 2) historyRef.current = historyRef.current.slice(-2);
       // Trigger background summary refresh according to thresholds (non-blocking)
       try { onTurn(); } catch {}
+      setTurnsSinceRefresh((n) => (Number.isFinite(n) ? n + 1 : 1));
     } catch {}
     return reply;
   }, [chatToText, onTurn]);
@@ -91,7 +102,14 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     return historyRef.current.slice(-2);
   }, []);
 
-  const value = useMemo<MinimalConversationContextValue>(() => ({ chatToText: chatToTextWithHistory, getImmediateHistory }), [chatToTextWithHistory, getImmediateHistory]);
+  const getSummaryMeta = useCallback(() => {
+    const ready = !!(summary && typeof summary.text === "string" && summary.text.trim().length > 0);
+    const thresholdTurns = thresholds?.turns ?? 8;
+    const turnsUntilDue = Math.max(0, thresholdTurns - (Number.isFinite(turnsSinceRefresh) ? turnsSinceRefresh : 0));
+    return { ready, updatedAt: summary?.updatedAt, turnsUntilDue, thresholdTurns };
+  }, [summary, thresholds?.turns, turnsSinceRefresh]);
+
+  const value = useMemo<MinimalConversationContextValue>(() => ({ chatToText: chatToTextWithHistory, getImmediateHistory, getSummaryMeta }), [chatToTextWithHistory, getImmediateHistory, getSummaryMeta]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
