@@ -42,6 +42,23 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
   const startingRef = useRef<boolean>(false);
   const playbackActiveRef = useRef<boolean>(false);
   React.useEffect(() => { playbackActiveRef.current = audio.isPlaybackActive; }, [audio.isPlaybackActive]);
+  const pendingPlaybackRef = useRef<boolean>(false);
+  React.useEffect(() => {
+    if (audio.isPlaybackActive) {
+      pendingPlaybackRef.current = false;
+      if (status === "tts") setStatus("playback");
+    } else {
+      // When playback ends naturally, if we're looping/recording, return to audio
+      if (status === "playback" && (recording || vadLoopRef.current)) setStatus("audio");
+    }
+  }, [audio.isPlaybackActive, status, recording]);
+  const ttsActiveRef = useRef<boolean>(false);
+  React.useEffect(() => {
+    ttsActiveRef.current = (status === "tts" || status === "playback");
+    try { console.log("MinimalMic: TTS/playback state:", { status, ttsActive: ttsActiveRef.current, playbackActive: playbackActiveRef.current, pending: pendingPlaybackRef.current }); } catch {}
+  }, [status]);
+  const bargeInActiveRef = useRef<boolean>(false);
+  const resumeAfterBargeInRef = useRef<boolean>(false);
 
   const stopRecording = useCallback(() => {
     try { console.log("MinimalMic: stopRecording() called; recording=", recording); } catch {}
@@ -63,6 +80,7 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
       if (n?.ac) { try { n.ac.close(); } catch {} }
       vadNodesRef.current = null;
     } catch {}
+    bargeInActiveRef.current = false;
   }, []);
 
   const cancelCurrentCapture = useCallback(() => {
@@ -104,22 +122,30 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
             setStatus("chat"); try { console.log("MinimalMic: Chat start"); } catch {}
             const reply = await convo.chatToText(text);
             setAssistantText(reply); try { console.log("MinimalMic: Chat done; replyLen=", (reply || "").length); } catch {}
-            setStatus("playback"); try { console.log("MinimalMic: TTS enqueue start"); } catch {}
+            setStatus("tts"); try { console.log("MinimalMic: TTS start"); } catch {}
             try { voice.cancelTTS?.(); } catch {}
-            // Start playback fire-and-forget; begin concurrent capture if loop is on
+            // Start playback fire-and-forget; mark pending to prevent status flicker
+            pendingPlaybackRef.current = true;
             try { void voice.enqueueTTSSegment(reply); } catch {}
-            if (vadLoopRef.current) { try { void startRecordingInternal(true); } catch {} }
+            // Ensure concurrent capture during playback for barge-in
+            if (vadLoopRef.current && !recording) { try { void startRecordingInternal(true); } catch {} }
           }
         } catch {}
         finally {
           if (!vadLoopRef.current) setStatus("idle");
           skipSttOnStopRef.current = false;
+          bargeInActiveRef.current = false;
+          if (resumeAfterBargeInRef.current && vadLoopRef.current && !recording) {
+            resumeAfterBargeInRef.current = false;
+            try { console.log("MinimalMic: restarting capture after barge-in"); } catch {}
+            try { void startRecordingInternal(true); } catch {}
+          }
         }
       };
       rec.start(100);
       setRecording(true);
-      // If playback is ongoing, keep status=playback; otherwise show audio
-      if (!audio.isPlaybackActive) { setStatus("audio"); }
+      // If playback is ongoing or pending, do not flip to audio; otherwise show audio
+      if (!audio.isPlaybackActive && !pendingPlaybackRef.current) { setStatus("audio"); }
       try { console.log("MinimalMic: recording started"); } catch {}
       startingRef.current = false;
       const useVad = forceVad || vadLoopRef.current;
@@ -136,12 +162,13 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
           let hasSpeech = false;
           let speechMs = 0;
           const baseSpeechThreshold = 0.03;
-          const playbackSpeechThreshold = 0.06; // stricter threshold during playback to avoid echo-trigger
+          const playbackSpeechThreshold = 0.035; // lower to recognize speech over playback
           const silenceThreshold = 0.015; // end-of-speech threshold
-          const minSpeechMsBase = 150;  // require at least 150ms of voiced frames
-          const minSpeechMsPlayback = 300; // require longer voiced duration during playback
+          const minSpeechMsBase = 100;  // ≥100ms voiced frames when idle (support short words)
+          const minSpeechMsPlayback = 200; // ≥200ms voiced frames during playback
+          const debounceMs = 80; // extra debounce before barge-in
           const endSilenceMs = 700; // stop after ~0.7s silence following speech
-          try { console.log("MinimalMic: VAD loop started", { baseSpeechThreshold, playbackSpeechThreshold, silenceThreshold, endSilenceMs }); } catch {}
+          try { console.log("MinimalMic: VAD loop started", { baseSpeechThreshold, playbackSpeechThreshold, silenceThreshold, minSpeechMsBase, minSpeechMsPlayback, debounceMs, endSilenceMs }); } catch {}
           const tick = () => {
             // Use recorder state and vadLoopRef to avoid stale React state in closure
             if (rec.state !== "recording" || !vadLoopRef.current) return;
@@ -152,19 +179,43 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
               sum += v * v;
             }
             const rms = Math.sqrt(sum / data.length);
-            const speechThreshold = playbackActiveRef.current ? playbackSpeechThreshold : baseSpeechThreshold;
-            const minSpeechMs = playbackActiveRef.current ? minSpeechMsPlayback : minSpeechMsBase;
-            if (rms > speechThreshold && !hasSpeech) { speechMs += 100; } else if (!hasSpeech) { speechMs = 0; }
-            if (!hasSpeech && speechMs >= minSpeechMs) {
-              hasSpeech = true; silenceMs = 0;
-              // Barge-in: on sustained speech, cancel TTS and stop playback
-              try { voice.cancelTTS?.(); } catch {}
-              try { audio.stop?.(); } catch {}
-              try { console.log("MinimalMic: VAD speech start; barge-in; rms=", rms.toFixed(3), "speechMs=", speechMs, "thr=", speechThreshold); } catch {}
+            const isPlayback = ttsActiveRef.current || playbackActiveRef.current || pendingPlaybackRef.current;
+            const speechThreshold = isPlayback ? playbackSpeechThreshold : baseSpeechThreshold;
+            const minSpeechMs = isPlayback ? minSpeechMsPlayback : minSpeechMsBase;
+            const incMs = 100;
+            const decMs = isPlayback ? 30 : 30; // slower decay so intermittent speech accumulates
+            try { if ((speechMs % 300) === 0) console.log("MinimalMic: VAD tick", { rms: Number(rms.toFixed(3)), isPlayback, speechMs, hasSpeech, bargeIn: bargeInActiveRef.current }); } catch {}
+            if (!hasSpeech) {
+              const before = speechMs;
+              if (rms > speechThreshold) { speechMs += incMs; } else { speechMs = Math.max(0, speechMs - decMs); }
+              try { console.log("MinimalMic: VAD acc", { rms: Number(rms.toFixed(3)), thr: speechThreshold, speechMsBefore: before, speechMsAfter: speechMs, isPlayback }); } catch {}
+              const requiredMs = minSpeechMs + debounceMs;
+              if (speechMs >= requiredMs) {
+                hasSpeech = true; silenceMs = 0;
+                // Barge-in path
+                if (isPlayback) {
+                  bargeInActiveRef.current = true;
+                  skipSttOnStopRef.current = true;
+                  resumeAfterBargeInRef.current = true;
+                  try { voice.cancelTTS?.(); } catch {}
+                  try { console.log("MinimalMic: calling audio.stop() for barge-in"); } catch {}
+                  try { audio.stop?.(); } catch {}
+                  try { console.log("MinimalMic: VAD speech start; barge-in;", { rms: Number(rms.toFixed(3)), speechMs, speechThreshold, requiredMs, ttsActive: ttsActiveRef.current, playbackActive: playbackActiveRef.current }); } catch {}
+                  // Switch to audio immediately for barge-in and clear pending playback marker
+                  try { pendingPlaybackRef.current = false; } catch {}
+                  try { setStatus("audio"); } catch {}
+                  // Stop current recorder to flush and then restart fresh capture in onstop
+                  try { if (rec.state === "recording") rec.stop(); } catch {}
+                  return;
+                } else {
+                  try { console.log("MinimalMic: VAD speech start (no playback)", { rms: Number(rms.toFixed(3)) }); } catch {}
+                }
+              }
             }
             if (hasSpeech && rms < silenceThreshold) { silenceMs += 100; if (silenceMs === 300) { try { console.log("MinimalMic: VAD accumulating silenceMs=", silenceMs, "rms=", rms.toFixed(3)); } catch {} } }
             else { silenceMs = 0; }
-            if (hasSpeech && silenceMs >= endSilenceMs) {
+            const endSil = bargeInActiveRef.current ? 400 : endSilenceMs;
+            if (hasSpeech && silenceMs >= endSil) {
               try { console.log("MinimalMic: VAD end-of-speech; stopping recorder; silenceMs=", silenceMs); } catch {}
               try { if (rec.state === "recording") { try { rec.requestData?.(); } catch {} rec.stop(); } } catch {}
               return;
