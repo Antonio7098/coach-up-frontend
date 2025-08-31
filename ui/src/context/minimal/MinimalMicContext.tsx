@@ -104,10 +104,9 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
             setAssistantText(reply); try { console.log("MinimalMic: Chat done; replyLen=", (reply || "").length); } catch {}
             setStatus("playback"); try { console.log("MinimalMic: TTS enqueue start"); } catch {}
             try { voice.cancelTTS?.(); } catch {}
-            // Start playback and await completion; VAD may cancel if speech occurs
-            try { await voice.enqueueTTSSegment(reply); } catch {}
-            // When playback ends naturally, resume capture if loop is on
-            if (vadLoopRef.current) { try { void startRecording(); } catch {} }
+            // Start playback fire-and-forget; begin concurrent capture if loop is on
+            try { void voice.enqueueTTSSegment(reply); } catch {}
+            if (vadLoopRef.current) { try { void startRecordingInternal(true); } catch {} }
           }
         } catch {}
         finally {
@@ -117,7 +116,9 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
       };
       rec.start(100);
       setRecording(true);
-      setStatus("audio"); try { console.log("MinimalMic: recording started"); } catch {}
+      // If playback is ongoing, keep status=playback; otherwise show audio
+      if (!audio.isPlaybackActive) { setStatus("audio"); }
+      try { console.log("MinimalMic: recording started"); } catch {}
       startingRef.current = false;
       const useVad = forceVad || vadLoopRef.current;
       if (useVad) {
