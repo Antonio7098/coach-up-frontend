@@ -1,10 +1,12 @@
 "use client";
 
-import React, { createContext, useCallback, useContext, useMemo, useRef } from "react";
+import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
 
 export type MinimalAudioContextValue = {
   enqueueAudio: (url: string) => Promise<void>;
   stop: () => void;
+  needsAudioUnlock: boolean;
+  unlockAudio: () => Promise<void>;
 };
 
 const Ctx = createContext<MinimalAudioContextValue | undefined>(undefined);
@@ -19,6 +21,24 @@ export function MinimalAudioProvider({ children }: { children: React.ReactNode }
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const queueRef = useRef<Array<{ url: string; resolve: () => void }>>([]);
   const playingRef = useRef(false);
+  const [needsAudioUnlock, setNeedsAudioUnlock] = useState(false);
+  const blockedRef = useRef(false);
+
+  const attachAndWait = useCallback(async (el: HTMLAudioElement) => {
+    await new Promise<void>((resolve) => {
+      const cleanup = () => {
+        el.removeEventListener("ended", onEnded);
+        el.removeEventListener("error", onErr);
+        el.removeEventListener("pause", onPause);
+      };
+      const onEnded = () => { cleanup(); resolve(); };
+      const onErr = () => { cleanup(); resolve(); };
+      const onPause = () => { cleanup(); resolve(); };
+      el.addEventListener("ended", onEnded, { once: true });
+      el.addEventListener("error", onErr, { once: true });
+      el.addEventListener("pause", onPause, { once: true });
+    });
+  }, []);
 
   const ensureWorker = useCallback(async () => {
     if (playingRef.current) return;
@@ -33,26 +53,26 @@ export function MinimalAudioProvider({ children }: { children: React.ReactNode }
       }
       el.autoplay = true;
       el.src = next.url;
-      try { await el.play(); } catch {}
-      await new Promise<void>((resolve) => {
-        const cleanup = () => {
-          el!.removeEventListener("ended", onEnded);
-          el!.removeEventListener("error", onErr);
-          el!.removeEventListener("pause", onPause);
-        };
-        const onEnded = () => { cleanup(); resolve(); };
-        const onErr = () => { cleanup(); resolve(); };
-        const onPause = () => { cleanup(); resolve(); };
-        el!.addEventListener("ended", onEnded, { once: true });
-        el!.addEventListener("error", onErr, { once: true });
-        el!.addEventListener("pause", onPause, { once: true });
-      });
+      try {
+        await el.play();
+        await attachAndWait(el);
+      } catch (e: any) {
+        if (e && (e.name === "NotAllowedError" || e.code === 0)) {
+          blockedRef.current = true;
+          setNeedsAudioUnlock(true);
+          // Leave playingRef true; unlock will resume and finish the cycle
+          return;
+        }
+        // Other errors: resolve item and continue
+      }
     } finally {
-      playingRef.current = false;
-      // Remove item only after a playback run completes
-      const item = queueRef.current.shift();
-      try { item?.resolve(); } catch {}
-      if (queueRef.current.length > 0) void ensureWorker();
+      if (!blockedRef.current) {
+        playingRef.current = false;
+        // Remove item only after a playback run completes
+        const item = queueRef.current.shift();
+        try { item?.resolve(); } catch {}
+        if (queueRef.current.length > 0) void ensureWorker();
+      }
     }
   }, []);
 
@@ -77,9 +97,37 @@ export function MinimalAudioProvider({ children }: { children: React.ReactNode }
     try { queueRef.current.forEach((i) => { try { i.resolve(); } catch {} }); } catch {}
     queueRef.current = [];
     playingRef.current = false;
+    blockedRef.current = false;
+    setNeedsAudioUnlock(false);
   }, []);
 
-  const value = useMemo<MinimalAudioContextValue>(() => ({ enqueueAudio: play, stop }), [play, stop]);
+  const unlockAudio = useCallback(async () => {
+    try {
+      const el = audioRef.current;
+      const next = queueRef.current[0];
+      if (!el || !next) { setNeedsAudioUnlock(false); return; }
+      // Ensure source is set to the pending item
+      if (el.src !== next.url) { el.src = next.url; }
+      await el.play();
+      blockedRef.current = false;
+      setNeedsAudioUnlock(false);
+      await attachAndWait(el);
+    } catch (e: any) {
+      if (e && (e.name === "NotAllowedError" || e.code === 0)) {
+        setNeedsAudioUnlock(true);
+        return;
+      }
+    } finally {
+      if (!blockedRef.current) {
+        playingRef.current = false;
+        const item = queueRef.current.shift();
+        try { item?.resolve(); } catch {}
+        if (queueRef.current.length > 0) void ensureWorker();
+      }
+    }
+  }, [attachAndWait, ensureWorker]);
+
+  const value = useMemo<MinimalAudioContextValue>(() => ({ enqueueAudio: play, stop, needsAudioUnlock, unlockAudio }), [play, stop, needsAudioUnlock, unlockAudio]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
