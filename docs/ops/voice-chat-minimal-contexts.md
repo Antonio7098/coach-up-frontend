@@ -31,7 +31,7 @@ Changelog:
 - [x] Add VAD silence auto‑stop (RMS-based; ~700ms end-of-silence)
 - [x] Remove timer-based loop; keep VAD-only loop
 - [x] Add playback pipeline status and pipelined TTS enqueue
-- [ ] Add autoplay banner + simple queue
+- [x] Add autoplay banner + simple queue (unlock prompt + queued playback)
 - [ ] Add barge‑in (serialized lifecycle)
 - [ ] Add TTFT/metrics
 
