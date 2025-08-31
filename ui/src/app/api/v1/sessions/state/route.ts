@@ -128,7 +128,7 @@ export async function POST(request: Request) {
       state: (obj.state as Record<string, unknown> | undefined) ?? {},
       latestGroupId: obj.latestGroupId ? String(obj.latestGroupId) : undefined,
     });
-    await client.mutation("events:logEvent", {
+    await client.mutation("functions/events:logEvent", {
       userId: effectiveUserId(obj.userId),
       sessionId: String(obj.sessionId),
       groupId: obj.latestGroupId ? String(obj.latestGroupId) : undefined,

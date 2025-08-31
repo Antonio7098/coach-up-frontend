@@ -273,7 +273,7 @@ export async function POST(request: Request) {
       audioUrl: body.audioUrl,
       ts: body.ts,
     });
-    await client.mutation("events:logEvent", {
+    await client.mutation("functions/events:logEvent", {
       userId: effectiveUserId,
       sessionId: body.sessionId,
       groupId: body.groupId,
@@ -287,7 +287,7 @@ export async function POST(request: Request) {
     if (body.role === 'assistant') {
       try {
         const cadence = await client.mutation("functions/summary_state:onAssistantMessage", { sessionId: body.sessionId });
-        await client.mutation("events:logEvent", {
+        await client.mutation("functions/events:logEvent", {
           userId: effectiveUserId,
           sessionId: body.sessionId,
           groupId: body.groupId,
@@ -344,7 +344,7 @@ export async function POST(request: Request) {
             const newVersion = Number(inserted?.version || (latest?.version || 0) + 1);
             const generatedAt = Number(inserted?.updatedAt || Date.now());
             await client.mutation("functions/summary_state:onGenerated", { sessionId: body.sessionId, newVersion, generatedAt });
-            await client.mutation("events:logEvent", {
+            await client.mutation("functions/events:logEvent", {
               userId: effectiveUserId,
               sessionId: body.sessionId,
               groupId: body.groupId,
