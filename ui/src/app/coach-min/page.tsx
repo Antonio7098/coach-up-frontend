@@ -78,6 +78,25 @@ function Content() {
       try { console.log("[fresh] POST ok", { len: next.text.length, version: next.version }); } catch {}
     } catch {}
   }, [sessionId, fresh?.text, fresh?.version, convo, mic.transcript, mic.assistantText]);
+  // v1 cadence: UI-side trigger when due (by turns/seconds), non-blocking
+  const lastAutoRef = React.useRef<number>(0);
+  const autoInflightRef = React.useRef<boolean>(false);
+  const meta = convo.getSummaryMeta();
+  React.useEffect(() => {
+    if (!sessionId) return;
+    const now = Date.now();
+    const thresholdSeconds = Number.parseInt(process.env.NEXT_PUBLIC_SUMMARY_REFRESH_SECONDS || "120", 10) || 120;
+    const ageSec = meta.updatedAt ? Math.floor((now - meta.updatedAt) / 1000) : Number.MAX_SAFE_INTEGER;
+    const due = meta.turnsUntilDue <= 0 || ageSec >= thresholdSeconds;
+    const cooldownMs = 5000; // guard against repeated triggers on re-renders
+    if (due && !autoInflightRef.current && (now - lastAutoRef.current > cooldownMs)) {
+      autoInflightRef.current = true;
+      lastAutoRef.current = now;
+      try { console.log("[fresh] AUTO generate due", { sessionId, turnsUntilDue: meta.turnsUntilDue, thresholdTurns: meta.thresholdTurns, ageSec, thresholdSeconds }); } catch {}
+      void generateFresh().finally(() => { autoInflightRef.current = false; });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, meta.turnsUntilDue, meta.updatedAt]);
   React.useEffect(() => {
     // Auto-start VAD loop on mount
     if (!mic.vadLoop) {
