@@ -18,6 +18,9 @@ function Content() {
   const [fresh, setFresh] = React.useState<{ text: string; updatedAt: number; version: number } | null>(null);
   const [freshStatus, setFreshStatus] = React.useState<"idle" | "loading" | "ready" | "error">("idle");
   const [freshErr, setFreshErr] = React.useState<string | undefined>(undefined);
+  // Track assistant-completed turns since last summary refresh to display turns-until-due
+  const [turnsSince, setTurnsSince] = React.useState<number>(0);
+  const thresholdTurns = Number.parseInt(process.env.NEXT_PUBLIC_SUMMARY_REFRESH_TURNS || "8", 10) || 8;
   const refreshFresh = React.useCallback(async () => {
     if (!sessionId) return;
     setFreshStatus("loading");
@@ -112,6 +115,8 @@ function Content() {
     const cur = mic.assistantText || "";
     const prev = lastAssistantRef.current || "";
     if (cur && cur !== prev && !refreshInflightRef.current) {
+      // Count a completed assistant turn
+      setTurnsSince((n) => (Number.isFinite(n) ? n + 1 : 1));
       refreshInflightRef.current = true;
       lastAssistantRef.current = cur;
       setTimeout(() => {
@@ -119,6 +124,10 @@ function Content() {
       }, 1200);
     }
   }, [mic.assistantText, refreshFresh]);
+  // Reset turn counter when a new summary arrives
+  React.useEffect(() => {
+    if (fresh?.updatedAt) setTurnsSince(0);
+  }, [fresh?.updatedAt]);
   return (
     <div className="min-h-screen p-4">
       <h1 className="text-xl font-semibold">Coach (Minimal)</h1>
@@ -174,6 +183,7 @@ function Content() {
             status={freshStatus}
             {fresh?.updatedAt ? ` · updated ${new Date(fresh.updatedAt).toLocaleTimeString()}` : ""}
             {fresh ? ` · v${fresh.version}` : ""}
+            {` · turns until due: ${Math.max(0, thresholdTurns - (Number.isFinite(turnsSince) ? turnsSince : 0))}`}
           </div>
           <div className="text-xs whitespace-pre-wrap min-h-[64px]">{fresh?.text || <span className="text-zinc-500">(none)</span>}</div>
           {freshErr ? <div className="text-[11px] text-red-600 mt-1">error: {freshErr}</div> : null}
