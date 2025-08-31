@@ -21,7 +21,7 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
   // Minimal in-memory history of last 2 messages (role: user|assistant)
   const historyRef = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
   const { sessionId } = useMinimalSession();
-  const { summary } = useSessionSummary(sessionId, { autoloadOnMount: false });
+  const { summary, onTurn } = useSessionSummary(sessionId, { autoloadOnMount: false });
 
   function toBase64Url(s: string): string {
     try {
@@ -81,9 +81,11 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
       historyRef.current.push({ role: "assistant", content: reply });
       // Keep only last 2
       if (historyRef.current.length > 2) historyRef.current = historyRef.current.slice(-2);
+      // Trigger background summary refresh according to thresholds (non-blocking)
+      try { onTurn(); } catch {}
     } catch {}
     return reply;
-  }, [chatToText]);
+  }, [chatToText, onTurn]);
 
   const getImmediateHistory = useCallback(() => {
     return historyRef.current.slice(-2);
