@@ -1,6 +1,8 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useMemo, useRef } from "react";
+import { useSessionSummary } from "../../hooks/useSessionSummary";
+import { useMinimalSession } from "./MinimalSessionContext";
 
 export type MinimalConversationContextValue = {
   chatToText: (prompt: string) => Promise<string>;
@@ -17,6 +19,8 @@ export function useMinimalConversation() {
 export function MinimalConversationProvider({ children }: { children: React.ReactNode }) {
   // Minimal in-memory history of last 2 messages (role: user|assistant)
   const historyRef = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
+  const { sessionId } = useMinimalSession();
+  const { summary } = useSessionSummary(sessionId, { autoloadOnMount: false });
 
   function toBase64Url(s: string): string {
     try {
@@ -39,12 +43,14 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     if (!prompt || !prompt.trim()) return "";
     // Build minimal history param from the last 2 messages (excluding this prompt)
     const last2 = historyRef.current.slice(-2).map((m) => ({ role: m.role, content: (m.content || "").slice(0, 240) }));
-    const histParam = last2.length ? `&history=${encodeURIComponent(toBase64Url(JSON.stringify(last2)))}` : "";
+    const sys = (summary?.text || "").trim();
+    const items = sys ? ([{ role: "system", content: sys.slice(0, 480) }] as const).concat(last2 as any) : last2;
+    const histParam = items.length ? `&history=${encodeURIComponent(toBase64Url(JSON.stringify(items)))}` : "";
 
     const startOnce = (): Promise<string | null> => new Promise((resolve, reject) => {
       try {
         let es: EventSource | null = null;
-        try { es = new EventSource(`/api/chat?prompt=${encodeURIComponent(prompt)}${histParam}`, { withCredentials: false }); } catch {}
+        try { es = new EventSource(`/api/chat?prompt=${encodeURIComponent(prompt)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""}${histParam}`, { withCredentials: false }); } catch {}
         if (!es) { reject(new Error("stream failed")); return; }
         let acc = "";
         es.onmessage = (evt) => {

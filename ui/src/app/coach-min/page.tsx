@@ -5,6 +5,7 @@ import { MinimalAudioProvider, useMinimalAudio } from "../../context/minimal/Min
 import { MinimalVoiceProvider } from "../../context/minimal/MinimalVoiceContext";
 import { MinimalConversationProvider } from "../../context/minimal/MinimalConversationContext";
 import { MinimalMicProvider, useMinimalMic } from "../../context/minimal/MinimalMicContext";
+import { MinimalSessionProvider } from "../../context/minimal/MinimalSessionContext";
 
 function Content() {
   const mic = useMinimalMic();
@@ -50,13 +51,15 @@ function Content() {
 export default function CoachMinimalPage() {
   return (
     <MinimalAudioProvider>
-      <MinimalVoiceProvider>
-        <MinimalConversationProvider>
-          <MinimalMicProvider>
-            <Content />
-          </MinimalMicProvider>
-        </MinimalConversationProvider>
-      </MinimalVoiceProvider>
+      <MinimalSessionProvider>
+        <MinimalVoiceProvider>
+          <MinimalConversationProvider>
+            <MinimalMicProvider>
+              <Content />
+            </MinimalMicProvider>
+          </MinimalConversationProvider>
+        </MinimalVoiceProvider>
+      </MinimalSessionProvider>
     </MinimalAudioProvider>
   );
 }
