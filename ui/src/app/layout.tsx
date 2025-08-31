@@ -15,7 +15,7 @@ import { MicProvider } from "../context/MicContext";
 import { AudioProvider } from "../context/AudioContext";
 import { VoiceProvider } from "../context/VoiceContext";
 import { ConversationProvider } from "../context/ConversationContext";
-import GlobalMicButton from "../components/GlobalMicButton";
+import GlobalMicGate from "../components/GlobalMicGate";
 import NavDirListener from "./NavDirListener";
 import { MicUIProvider } from "../context/MicUIContext";
 import ConvexClientProvider from "./ConvexClientProvider";
@@ -66,8 +66,8 @@ export default function RootLayout({
                         {/* Global listener to mark popstate as 'back' for entry animations */}
                         <NavDirListener />
                         {children}
-                        {/* Global mic renders coach-style UI when inCoach via MicUIContext */}
-                        <GlobalMicButton />
+                        {/* Hide global mic on /coach-min to avoid confusion */}
+                        <GlobalMicGate />
                       </MicUIProvider>
                     </MicProvider>
                   </ConversationProvider>

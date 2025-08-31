@@ -7,6 +7,7 @@ import { useChat } from "../../context/ChatContext";
 import { useAudio } from "../../context/AudioContext";
 import { useVoice } from "../../context/VoiceContext";
 import { useMic } from "../../context/MicContext";
+import { useConversation } from "../../context/ConversationContext";
 import AudioUnlockBanner from "../../components/AudioUnlockBanner";
 import { useMicUI } from "../../context/MicUIContext";
 import SkillChart from "../../components/SkillChart";
@@ -84,6 +85,7 @@ export default function CoachPage() {
   const audio = useAudio();
   const voice = useVoice();
   const mic = useMic();
+  const convo = useConversation();
   const { setInCoach, showDashboard, setShowDashboard, setHandlers } = useMicUI();
   const [dashboardMounted, setDashboardMounted] = useState(false);
   const [tracked, setTracked] = useState<TrackedSkill[]>([]);
@@ -1092,6 +1094,20 @@ export default function CoachPage() {
                   className="px-2 py-1 rounded border cu-border-surface text-sm hover:bg-surface/80"
                 >
                   Send
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => { try { await convo.chatToTextWithTTS(debugPrompt); } catch {} }}
+                  className="px-2 py-1 rounded border cu-border-surface text-sm hover:bg-surface/80"
+                >
+                  Send (TTS)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { try { convo.abortTurn(); } catch {} }}
+                  className="px-2 py-1 rounded border cu-border-surface text-sm hover:bg-surface/80"
+                >
+                  Abort Turn
                 </button>
                 <button
                   type="button"

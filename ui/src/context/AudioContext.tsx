@@ -30,6 +30,11 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
   const userInteractedRef = useRef<boolean>(false);
   const pendingAudioUrlRef = useRef<string | null>(null);
   const [needsAudioUnlock, setNeedsAudioUnlock] = useState<boolean>(false);
+  // Playback error surface (show toast after two consecutive failures)
+  const playbackErrorCountRef = useRef<number>(0);
+  const [playbackErrorVisible, setPlaybackErrorVisible] = useState<boolean>(false);
+  const [playbackErrorText, setPlaybackErrorText] = useState<string>("");
+  const errorHideTimerRef = useRef<number | null>(null);
 
   const playAudio = useCallback(async (url: string): Promise<boolean> => {
     try {
@@ -58,6 +63,18 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
           try { console.log("AudioContext: play() NotAllowedError; deferring until unlock"); } catch {}
           return false;
         }
+        // Other playback failure: increment counter and maybe surface error after threshold
+        try {
+          playbackErrorCountRef.current += 1;
+          setPlaybackErrorText("Audio playback failed. Check output device and try again.");
+          if (playbackErrorCountRef.current >= 2) {
+            setPlaybackErrorVisible(true);
+            if (errorHideTimerRef.current) window.clearTimeout(errorHideTimerRef.current);
+            errorHideTimerRef.current = window.setTimeout(() => {
+              setPlaybackErrorVisible(false);
+            }, 8000);
+          }
+        } catch {}
         return false;
       }
       await new Promise<void>((resolve) => {
@@ -67,12 +84,28 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
           el!.removeEventListener("pause", onPause);
         };
         const onEnded = () => { cleanup(); resolve(); };
-        const onErr = () => { cleanup(); resolve(); };
+        const onErr = () => {
+          try {
+            playbackErrorCountRef.current += 1;
+            setPlaybackErrorText("Audio playback error during stream.");
+            if (playbackErrorCountRef.current >= 2) {
+              setPlaybackErrorVisible(true);
+              if (errorHideTimerRef.current) window.clearTimeout(errorHideTimerRef.current);
+              errorHideTimerRef.current = window.setTimeout(() => {
+                setPlaybackErrorVisible(false);
+              }, 8000);
+            }
+          } catch {}
+          cleanup();
+          resolve();
+        };
         const onPause = () => { cleanup(); resolve(); };
         el!.addEventListener("ended", onEnded, { once: true });
         el!.addEventListener("error", onErr, { once: true });
         el!.addEventListener("pause", onPause, { once: true });
       });
+      // Reset error counter on a successful playback completion
+      try { playbackErrorCountRef.current = 0; } catch {}
       return true;
     } catch {
       return false;
@@ -148,6 +181,24 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
     };
   }, [ensureAudioWorker]);
 
+  // Ensure audio element is closed on unmount
+  useEffect(() => {
+    return () => {
+      try {
+        const el = audioRef.current;
+        if (el) {
+          el.pause();
+          el.currentTime = 0;
+          try { el.src = ""; } catch {}
+        }
+      } catch {}
+      audioRef.current = null;
+      audioQueueRef.current = [];
+      audioPlayingRef.current = false;
+      if (errorHideTimerRef.current) window.clearTimeout(errorHideTimerRef.current);
+    };
+  }, []);
+
   const unlockAudio = useCallback(() => {
     if (!userInteractedRef.current) {
       userInteractedRef.current = true;
@@ -196,5 +247,34 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
     waitForQueueToDrain,
   ]);
 
-  return <AudioCtx.Provider value={value}>{children}</AudioCtx.Provider>;
+  return (
+    <AudioCtx.Provider value={value}>
+      {children}
+      {playbackErrorVisible && (
+        <div className="fixed inset-x-0 bottom-0 z-50 px-3 pb-3 pointer-events-none">
+          <div className="max-w-md mx-auto pointer-events-auto">
+            <div className="rounded-2xl border cu-error-border cu-error-soft-bg shadow-lg p-3 flex items-start gap-3">
+              <div className="mt-0.5">
+                <svg aria-hidden viewBox="0 0 24 24" className="w-5 h-5 cu-error-text" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v5M12 16h.01"/></svg>
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-foreground">Playback error</div>
+                <div className="text-xs cu-muted mt-0.5">{playbackErrorText || "We couldn’t play audio. Check your output device and try again."}</div>
+              </div>
+              <div>
+                <button
+                  type="button"
+                  onClick={() => { try { setPlaybackErrorVisible(false); } catch {} }}
+                  className="px-3 py-1.5 text-sm font-medium rounded-lg cu-surface border cu-border-surface hover:opacity-90 active:scale-[0.98] transition-all"
+                  aria-label="Dismiss playback error"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </AudioCtx.Provider>
+  );
 }

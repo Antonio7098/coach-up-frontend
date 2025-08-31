@@ -359,7 +359,20 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     try { setProcessingRing(true); } catch {}
     try { setAssistantText(""); } catch {}
     try {
-      const reply = await chatToTextWithTTS(promptText, opts);
+      // Watchdog: cancel stalled SSE and surface timeout
+      const CHAT_TIMEOUT_MS = (Number(process.env.NEXT_PUBLIC_CHAT_TIMEOUT_MS ?? 0) || 15000);
+      let timeoutId: number | null = null;
+      const withTimeout = new Promise<string>((resolve, reject) => {
+        timeoutId = window.setTimeout(() => {
+          try { cancelActiveChatStream(); } catch {}
+          reject(new Error("chat timeout"));
+        }, CHAT_TIMEOUT_MS);
+      });
+      const reply = await Promise.race([
+        chatToTextWithTTS(promptText, opts),
+        withTimeout,
+      ]) as string;
+      if (timeoutId) { try { window.clearTimeout(timeoutId); } catch {} }
       // Accumulate assistantText for UI
       try { setAssistantText(reply); } catch {}
       return reply;
@@ -381,6 +394,8 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
       setProcessingRing(true);
       setAssistantText("");
       const reply = await convoSendPrompt(prompt);
+      // Mirror chat response into live assistant text panel
+      try { setAssistantText(reply); } catch {}
       return reply;
     } catch (e: any) {
       setVoiceError(e?.message || ERR.chatFailed);
@@ -633,13 +648,16 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
               // restart loop only if still enabled; startRecording will further gate if already recording
               if (voiceLoopRef.current) {
                 // removed noisy log: Restarting voice loop after processing
-                try { await audio.waitForQueueToDrain(6000); } catch {}
-                // Clear any remaining audio state before restarting
+                // If autoplay is locked, queued TTS will never play; clear immediately and restart.
+                // Otherwise, wait briefly for the queue to drain before clearing.
                 try {
-                  if (!audio.needsAudioUnlock) {
+                  if (audio.needsAudioUnlock) {
+                    try { cancelTTS(); } catch {}
                     audio.stopPlaybackAndClear();
                   } else {
-                    console.log("MicContext: Skipping audio.clear due to autoplay lock; preserving queued TTS");
+                    await audio.waitForQueueToDrain(6000);
+                    // Do not cancel TTS here; allow playback to finish naturally
+                    audio.stopPlaybackAndClear();
                   }
                 } catch {}
                 try { await startRecording(); } catch {}
@@ -996,6 +1014,18 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     return () => { stopBargeMonitor(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [voiceLoop, recording, busy]);
+
+  // Safety rearm: if voice loop is enabled but we're idle and not recording for a short window, restart the mic
+  useEffect(() => {
+    if (!voiceLoop) return;
+    if (recording) return;
+    const t = window.setTimeout(() => {
+      if (voiceLoopRef.current && !recordingRef.current && busyRef.current === 'idle' && !processingRef.current) {
+        void startRecording();
+      }
+    }, 800);
+    return () => { try { window.clearTimeout(t); } catch {} };
+  }, [voiceLoop, recording, busy, startRecording]);
 
   const value = useMemo<MicContextValue>(() => ({
     mediaSupported,

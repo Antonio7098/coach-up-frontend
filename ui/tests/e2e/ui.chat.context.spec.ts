@@ -66,7 +66,7 @@ test.describe('Chat Context Persistence', () => {
     
     // First interaction
     await promptInput.fill('First message');
-    const sendButton = page.getByRole('button', { name: 'Send' });
+    const sendButton = page.getByRole('button', { name: /^(Send|Ask)$/ });
     await expect(sendButton).toBeEnabled();
     await sendButton.click();
 
@@ -142,7 +142,7 @@ test.describe('Chat Context Persistence', () => {
     
     // First interaction
     await promptInput.fill('Persistent message');
-    const sendButton = page.getByRole('button', { name: 'Send' });
+    const sendButton = page.getByRole('button', { name: /^(Send|Ask)$/ });
     await expect(sendButton).toBeEnabled();
     await sendButton.click();
 
@@ -183,5 +183,74 @@ test.describe('Chat Context Persistence', () => {
     const userContents = userMessages.map((item: any) => item.content);
     expect(userContents.some((content: string) => content.includes('Persistent message'))).toBe(true);
     expect(userContents.some((content: string) => content.includes('After refresh message'))).toBe(true);
+  });
+
+  test('closes EventSource on route change (no messages after unmount)', async ({ page }) => {
+    await installEventSourceMock(page);
+    await page.goto('/chat');
+    await page.waitForLoadState('networkidle');
+    const promptInput = page.getByPlaceholder('Type a prompt…');
+    await expect(promptInput).toBeVisible({ timeout: 10000 });
+    await promptInput.fill('Unmount test');
+    const sendButton = page.getByRole('button', { name: /^(Send|Ask)$/ });
+    await sendButton.click();
+    // Immediately navigate away to trigger unmount cleanup
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+    // If the mock kept sending, the app would still be appending; ensure we do not see [DONE] on home
+    await expect(page.locator('text=[DONE]')).toHaveCount(0);
+  });
+
+  test('bounded retry triggers only when no partial text received', async ({ page }) => {
+    // Install a mock that errors before emitting any data on first connection, then succeeds
+    await page.addInitScript(() => {
+      let attempts = 0;
+      class FlakyEventSource {
+        url: string;
+        withCredentials: boolean;
+        onopen: ((ev: any) => any) | null = null;
+        onmessage: ((ev: any) => any) | null = null;
+        onerror: ((ev: any) => any) | null = null;
+        readyState: number = 0;
+        static readonly CONNECTING = 0;
+        static readonly OPEN = 1;
+        static readonly CLOSED = 2;
+        constructor(url: string, opts?: { withCredentials?: boolean }) {
+          this.url = url;
+          this.withCredentials = !!opts?.withCredentials;
+          (window as any).lastChatUrl = url;
+          setTimeout(() => {
+            attempts++;
+            if (attempts === 1) {
+              // First attempt: error with no messages → should retry
+              try { this.onerror?.(new Event('error') as any); } catch {}
+            } else {
+              // Second attempt: emit messages and DONE
+              try { this.onopen?.(new Event('open') as any); } catch {}
+              try { this.onmessage?.(new MessageEvent('message', { data: 'Hello ' }) as any); } catch {}
+              setTimeout(() => {
+                try { this.onmessage?.(new MessageEvent('message', { data: 'world' }) as any); } catch {}
+                setTimeout(() => { try { this.onmessage?.(new MessageEvent('message', { data: '[DONE]' }) as any); } catch {} }, 20);
+              }, 20);
+            }
+          }, 10);
+        }
+        close() { this.readyState = 2; }
+        addEventListener() {}
+        removeEventListener() {}
+        dispatchEvent() { return true; }
+      }
+      (window as any).EventSource = FlakyEventSource as any;
+    });
+
+    await page.goto('/chat');
+    await page.waitForLoadState('networkidle');
+    const promptInput = page.getByPlaceholder('Type a prompt…');
+    await expect(promptInput).toBeVisible({ timeout: 10000 });
+    await promptInput.fill('Retry test');
+    const sendButton = page.getByRole('button', { name: /^(Send|Ask)$/ });
+    await sendButton.click();
+    // Should eventually succeed after one retry
+    await expect(page.getByText('[DONE]')).toBeVisible({ timeout: 10000 });
   });
 });

@@ -13,6 +13,13 @@ test('contract: GET /api/chat (SSE) streams and completes via Next proxy', async
   expect(res.status(), 'status should be 200 OK').toBe(200);
   const ct = res.headers()['content-type'] || '';
   expect(ct.includes('text/event-stream')).toBeTruthy();
+  const cache = res.headers()['cache-control'] || '';
+  const conn = res.headers()['connection'] || '';
+  const accel = res.headers()['x-accel-buffering'] || '';
+  expect(cache.toLowerCase()).toContain('no-cache');
+  expect(cache.toLowerCase()).toContain('no-transform');
+  expect(conn.toLowerCase()).toContain('keep-alive');
+  expect((accel || '').toLowerCase()).toBe('no');
 
   const body = await res.text();
   expect(body).toContain('data:');

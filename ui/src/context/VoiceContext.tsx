@@ -127,7 +127,27 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
     try {
       while (ttsTextQueueRef.current.length > 0) {
         if (ttsCancelRef.current !== myGen) break;
-        const text = ttsTextQueueRef.current.shift()!;
+        // Backpressure: coalesce tiny segments and enforce a max queue size
+        const MAX_QUEUE = 8;
+        const MIN_SEG_CHARS = 12;
+        // Enforce cap by merging extras into the last element
+        if (ttsTextQueueRef.current.length > MAX_QUEUE) {
+          const overflow = ttsTextQueueRef.current.splice(MAX_QUEUE);
+          if (overflow.length > 0) {
+            const mergedTail = overflow.join(" ").trim();
+            if (mergedTail) ttsTextQueueRef.current[ttsTextQueueRef.current.length - 1] = `${ttsTextQueueRef.current[ttsTextQueueRef.current.length - 1]} ${mergedTail}`.trim();
+          }
+        }
+        let next = ttsTextQueueRef.current.shift()!;
+        // Merge successive tiny segments to avoid machine-gun TTS
+        while (next.length < MIN_SEG_CHARS && ttsTextQueueRef.current.length > 0) {
+          const peek = ttsTextQueueRef.current[0];
+          if (!peek) break;
+          next = `${next} ${peek}`.trim();
+          ttsTextQueueRef.current.shift();
+          if (next.length >= MIN_SEG_CHARS) break;
+        }
+        const text = next;
         const url = await callTTSChunk(text);
         if (ttsCancelRef.current !== myGen) break;
         if (url) {
@@ -145,6 +165,7 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
     if (!text || !text.trim()) return;
     // Stop "Thinking" ring when first TTS segment is ready
     try { voicePublishState({ processingRing: false }); } catch {}
+    // Minimal time-based spacing can be derived from queue pressure; for now, push then coalesce in worker
     ttsTextQueueRef.current.push(text.trim());
     void ensureTTSWorker();
   }, [ensureTTSWorker]);

@@ -20,6 +20,7 @@ const g = globalThis as unknown as {
       clientDetectMs: client.Histogram<string>;
       voiceEventsTotal: client.Counter<string>;
       voiceTtsPlaybackMs: client.Histogram<string>;
+      chatDisconnectsTotal: client.Counter<string>;
     };
   };
 };
@@ -145,9 +146,17 @@ function createMetrics() {
     registers: [registry],
   });
 
+  // Disconnect reasons for SSE/chat proxy
+  const chatDisconnectsTotal = new client.Counter({
+    name: "coachup_ui_chat_disconnects_total",
+    help: "Count of chat SSE disconnects by reason",
+    labelNames: ["route", "reason"] as unknown as string[],
+    registers: [registry],
+  });
+
   return {
     registry,
-    metrics: { requestsTotal, requestErrorsTotal, rateLimitedTotal, requestDurationSeconds, audioBytesIn, audioBytesOut, storageBytesUploaded, storagePresignBytesPlanned, sttLatencyMs, ttsLatencyMs, chatFirstTokenMs, clientDetectMs, voiceEventsTotal, voiceTtsPlaybackMs },
+    metrics: { requestsTotal, requestErrorsTotal, rateLimitedTotal, requestDurationSeconds, audioBytesIn, audioBytesOut, storageBytesUploaded, storagePresignBytesPlanned, sttLatencyMs, ttsLatencyMs, chatFirstTokenMs, clientDetectMs, voiceEventsTotal, voiceTtsPlaybackMs, chatDisconnectsTotal },
   } as const;
 }
 

@@ -72,6 +72,9 @@ export async function GET(request: Request) {
   // Measure time-to-first-byte from upstream, then pipe through
   const firstByteStart = Date.now();
   const labels = { route: "/api/chat", method: "GET", status: "200", mode: upstream.headers.get("X-Chat-Provider") || upstream.headers.get("x-chat-provider") || "-" } as const;
+  const disconnectLabels = { route: "/api/chat" } as const;
+  const startedAt = Date.now();
+  let disconnectReason: "client_abort" | "upstream_error" | "completed" | "unknown" = "unknown";
   try {
     const [forMeasure, forPipe] = upstream.body.tee();
     const reader = forMeasure.getReader();
@@ -87,12 +90,36 @@ export async function GET(request: Request) {
     // Pipe the other branch through to the client
     forPipe
       .pipeTo(writable)
-      .catch(() => { try { controller.abort(); } catch {} });
+      .then(() => { disconnectReason = "completed"; })
+      .catch(() => { disconnectReason = "client_abort"; try { controller.abort(); } catch {} })
+      .finally(() => {
+        try {
+          const totalMs = Date.now() - startedAt;
+          promMetrics.requestDurationSeconds
+            .labels("/api/chat", "GET", "200", (upstream.headers.get("X-Chat-Provider") || upstream.headers.get("x-chat-provider") || "-") as string)
+            .observe(totalMs / 1000);
+        } catch {}
+        try {
+          promMetrics.chatDisconnectsTotal.labels(disconnectLabels.route, disconnectReason).inc();
+        } catch {}
+      });
   } catch {
     // Fallback: if tee/read fails, just pipe through
     upstream.body
       .pipeTo(writable)
-      .catch(() => { try { controller.abort(); } catch {} });
+      .then(() => { disconnectReason = "completed"; })
+      .catch(() => { disconnectReason = "client_abort"; try { controller.abort(); } catch {} })
+      .finally(() => {
+        try {
+          const totalMs = Date.now() - startedAt;
+          promMetrics.requestDurationSeconds
+            .labels("/api/chat", "GET", "200", (upstream.headers.get("X-Chat-Provider") || upstream.headers.get("x-chat-provider") || "-") as string)
+            .observe(totalMs / 1000);
+        } catch {}
+        try {
+          promMetrics.chatDisconnectsTotal.labels(disconnectLabels.route, disconnectReason).inc();
+        } catch {}
+      });
   }
 
   // Build response headers, passing through provider/model if set upstream

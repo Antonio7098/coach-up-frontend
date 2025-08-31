@@ -2,6 +2,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef } from "react";
 import { useVoice } from "./VoiceContext";
+import { useAudio } from "./AudioContext";
 import { useChat } from "./ChatContext";
 import { useSessionSummary } from "../hooks/useSessionSummary";
 
@@ -14,6 +15,8 @@ export type ConversationContextValue = {
   chatToTextWithTTS: (prompt: string, opts?: { includeHistory?: boolean }) => Promise<string>;
   // Cancel any active chat SSE stream (used for barge-in)
   cancelActiveChatStream: () => void;
+  // Abort current turn: stop SSE, cancel TTS queue, and clear audio playback
+  abortTurn: () => void;
   // Multi-turn interaction state (for assessments orchestration UI)
   interactionState: "active" | "idle";
   interactionGroupId?: string;
@@ -32,12 +35,21 @@ export function useConversation() {
 export function ConversationProvider({ children }: { children: React.ReactNode }) {
   const { sessionId } = useChat();
   const { summary } = useSessionSummary(sessionId, { autoloadOnMount: false });
-  const { enqueueTTSSegment } = useVoice();
+  const { enqueueTTSSegment, cancelTTS } = useVoice();
+  const { stopPlaybackAndClear } = useAudio();
 
   // Local history ring (10 msgs) — mirrors MicContext shape for compatibility
   const historyRef = useRef<{ role: "user" | "assistant"; content: string }[]>([]);
   // Track the active chat SSE stream for cancellation
   const activeChatEsRef = useRef<EventSource | null>(null);
+
+  // Cleanup any active SSE stream on unmount to avoid leaks across route changes
+  useEffect(() => {
+    return () => {
+      try { activeChatEsRef.current?.close(); } catch {}
+      activeChatEsRef.current = null;
+    };
+  }, []);
 
   function historyStorageKey(sid: string) {
     return `chatHistory:${sid}`;
@@ -113,11 +125,12 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
     if (historyRef.current.length > 10) historyRef.current = historyRef.current.slice(-10);
     saveHistory();
 
-    return new Promise<string>((resolve, reject) => {
+    const MAX_ATTEMPTS = 3;
+    const BASE_DELAY_MS = 200;
+    const startOnce = (): Promise<{ acc: string } | null> => new Promise((resolve, reject) => {
       try {
         const hist = buildHistoryParam();
         const qs = `?prompt=${encodeURIComponent(prompt)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""}${hist ? `&history=${encodeURIComponent(hist)}` : ""}`;
-        // Cancel any previous active stream before starting a new one
         try { activeChatEsRef.current?.close(); } catch {}
         activeChatEsRef.current = null;
         let es: EventSource | null = null;
@@ -129,13 +142,12 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
           if (evt.data === "[DONE]") {
             try { es?.close(); } catch {}
             if (activeChatEsRef.current === es) activeChatEsRef.current = null;
-            // Persist assistant message
             if (acc) {
               historyRef.current.push({ role: "assistant", content: acc });
               if (historyRef.current.length > 10) historyRef.current = historyRef.current.slice(-10);
               saveHistory();
             }
-            resolve(acc);
+            resolve({ acc });
             return;
           }
           acc += evt.data;
@@ -143,22 +155,28 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
         es.onerror = () => {
           try { es?.close(); } catch {}
           if (activeChatEsRef.current === es) activeChatEsRef.current = null;
-          // If we have partial assistant text, persist and resolve with it
           if (acc) {
             try {
               historyRef.current.push({ role: "assistant", content: acc });
               if (historyRef.current.length > 10) historyRef.current = historyRef.current.slice(-10);
               saveHistory();
             } catch {}
-            resolve(acc);
+            resolve({ acc });
           } else {
-            reject(new Error("chat stream failed"));
+            resolve(null);
           }
         };
       } catch (e: any) {
         reject(new Error(e?.message || "chat stream failed"));
       }
     });
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const res = await startOnce();
+      if (res && typeof res.acc === "string") return res.acc;
+      if (attempt < MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, BASE_DELAY_MS * Math.pow(5, attempt - 1)));
+    }
+    throw new Error("chat stream failed");
   }, [buildHistoryParam, sessionId]);
 
   const chatToTextWithTTS = useCallback(async (promptText: string, opts?: { includeHistory?: boolean }): Promise<string> => {
@@ -168,7 +186,13 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
     if (historyRef.current.length > 10) historyRef.current = historyRef.current.slice(-10);
     saveHistory();
 
-    const attempt = (retry: boolean): Promise<string> => new Promise<string>((resolve, reject) => {
+    // Pre-turn: ensure no stale TTS/audio from previous turn leaks into this one
+    try { cancelTTS(); } catch {}
+    try { stopPlaybackAndClear(); } catch {}
+
+    const MAX_ATTEMPTS = 3;
+    const BASE_DELAY_MS = 200;
+    const attempt = (retriesLeft: number, delayMs: number): Promise<string> => new Promise<string>((resolve, reject) => {
       try {
         const includeHistory = opts?.includeHistory !== false;
         const hist = includeHistory ? buildHistoryParam() : "";
@@ -253,11 +277,11 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
               saveHistory();
             } catch {}
             resolve(acc);
-          } else if (retry) {
-            // One-time quick retry to mitigate transient disconnects (e.g., Fast Refresh)
+          } else if (retriesLeft > 0) {
+            // Bounded backoff retry when no partial text yet
             setTimeout(() => {
-              attempt(false).then(resolve).catch(reject);
-            }, 200);
+              attempt(retriesLeft - 1, Math.min(delayMs * 5, 2000)).then(resolve).catch(reject);
+            }, delayMs);
           } else {
             reject(new Error("chat stream failed"));
           }
@@ -267,7 +291,7 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
       }
     });
 
-    return attempt(true);
+    return attempt(MAX_ATTEMPTS - 1, BASE_DELAY_MS);
   }, [buildHistoryParam, enqueueTTSSegment, sessionId]);
 
   const cancelActiveChatStream = useCallback(() => {
@@ -275,11 +299,20 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
     activeChatEsRef.current = null;
   }, []);
 
+  // Abort current turn atomically: close SSE, cancel TTS queue/worker, stop any playing audio
+  const abortTurn = useCallback(() => {
+    try { activeChatEsRef.current?.close(); } catch {}
+    activeChatEsRef.current = null;
+    try { cancelTTS(); } catch {}
+    try { stopPlaybackAndClear(); } catch {}
+  }, [cancelTTS, stopPlaybackAndClear]);
+
   const value = useMemo<ConversationContextValue>(() => ({
     sendPrompt,
     getHistoryParam: buildHistoryParam,
     chatToTextWithTTS,
     cancelActiveChatStream,
+    abortTurn,
     interactionState: "idle",
     interactionGroupId: undefined,
     interactionTurnCount: 0,
@@ -289,6 +322,7 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
     buildHistoryParam,
     chatToTextWithTTS,
     cancelActiveChatStream,
+    abortTurn,
   ]);
 
   return <ConversationCtx.Provider value={value}>{children}</ConversationCtx.Provider>;
