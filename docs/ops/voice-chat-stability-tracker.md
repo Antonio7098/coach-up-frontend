@@ -18,8 +18,8 @@ Purpose: Track improvements to the /coach voice chat experience across backend S
 ## Workstreams and Checklists
 
 ### Current Status (2025-08-30)
-- Completed: Backend SSE heartbeats/headers; non-audible notices; frontend EventSource cleanup + bounded retry; atomic abort-turn; TTS segmentation/backpressure.
-- In progress: Acceptance test validation, dashboard panels/alerts wiring, rollout notes.
+- Completed: Backend SSE heartbeats/headers; non-audible notices; frontend EventSource cleanup + bounded retry; atomic abort-turn; TTS segmentation/backpressure; minimal barge-in (VAD speech cancels TTS + playback; recording active during playback).
+- In progress: Acceptance test validation, dashboard panels/alerts wiring, rollout notes; TTFT/metrics implementation.
 
 ### Validation Snapshot
 - Backend unit/integration:
@@ -90,6 +90,15 @@ Acceptance criteria
 - [ ] Grafana dashboard: add heartbeat presence, TTFT p50/p95, error rates, retry rates.
 - [ ] Alerting: TTFT p95 > Xs for Y mins; disconnects per 1k streams > Z.
 - [ ] Documentation updated: troubleshooting w/ typical root causes and check commands.
+
+### 6) Barge-in (serialized lifecycle)
+- [x] During playback, mic capture remains active and VAD detects speech.
+- [x] On first speech detection, cancel active TTS and stop playback immediately.
+- [x] After barge-in, proceed through STT → chat → TTS/Playback again.
+
+Acceptance criteria
+- Playback is interruptible within <150ms of user speech onset.
+- No overlapping audio after barge-in; previous playback is fully stopped.
 
 Acceptance criteria
 - Dashboard can answer: "Was this a provider issue or client disconnect?" within 1 minute.
