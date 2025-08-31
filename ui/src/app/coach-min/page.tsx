@@ -104,6 +104,21 @@ function Content() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // When assistant produces a new reply, schedule a short delayed refresh to pick up
+  // backend cadence-generated summaries (non-blocking and debounced)
+  const lastAssistantRef = React.useRef<string | null>(null);
+  const refreshInflightRef = React.useRef<boolean>(false);
+  React.useEffect(() => {
+    const cur = mic.assistantText || "";
+    const prev = lastAssistantRef.current || "";
+    if (cur && cur !== prev && !refreshInflightRef.current) {
+      refreshInflightRef.current = true;
+      lastAssistantRef.current = cur;
+      setTimeout(() => {
+        void refreshFresh().finally(() => { refreshInflightRef.current = false; });
+      }, 1200);
+    }
+  }, [mic.assistantText, refreshFresh]);
   return (
     <div className="min-h-screen p-4">
       <h1 className="text-xl font-semibold">Coach (Minimal)</h1>
