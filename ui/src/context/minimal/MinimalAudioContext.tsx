@@ -7,6 +7,9 @@ export type MinimalAudioContextValue = {
   stop: () => void;
   needsAudioUnlock: boolean;
   unlockAudio: () => Promise<void>;
+  pause: () => void;
+  resume: () => Promise<void>;
+  isPaused: boolean;
 };
 
 const Ctx = createContext<MinimalAudioContextValue | undefined>(undefined);
@@ -23,20 +26,19 @@ export function MinimalAudioProvider({ children }: { children: React.ReactNode }
   const playingRef = useRef(false);
   const [needsAudioUnlock, setNeedsAudioUnlock] = useState(false);
   const blockedRef = useRef(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const pausedRef = useRef(false);
 
   const attachAndWait = useCallback(async (el: HTMLAudioElement) => {
     await new Promise<void>((resolve) => {
       const cleanup = () => {
         el.removeEventListener("ended", onEnded);
         el.removeEventListener("error", onErr);
-        el.removeEventListener("pause", onPause);
       };
       const onEnded = () => { cleanup(); resolve(); };
       const onErr = () => { cleanup(); resolve(); };
-      const onPause = () => { cleanup(); resolve(); };
       el.addEventListener("ended", onEnded, { once: true });
       el.addEventListener("error", onErr, { once: true });
-      el.addEventListener("pause", onPause, { once: true });
     });
   }, []);
 
@@ -99,6 +101,8 @@ export function MinimalAudioProvider({ children }: { children: React.ReactNode }
     playingRef.current = false;
     blockedRef.current = false;
     setNeedsAudioUnlock(false);
+    pausedRef.current = false;
+    setIsPaused(false);
   }, []);
 
   const unlockAudio = useCallback(async () => {
@@ -127,7 +131,29 @@ export function MinimalAudioProvider({ children }: { children: React.ReactNode }
     }
   }, [attachAndWait, ensureWorker]);
 
-  const value = useMemo<MinimalAudioContextValue>(() => ({ enqueueAudio: play, stop, needsAudioUnlock, unlockAudio }), [play, stop, needsAudioUnlock, unlockAudio]);
+  const pause = useCallback(() => {
+    try {
+      const el = audioRef.current;
+      if (el && !el.paused) {
+        el.pause();
+        pausedRef.current = true;
+        setIsPaused(true);
+      }
+    } catch {}
+  }, []);
+
+  const resume = useCallback(async () => {
+    try {
+      const el = audioRef.current;
+      if (el && pausedRef.current) {
+        await el.play();
+        pausedRef.current = false;
+        setIsPaused(false);
+      }
+    } catch {}
+  }, []);
+
+  const value = useMemo<MinimalAudioContextValue>(() => ({ enqueueAudio: play, stop, needsAudioUnlock, unlockAudio, pause, resume, isPaused }), [play, stop, needsAudioUnlock, unlockAudio, pause, resume, isPaused]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

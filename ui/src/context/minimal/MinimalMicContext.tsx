@@ -2,6 +2,7 @@
 
 import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
 import { useMinimalVoice } from "./MinimalVoiceContext";
+import { useMinimalAudio } from "./MinimalAudioContext";
 import { useMinimalConversation } from "./MinimalConversationContext";
 
 export type MinimalMicContextValue = {
@@ -25,6 +26,7 @@ export function useMinimalMic() {
 
 export function MinimalMicProvider({ children }: { children: React.ReactNode }) {
   const voice = useMinimalVoice();
+  const audio = useMinimalAudio();
   const convo = useMinimalConversation();
   const [recording, setRecording] = useState(false);
   const [transcript, setTranscript] = useState("");
@@ -72,6 +74,9 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
     try {
       startingRef.current = true;
       try { console.log("MinimalMic: startRecording() vadLoop=", vadLoopRef.current, "forceVad=", forceVad); } catch {}
+      // Barge-in: stop any ongoing playback and cancel queued TTS
+      try { voice.cancelTTS?.(); } catch {}
+      try { audio.stop?.(); } catch {}
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
       const rec = new MediaRecorder(stream);
