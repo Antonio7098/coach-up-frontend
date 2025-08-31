@@ -46,7 +46,7 @@ async function persistInteraction(opts: {
     }
     const convexUrl = process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || "http://127.0.0.1:3210";
     const client = makeConvex(convexUrl);
-    await client.mutation("interactions:appendInteraction", { sessionId, groupId, messageId, role, contentHash, audioUrl: opts.audioUrl ?? undefined, ts });
+    await client.mutation("functions/interactions:appendInteraction", { sessionId, groupId, messageId, role, contentHash, audioUrl: opts.audioUrl ?? undefined, ts });
   } catch (e) {
     try { console.error("[tts] persistInteraction failed", e); } catch {}
   }

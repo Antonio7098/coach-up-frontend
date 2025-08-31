@@ -60,9 +60,9 @@ export async function GET(request: Request) {
     const client = makeConvex(convexUrl);
     let interactions: Array<Record<string, unknown>> = [];
     if (sessionId.trim()) {
-      interactions = await client.query("interactions:listBySession", { sessionId, limit }) as any;
+      interactions = await client.query("functions/interactions:listBySession", { sessionId, limit }) as any;
     } else {
-      interactions = await client.query("interactions:listByGroup", { groupId, limit }) as any;
+      interactions = await client.query("functions/interactions:listByGroup", { groupId, limit }) as any;
     }
     return new Response(JSON.stringify({ interactions }), {
       status: 200,
@@ -264,7 +264,7 @@ export async function POST(request: Request) {
     }
 
     const client = makeConvex(convexUrl);
-    const id = await client.mutation("interactions:appendInteraction", {
+    const id = await client.mutation("functions/interactions:appendInteraction", {
       sessionId: body.sessionId,
       groupId: body.groupId,
       messageId: body.messageId,
@@ -304,7 +304,7 @@ export async function POST(request: Request) {
           const prevSummary = String(latest?.text || "");
           const cutoffTs = Number(latest?.lastMessageTs || 0);
           // Collect recent interactions (bounded) and filter after cutoff
-          let interactions: Array<any> = await client.query("interactions:listBySession", { sessionId: body.sessionId, limit: 200 }) as any;
+          let interactions: Array<any> = await client.query("functions/interactions:listBySession", { sessionId: body.sessionId, limit: 200 }) as any;
           interactions = Array.isArray(interactions) ? interactions : [];
           const recent = interactions
             .filter((d: any) => (d?.ts ?? 0) > cutoffTs)

@@ -88,9 +88,9 @@ export async function GET(request: Request) {
       const convexUrl = convexBaseUrl();
       const client = makeConvex(convexUrl);
       if (groupId) {
-        docs = await client.query("interactions:listByGroup", { groupId, limit }) as any[];
+        docs = await client.query("functions/interactions:listByGroup", { groupId, limit }) as any[];
       } else if (sessionId) {
-        docs = await client.query("interactions:listBySession", { sessionId, limit }) as any[];
+        docs = await client.query("functions/interactions:listBySession", { sessionId, limit }) as any[];
       }
     }
 
