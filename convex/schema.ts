@@ -213,4 +213,18 @@ export default defineSchema({
   })
   .index('by_session_createdAt', ['sessionId', 'createdAt'])
   .index('by_createdAt', ['createdAt']),
+
+  // Summary cadence state — ingest-driven triggers and locks (SPR-008 v2)
+  summary_state: defineTable({
+    sessionId: v.string(),
+    turnsSince: v.number(), // assistant-completed turns since last summary
+    assistantMsgSince: v.number(), // assistant messages since last summary
+    lastGeneratedAt: v.number(), // ms since epoch
+    lastVersion: v.number(),
+    lockUntil: v.optional(v.number()), // ms since epoch
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+  .index('by_session', ['sessionId'])
+  .index('by_updatedAt', ['updatedAt']),
 });
