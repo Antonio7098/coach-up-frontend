@@ -104,12 +104,10 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
             setAssistantText(reply); try { console.log("MinimalMic: Chat done; replyLen=", (reply || "").length); } catch {}
             setStatus("playback"); try { console.log("MinimalMic: TTS enqueue start"); } catch {}
             try { voice.cancelTTS?.(); } catch {}
-            // Fire-and-forget TTS enqueue to allow immediate barge-in recording
-            try { void voice.enqueueTTSSegment(reply); } catch {}
-            if (vadLoopRef.current) {
-              // Start next capture immediately while playback runs
-              try { void startRecording(); } catch {}
-            }
+            // Start playback and await completion; VAD may cancel if speech occurs
+            try { await voice.enqueueTTSSegment(reply); } catch {}
+            // When playback ends naturally, resume capture if loop is on
+            if (vadLoopRef.current) { try { void startRecording(); } catch {} }
           }
         } catch {}
         finally {

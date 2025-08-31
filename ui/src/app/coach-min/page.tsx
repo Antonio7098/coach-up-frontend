@@ -28,7 +28,7 @@ function Content() {
       <div className="mt-4 space-y-3 max-w-md">
         <div className="text-sm"><span className="font-medium">You:</span> {mic.transcript || <span className="text-zinc-500">(none)</span>}</div>
         <div className="text-sm"><span className="font-medium">Assistant:</span> {mic.assistantText || <span className="text-zinc-500">(none)</span>}</div>
-        <div className="text-xs text-zinc-600">status={mic.status} · loop={String(mic.vadLoop)} · recording={String(mic.recording)}</div>
+        <div className="text-xs text-zinc-600">status={mic.status} · loop={String(mic.vadLoop)} · recording={String(mic.recording)} · playing={String(audio.isPlaybackActive)}</div>
         <div className="flex gap-2">
           {(() => {
             const isAnyLoop = mic.vadLoop;

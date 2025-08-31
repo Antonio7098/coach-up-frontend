@@ -10,6 +10,7 @@ export type MinimalAudioContextValue = {
   pause: () => void;
   resume: () => Promise<void>;
   isPaused: boolean;
+  isPlaybackActive: boolean;
 };
 
 const Ctx = createContext<MinimalAudioContextValue | undefined>(undefined);
@@ -28,6 +29,7 @@ export function MinimalAudioProvider({ children }: { children: React.ReactNode }
   const blockedRef = useRef(false);
   const [isPaused, setIsPaused] = useState(false);
   const pausedRef = useRef(false);
+  const [isPlaybackActive, setIsPlaybackActive] = useState(false);
 
   const attachAndWait = useCallback(async (el: HTMLAudioElement) => {
     await new Promise<void>((resolve) => {
@@ -57,6 +59,7 @@ export function MinimalAudioProvider({ children }: { children: React.ReactNode }
       el.src = next.url;
       try {
         await el.play();
+        setIsPlaybackActive(true);
         await attachAndWait(el);
       } catch (e: any) {
         if (e && (e.name === "NotAllowedError" || e.code === 0)) {
@@ -69,6 +72,7 @@ export function MinimalAudioProvider({ children }: { children: React.ReactNode }
       }
     } finally {
       if (!blockedRef.current) {
+        setIsPlaybackActive(false);
         playingRef.current = false;
         // Remove item only after a playback run completes
         const item = queueRef.current.shift();
@@ -103,6 +107,7 @@ export function MinimalAudioProvider({ children }: { children: React.ReactNode }
     setNeedsAudioUnlock(false);
     pausedRef.current = false;
     setIsPaused(false);
+    setIsPlaybackActive(false);
   }, []);
 
   const unlockAudio = useCallback(async () => {
@@ -115,6 +120,7 @@ export function MinimalAudioProvider({ children }: { children: React.ReactNode }
       await el.play();
       blockedRef.current = false;
       setNeedsAudioUnlock(false);
+      setIsPlaybackActive(true);
       await attachAndWait(el);
     } catch (e: any) {
       if (e && (e.name === "NotAllowedError" || e.code === 0)) {
@@ -123,6 +129,7 @@ export function MinimalAudioProvider({ children }: { children: React.ReactNode }
       }
     } finally {
       if (!blockedRef.current) {
+        setIsPlaybackActive(false);
         playingRef.current = false;
         const item = queueRef.current.shift();
         try { item?.resolve(); } catch {}
@@ -153,7 +160,7 @@ export function MinimalAudioProvider({ children }: { children: React.ReactNode }
     } catch {}
   }, []);
 
-  const value = useMemo<MinimalAudioContextValue>(() => ({ enqueueAudio: play, stop, needsAudioUnlock, unlockAudio, pause, resume, isPaused }), [play, stop, needsAudioUnlock, unlockAudio, pause, resume, isPaused]);
+  const value = useMemo<MinimalAudioContextValue>(() => ({ enqueueAudio: play, stop, needsAudioUnlock, unlockAudio, pause, resume, isPaused, isPlaybackActive }), [play, stop, needsAudioUnlock, unlockAudio, pause, resume, isPaused, isPlaybackActive]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
