@@ -4,7 +4,6 @@ import React from "react";
 import { MinimalAudioProvider, useMinimalAudio } from "../../context/minimal/MinimalAudioContext";
 import { MinimalVoiceProvider } from "../../context/minimal/MinimalVoiceContext";
 import { MinimalConversationProvider, useMinimalConversation } from "../../context/minimal/MinimalConversationContext";
-import { useSessionSummary } from "../../hooks/useSessionSummary";
 import { useMinimalSession } from "../../context/minimal/MinimalSessionContext";
 import { MinimalMicProvider, useMinimalMic } from "../../context/minimal/MinimalMicContext";
 import { MinimalSessionProvider } from "../../context/minimal/MinimalSessionContext";
@@ -14,18 +13,71 @@ function Content() {
   const audio = useMinimalAudio();
   const convo = useMinimalConversation();
   const { sessionId } = useMinimalSession();
-  const { summary, status: summaryStatus, refresh } = useSessionSummary(sessionId, { autoloadOnMount: false });
-  const createSummary = React.useCallback(async () => {
+
+  // Fresh panel: independent state that directly calls the API
+  const [fresh, setFresh] = React.useState<{ text: string; updatedAt: number; version: number } | null>(null);
+  const [freshStatus, setFreshStatus] = React.useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [freshErr, setFreshErr] = React.useState<string | undefined>(undefined);
+  const refreshFresh = React.useCallback(async () => {
+    if (!sessionId) return;
+    setFreshStatus("loading");
+    setFreshErr(undefined);
+    try {
+      try { console.log("[fresh] GET start", { sessionId }); } catch {}
+      const aiApiBase = (process.env.NEXT_PUBLIC_AI_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+      const reqId = Math.random().toString(36).slice(2);
+      // Prefer AI API (LLM-backed) session summary
+      const res = await fetch(`${aiApiBase}/api/v1/session-summary?sessionId=${encodeURIComponent(sessionId)}`, {
+        method: "GET",
+        headers: { accept: "application/json", "x-request-id": reqId },
+        cache: "no-store",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `fetch failed: ${res.status}`);
+      const next = {
+        text: String((data?.text ?? data?.summaryText) || ""),
+        updatedAt: typeof data?.updatedAt === "number" ? data.updatedAt : Date.now(),
+        version: typeof data?.version === "number" ? data.version : 1,
+      };
+      try { console.log("[fresh] GET ok", { len: next.text.length, version: next.version, updatedAt: next.updatedAt }); } catch {}
+      setFresh(next);
+      setFreshStatus("ready");
+    } catch (e) {
+      try { console.log("[fresh] GET error", { err: e instanceof Error ? e.message : String(e) }); } catch {}
+      setFreshErr(e instanceof Error ? e.message : String(e));
+      setFreshStatus("error");
+    }
+  }, [sessionId]);
+  const generateFresh = React.useCallback(async () => {
     if (!sessionId) return;
     try {
-      await fetch('/api/assessments/run', {
+      const prev = fresh?.text || "";
+      let recentMessages = convo.getImmediateHistory();
+      if (!recentMessages || recentMessages.length === 0) {
+        const fallback: Array<{ role: 'user'|'assistant'; content: string }> = [];
+        if (mic.transcript && mic.transcript.trim()) fallback.push({ role: 'user', content: mic.transcript });
+        if (mic.assistantText && mic.assistantText.trim()) fallback.push({ role: 'assistant', content: mic.assistantText });
+        if (fallback.length > 0) recentMessages = fallback;
+      }
+      try { console.log("[fresh] POST start", { sessionId, prevLen: prev.length, msgs: recentMessages.length }); } catch {}
+      const aiApiBase = (process.env.NEXT_PUBLIC_AI_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+      const res = await fetch(`${aiApiBase}/api/v1/session-summary/generate`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sessionId }),
+        body: JSON.stringify({ sessionId, prevSummary: prev, messages: recentMessages, tokenBudget: 600 }),
       });
+      const data = await res.json().catch(() => ({} as any));
+      if (!res.ok) throw new Error(data?.error || `generate failed: ${res.status}`);
+      const next = {
+        text: String(data?.text || ""),
+        updatedAt: typeof data?.updatedAt === 'number' ? data.updatedAt : Date.now(),
+        version: typeof data?.version === 'number' ? data.version : (fresh?.version || 1) + 1,
+      };
+      setFresh(next);
+      setFreshStatus("ready");
+      try { console.log("[fresh] POST ok", { len: next.text.length, version: next.version }); } catch {}
     } catch {}
-    try { await refresh(); } catch {}
-  }, [sessionId, refresh]);
+  }, [sessionId, fresh?.text, fresh?.version, convo, mic.transcript, mic.assistantText]);
   React.useEffect(() => {
     // Auto-start VAD loop on mount
     if (!mic.vadLoop) {
@@ -73,24 +125,24 @@ function Content() {
               )}
             </div>
           </div>
-          <div className="p-3 border rounded">
-            <div className="flex items-center justify-between mb-1">
-              <div className="text-sm font-medium">Summary</div>
-              <button type="button" onClick={createSummary} className="px-2 py-1 text-xs border rounded">Create summary</button>
+          {/* Removed legacy Summary panel (hook-based) */}
+        </div>
+        {/* Fresh Summary Panel (independent) */}
+        <div className="mt-4 p-3 border rounded">
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-sm font-medium">Summary (fresh)</div>
+            <div className="flex gap-2">
+              <button type="button" onClick={refreshFresh} className="px-2 py-1 text-xs border rounded">Refresh</button>
+              <button type="button" onClick={generateFresh} className="px-2 py-1 text-xs border rounded">Generate</button>
             </div>
-            {(() => {
-              const meta = convo.getSummaryMeta();
-              return (
-                <div className="text-[11px] text-zinc-600 mb-2">
-                  status={summaryStatus}
-                  {meta.updatedAt ? ` · updated ${new Date(meta.updatedAt).toLocaleTimeString()}` : ""}
-                  {` · turns until due: ${meta.turnsUntilDue}`}
-                  {` · ready: ${meta.ready}`}
-                </div>
-              );
-            })()}
-            <div className="text-xs whitespace-pre-wrap min-h-[64px]">{summary?.text || <span className="text-zinc-500">(none)</span>}</div>
           </div>
+          <div className="text-[11px] text-zinc-600 mb-2">
+            status={freshStatus}
+            {fresh?.updatedAt ? ` · updated ${new Date(fresh.updatedAt).toLocaleTimeString()}` : ""}
+            {fresh ? ` · v${fresh.version}` : ""}
+          </div>
+          <div className="text-xs whitespace-pre-wrap min-h-[64px]">{fresh?.text || <span className="text-zinc-500">(none)</span>}</div>
+          {freshErr ? <div className="text-[11px] text-red-600 mt-1">error: {freshErr}</div> : null}
         </div>
       </div>
     </div>

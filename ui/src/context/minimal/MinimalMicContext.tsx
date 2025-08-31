@@ -184,11 +184,11 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
             const minSpeechMs = isPlayback ? minSpeechMsPlayback : minSpeechMsBase;
             const incMs = 100;
             const decMs = isPlayback ? 30 : 30; // slower decay so intermittent speech accumulates
-            try { if ((speechMs % 300) === 0) console.log("MinimalMic: VAD tick", { rms: Number(rms.toFixed(3)), isPlayback, speechMs, hasSpeech, bargeIn: bargeInActiveRef.current }); } catch {}
+            // removed periodic VAD tick log
             if (!hasSpeech) {
               const before = speechMs;
               if (rms > speechThreshold) { speechMs += incMs; } else { speechMs = Math.max(0, speechMs - decMs); }
-              try { console.log("MinimalMic: VAD acc", { rms: Number(rms.toFixed(3)), thr: speechThreshold, speechMsBefore: before, speechMsAfter: speechMs, isPlayback }); } catch {}
+              // removed noisy VAD accumulator log
               const requiredMs = minSpeechMs + debounceMs;
               if (speechMs >= requiredMs) {
                 hasSpeech = true; silenceMs = 0;

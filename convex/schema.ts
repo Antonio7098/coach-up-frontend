@@ -196,4 +196,21 @@ export default defineSchema({
   })
   .index('by_user', ['userId'])
   .index('by_user_goal', ['userId', 'goalId']),
+
+  // Session summaries — decoupled from assessments
+  session_summaries: defineTable({
+    sessionId: v.string(),
+    version: v.number(),
+    text: v.string(),
+    lastMessageTs: v.optional(v.number()),
+    meta: v.optional(v.object({
+      provider: v.optional(v.string()),
+      modelId: v.optional(v.string()),
+      tokenBudget: v.optional(v.number()),
+    })),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+  .index('by_session_createdAt', ['sessionId', 'createdAt'])
+  .index('by_createdAt', ['createdAt']),
 });
