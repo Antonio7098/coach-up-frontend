@@ -62,6 +62,8 @@ function Content() {
         if (mic.assistantText && mic.assistantText.trim()) fallback.push({ role: 'assistant', content: mic.assistantText });
         if (fallback.length > 0) recentMessages = fallback;
       }
+      // If still no messages, skip generation
+      if (!recentMessages || recentMessages.length === 0) return;
       try { console.log("[fresh] POST start", { sessionId, prevLen: prev.length, msgs: recentMessages.length }); } catch {}
       const aiApiBase = (process.env.NEXT_PUBLIC_AI_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
       const res = await fetch(`${aiApiBase}/api/v1/session-summary/generate`, {
@@ -90,7 +92,10 @@ function Content() {
     const now = Date.now();
     const thresholdSeconds = Number.parseInt(process.env.NEXT_PUBLIC_SUMMARY_REFRESH_SECONDS || "120", 10) || 120;
     const ageSec = meta.updatedAt ? Math.floor((now - meta.updatedAt) / 1000) : Number.MAX_SAFE_INTEGER;
-    const due = meta.turnsUntilDue <= 0 || ageSec >= thresholdSeconds;
+    const hasAnyMsg = (convo.getImmediateHistory().length > 0) || !!(mic.transcript && mic.transcript.trim()) || !!(mic.assistantText && mic.assistantText.trim());
+    // Only allow time-based trigger if we already have a summary or at least one assistant turn
+    const timeDue = (fresh?.text && fresh.text.trim().length > 0) ? (ageSec >= thresholdSeconds) : false;
+    const due = (meta.turnsUntilDue <= 0 && hasAnyMsg) || timeDue;
     const cooldownMs = 5000; // guard against repeated triggers on re-renders
     if (due && !autoInflightRef.current && (now - lastAutoRef.current > cooldownMs)) {
       autoInflightRef.current = true;
@@ -99,7 +104,7 @@ function Content() {
       void generateFresh().finally(() => { autoInflightRef.current = false; });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, meta.turnsUntilDue, meta.updatedAt]);
+  }, [sessionId, meta.turnsUntilDue, meta.updatedAt, mic.transcript, mic.assistantText, fresh?.text]);
   React.useEffect(() => {
     // Auto-start VAD loop on mount
     if (!mic.vadLoop) {
