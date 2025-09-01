@@ -3,6 +3,7 @@ export const dynamic = "force-dynamic";
 import { promMetrics } from "../lib/metrics";
 import { savePromptPreview } from "../lib/promptPreviewStore";
 import { makeConvex } from "../lib/convex";
+import * as mockConvex from "../lib/mockConvex";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -22,6 +23,23 @@ function aiApiBaseUrl() {
 
 function convexBaseUrl() {
   return process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || "http://127.0.0.1:3210";
+}
+
+async function getMockUserData(sessionId: string) {
+  try {
+    const session = await mockConvex.getSessionById?.({ sessionId });
+    if (!session?.userId) return null;
+
+    const [profile, goals] = await Promise.all([
+      mockConvex.getUserProfile?.({ userId: session.userId }),
+      mockConvex.listUserGoals?.({ userId: session.userId })
+    ]);
+
+    return { profile, goals: goals || [] };
+  } catch (e) {
+    console.warn('[ui/api/chat] Failed to fetch mock user data:', e);
+    return null;
+  }
 }
 
 function b64urlDecode(s: string): string {
@@ -63,6 +81,16 @@ export async function GET(request: Request) {
     }
   })();
 
+  // Check if we need to fetch mock user data
+  let mockUserData = null;
+  const isMockMode = process.env.MOCK_CONVEX === '1';
+  if (isMockMode && sessionId) {
+    mockUserData = await getMockUserData(sessionId);
+    if (mockUserData) {
+      console.log(`[ui/api/chat] Fetched mock user data for session ${sessionId}: profile=${!!mockUserData.profile}, goals=${mockUserData.goals.length}`);
+    }
+  }
+
   // Merge in server-side summary to history (as system) when available
   let upstreamUrl = `${aiApiBaseUrl()}/chat/stream${search}`;
   try {
@@ -85,6 +113,19 @@ export async function GET(request: Request) {
           const enc = b64urlEncode(JSON.stringify(historyItems));
           const params = new URLSearchParams(url.searchParams);
           params.set("history", enc);
+
+          // Include mock user data if available
+          if (mockUserData) {
+            const userDataEnc = b64urlEncode(JSON.stringify(mockUserData));
+            params.set("mockUserData", userDataEnc);
+          }
+
+          upstreamUrl = `${aiApiBaseUrl()}/chat/stream?${params.toString()}`;
+        } else if (mockUserData) {
+          // No summary but we have mock user data
+          const params = new URLSearchParams(url.searchParams);
+          const userDataEnc = b64urlEncode(JSON.stringify(mockUserData));
+          params.set("mockUserData", userDataEnc);
           upstreamUrl = `${aiApiBaseUrl()}/chat/stream?${params.toString()}`;
 
           if (debugOn) {
