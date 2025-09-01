@@ -9,7 +9,56 @@ import { MinimalMicProvider, useMinimalMic } from "../../context/minimal/Minimal
 import { MinimalSessionProvider } from "../../context/minimal/MinimalSessionContext";
 import MicMinButton from "../../components/MicMinButton";
 
-function Content() {
+function App() {
+  // Profile and Goals data - moved to parent so it can be passed to MinimalMicProvider
+  const [profile, setProfile] = React.useState<any>(null);
+  const [goals, setGoals] = React.useState<any[]>([]);
+  const [profileLoading, setProfileLoading] = React.useState<boolean>(false);
+  const [goalsLoading, setGoalsLoading] = React.useState<boolean>(false);
+
+  return (
+    <MinimalAudioProvider>
+      <MinimalSessionProvider>
+        <MinimalVoiceProvider>
+          <MinimalConversationProvider>
+            <MinimalMicProvider userProfile={profile} userGoals={goals}>
+              <Content
+                profile={profile}
+                setProfile={setProfile}
+                goals={goals}
+                setGoals={setGoals}
+                profileLoading={profileLoading}
+                setProfileLoading={setProfileLoading}
+                goalsLoading={goalsLoading}
+                setGoalsLoading={setGoalsLoading}
+              />
+            </MinimalMicProvider>
+          </MinimalConversationProvider>
+        </MinimalVoiceProvider>
+      </MinimalSessionProvider>
+    </MinimalAudioProvider>
+  );
+}
+
+function Content({
+  profile,
+  setProfile,
+  goals,
+  setGoals,
+  profileLoading,
+  setProfileLoading,
+  goalsLoading,
+  setGoalsLoading
+}: {
+  profile: any;
+  setProfile: React.Dispatch<React.SetStateAction<any>>;
+  goals: any[];
+  setGoals: React.Dispatch<React.SetStateAction<any[]>>;
+  profileLoading: boolean;
+  setProfileLoading: React.Dispatch<React.SetStateAction<boolean>>;
+  goalsLoading: boolean;
+  setGoalsLoading: React.Dispatch<React.SetStateAction<boolean>>;
+}) {
   const mic = useMinimalMic();
   const audio = useMinimalAudio();
   const convo = useMinimalConversation();
@@ -20,11 +69,7 @@ function Content() {
   const [dashAnim, setDashAnim] = React.useState<boolean>(false);
   const dashUnmountTimer = React.useRef<number | null>(null);
 
-  // Profile and Goals data
-  const [profile, setProfile] = React.useState<any>(null);
-  const [goals, setGoals] = React.useState<any[]>([]);
-  const [profileLoading, setProfileLoading] = React.useState<boolean>(false);
-  const [goalsLoading, setGoalsLoading] = React.useState<boolean>(false);
+  // Profile and Goals UI state
   const [editingGoal, setEditingGoal] = React.useState<any>(null);
   const [editingProfile, setEditingProfile] = React.useState<boolean>(false);
   const [addingGoal, setAddingGoal] = React.useState<boolean>(false);
@@ -968,20 +1013,6 @@ function Content() {
   );
 }
 
-export default function CoachMinimalPage() {
-  return (
-    <MinimalAudioProvider>
-      <MinimalSessionProvider>
-        <MinimalVoiceProvider>
-          <MinimalConversationProvider>
-            <MinimalMicProvider>
-              <Content />
-            </MinimalMicProvider>
-          </MinimalConversationProvider>
-        </MinimalVoiceProvider>
-      </MinimalSessionProvider>
-    </MinimalAudioProvider>
-  );
-}
 
 
+export default App;

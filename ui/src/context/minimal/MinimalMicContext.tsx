@@ -26,7 +26,15 @@ export function useMinimalMic() {
   return ctx;
 }
 
-export function MinimalMicProvider({ children }: { children: React.ReactNode }) {
+export function MinimalMicProvider({
+  children,
+  userProfile,
+  userGoals
+}: {
+  children: React.ReactNode;
+  userProfile?: any;
+  userGoals?: any[];
+}) {
   const voice = useMinimalVoice();
   const audio = useMinimalAudio();
   const convo = useMinimalConversation();
@@ -127,7 +135,7 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
             const { text } = await voice.sttFromBlob(blob);
             setTranscript(text); try { console.log("MinimalMic: STT done; textLen=", (text || "").length); } catch {}
             setStatus("chat"); try { console.log("MinimalMic: Chat start"); } catch {}
-            const reply = await convo.chatToText(text);
+            const reply = await convo.chatToText(text, { userProfile, userGoals });
             setAssistantText(reply); try { console.log("MinimalMic: Chat done; replyLen=", (reply || "").length); } catch {}
             // Persist interactions to backend to enable server cadence
             try {

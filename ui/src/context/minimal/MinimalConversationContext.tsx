@@ -14,7 +14,7 @@ export type PromptPreview = {
 } | null;
 
 export type MinimalConversationContextValue = {
-  chatToText: (prompt: string) => Promise<string>;
+  chatToText: (prompt: string, options?: { userProfile?: any; userGoals?: any[] }) => Promise<string>;
   getImmediateHistory: () => Array<{ role: "user" | "assistant"; content: string }>;
   getSummaryMeta: () => { ready: boolean; updatedAt?: number; turnsUntilDue: number; thresholdTurns: number };
   getLastPromptPreview: () => PromptPreview;
@@ -67,13 +67,31 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
   // Deprecated: preview GET is removed; SSE 'prompt' event is source of truth.
   const fetchPromptPreview = useCallback(async (_rid: string) => { return; }, []);
 
-  const chatToText = useCallback(async (prompt: string): Promise<string> => {
+  const chatToText = useCallback(async (prompt: string, options?: { userProfile?: any; userGoals?: any[] }): Promise<string> => {
     if (!prompt || !prompt.trim()) return "";
     // Build minimal history param from the last 2 messages (excluding this prompt)
     const last2 = historyRef.current.slice(-2).map((m) => ({ role: m.role, content: (m.content || "").slice(0, 240) }));
     const sys = (summary?.text || "").trim();
     const items = sys ? ([{ role: "system", content: sys.slice(0, 480) }] as const).concat(last2 as any) : last2;
     const histParam = items.length ? `&history=${encodeURIComponent(toBase64Url(JSON.stringify(items)))}` : "";
+
+    // Build user profile and goals parameters
+    let profileParam = "";
+    let goalsParam = "";
+    if (options?.userProfile) {
+      try {
+        profileParam = `&userProfile=${encodeURIComponent(toBase64Url(JSON.stringify(options.userProfile)))}`;
+      } catch (e) {
+        console.warn("Failed to encode user profile:", e);
+      }
+    }
+    if (options?.userGoals && Array.isArray(options.userGoals)) {
+      try {
+        goalsParam = `&userGoals=${encodeURIComponent(toBase64Url(JSON.stringify(options.userGoals)))}`;
+      } catch (e) {
+        console.warn("Failed to encode user goals:", e);
+      }
+    }
 
     const rid = Math.random().toString(36).slice(2);
     lastRidRef.current = rid;
@@ -82,7 +100,10 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     const startOnce = (): Promise<string | null> => new Promise((resolve, reject) => {
       try {
         let es: EventSource | null = null;
-        try { es = new EventSource(`/api/chat?prompt=${encodeURIComponent(prompt)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""}${histParam}&rid=${encodeURIComponent(rid)}&debug=1`, { withCredentials: false }); } catch {}
+        try {
+          const url = `/api/chat?prompt=${encodeURIComponent(prompt)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""}${histParam}${profileParam}${goalsParam}&rid=${encodeURIComponent(rid)}&debug=1`;
+          es = new EventSource(url, { withCredentials: false });
+        } catch {}
         if (!es) { reject(new Error("stream failed")); return; }
         let acc = "";
         es.onmessage = (evt) => {
@@ -118,8 +139,8 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
   }, [sessionId, summary?.text]);
 
   // Push user/assistant messages into minimal history when chatToText resolves
-  const chatToTextWithHistory = useCallback(async (prompt: string): Promise<string> => {
-    const reply = await chatToText(prompt);
+  const chatToTextWithHistory = useCallback(async (prompt: string, options?: { userProfile?: any; userGoals?: any[] }): Promise<string> => {
+    const reply = await chatToText(prompt, options);
     try {
       historyRef.current.push({ role: "user", content: prompt });
       historyRef.current.push({ role: "assistant", content: reply });
