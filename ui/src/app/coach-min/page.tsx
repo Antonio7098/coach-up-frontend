@@ -21,6 +21,7 @@ function Content() {
   const [dbgOpen, setDbgOpen] = React.useState<boolean>(false);
   const [ingestTestStatus, setIngestTestStatus] = React.useState<string>("");
   const [dbgPrompt, setDbgPrompt] = React.useState<{ prevSummary: string; messages: Array<{ role: 'user'|'assistant'; content: string }> } | null>(null);
+  const [promptPreview, setPromptPreview] = React.useState<any>(null);
   // Local in-session history of summaries (ascending by version)
   const [history, setHistory] = React.useState<Array<{ version: number; updatedAt: number; text: string }>>([]);
   const [openMap, setOpenMap] = React.useState<Record<number, boolean>>({});
@@ -267,6 +268,30 @@ function Content() {
             </div>
             {serverTranscriptErr ? <div className="text-[11px] text-red-600 mt-1">error: {serverTranscriptErr}</div> : null}
           </div>
+        </div>
+        {/* LLM Prompt (debug) Panel */}
+        <div className="p-3 border rounded mt-2">
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-sm font-medium">LLM Prompt (debug)</div>
+            <div className="flex gap-2">
+              <button type="button" onClick={async () => { try { await convo.refreshPromptPreview(); setPromptPreview(convo.getLastPromptPreview()); } catch {} }} className="px-2 py-1 text-xs border rounded">Refresh</button>
+            </div>
+          </div>
+          <div className="text-[11px] text-zinc-600 mb-1">{promptPreview ? 'ready' : 'empty'}</div>
+          {promptPreview ? (
+            <div className="text-[11px] space-y-1">
+              <div><span className="font-medium">summary</span>: {(promptPreview.summary || '').slice(0, 300)}{(promptPreview.summaryLen || 0) > 300 ? '…' : ''} ({promptPreview.summaryLen || 0} chars)</div>
+              <div><span className="font-medium">prompt</span>: {(promptPreview.prompt || '').slice(0, 200)}{(promptPreview.prompt || '').length > 200 ? '…' : ''}</div>
+              <div className="font-medium">recent:</div>
+              <div className="space-y-0.5">
+                {(promptPreview.recentMessages || []).map((m: any, i: number) => (
+                  <div key={i}><span className="font-medium">{m.role}</span>: {m.content}</div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="text-[11px] text-zinc-500">(none)</div>
+          )}
         </div>
         {/* Fresh Summary Panel (independent) */}
         <div className="mt-4 p-3 border rounded">

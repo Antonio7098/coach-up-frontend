@@ -1,6 +1,8 @@
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 import { promMetrics } from "../lib/metrics";
+import { savePromptPreview } from "../lib/promptPreviewStore";
+import { makeConvex } from "../lib/convex";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -18,6 +20,20 @@ function aiApiBaseUrl() {
   );
 }
 
+function convexBaseUrl() {
+  return process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || "http://127.0.0.1:3210";
+}
+
+function b64urlDecode(s: string): string {
+  try {
+    const base = s.replace(/-/g, "+").replace(/_/g, "/");
+    return atob(base);
+  } catch { return ""; }
+}
+function b64urlEncode(s: string): string {
+  try { return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, ""); } catch { return ""; }
+}
+
 export async function OPTIONS() {
   return new Response(null, { status: 204, headers: corsHeaders });
 }
@@ -27,19 +43,65 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const { search } = url;
   const promptParam = url.searchParams.get("prompt") || "";
+  const sessionId = url.searchParams.get("sessionId") || "";
+  const ridIn = url.searchParams.get("rid") || "";
+  const debugOn = (process.env.PROMPT_DEBUG === "1") || (url.searchParams.get("debug") === "1");
   try {
     const prev = promptParam.slice(0, 200).replace(/\n/g, " \\n ");
     console.log(`[ui/api/chat] promptLen=%d preview="%s"`, promptParam.length, prev);
   } catch {}
-  const upstreamUrl = `${aiApiBaseUrl()}/chat/stream${search}`;
   const requestId = (() => {
     try {
       const g = globalThis as unknown as { crypto?: { randomUUID?: () => string } };
-      return g.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+      const generated = g.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+      return ridIn || generated;
     } catch {
-      return Math.random().toString(36).slice(2);
+      return ridIn || Math.random().toString(36).slice(2);
     }
   })();
+
+  // Merge in server-side summary to history (as system) when available
+  let upstreamUrl = `${aiApiBaseUrl()}/chat/stream${search}`;
+  try {
+    const clientHistParam = url.searchParams.get("history") || "";
+    let historyItems: Array<{ role: string; content: string }> = [];
+    if (clientHistParam) {
+      try { historyItems = JSON.parse(b64urlDecode(clientHistParam)); } catch { historyItems = []; }
+    }
+    // Prepend summary as system if sessionId provided and summary exists
+    if (sessionId) {
+      try {
+        const client = makeConvex(convexBaseUrl());
+        const latest: any = await client.query("functions/summaries:getLatest", { sessionId });
+        const summaryText: string = String(latest?.text || "").trim();
+        if (summaryText) {
+          const systemItem = { role: "system", content: summaryText.length > 3200 ? summaryText.slice(0, 3200) : summaryText };
+          // Remove any existing system entry to avoid duplication
+          historyItems = [systemItem].concat(historyItems.filter((it) => it.role !== "system"));
+
+          const enc = b64urlEncode(JSON.stringify(historyItems));
+          const params = new URLSearchParams(url.searchParams);
+          params.set("history", enc);
+          upstreamUrl = `${aiApiBaseUrl()}/chat/stream?${params.toString()}`;
+
+          if (debugOn) {
+            const recentPreview = historyItems.filter((it) => it.role !== "system").slice(-6).map((m) => ({ role: m.role, content: m.content.slice(0, 240), len: m.content.length }));
+            savePromptPreview(requestId, {
+              system: "Coach-min chat",
+              summary: systemItem.content.slice(0, 1000),
+              summaryLen: systemItem.content.length,
+              recentMessages: recentPreview,
+              prompt: promptParam.slice(0, 400),
+            });
+          }
+        } else if (debugOn) {
+          savePromptPreview(requestId, { system: "Coach-min chat", summary: "", summaryLen: 0, recentMessages: historyItems.slice(-6).map((m) => ({ role: m.role, content: m.content.slice(0,240), len: m.content.length })), prompt: promptParam.slice(0, 400) });
+        }
+      } catch {}
+    } else if (debugOn) {
+      savePromptPreview(requestId, { system: "Coach-min chat", summary: "", summaryLen: 0, recentMessages: historyItems.slice(-6).map((m) => ({ role: m.role, content: m.content.slice(0,240), len: m.content.length })), prompt: promptParam.slice(0, 400) });
+    }
+  } catch {}
 
   // Propagate client abort to upstream
   request.signal.addEventListener("abort", () => controller.abort());

@@ -4,10 +4,21 @@ import React, { createContext, useCallback, useContext, useMemo, useRef } from "
 import { useSessionSummary } from "../../hooks/useSessionSummary";
 import { useMinimalSession } from "./MinimalSessionContext";
 
+export type PromptPreview = {
+  system?: string;
+  summary?: string;
+  summaryLen?: number;
+  recentMessages?: Array<{ role: string; content: string; len: number }>;
+  prompt?: string;
+  createdAt?: number;
+} | null;
+
 export type MinimalConversationContextValue = {
   chatToText: (prompt: string) => Promise<string>;
   getImmediateHistory: () => Array<{ role: "user" | "assistant"; content: string }>;
   getSummaryMeta: () => { ready: boolean; updatedAt?: number; turnsUntilDue: number; thresholdTurns: number };
+  getLastPromptPreview: () => PromptPreview;
+  refreshPromptPreview: () => Promise<void>;
 };
 
 const Ctx = createContext<MinimalConversationContextValue | undefined>(undefined);
@@ -25,6 +36,8 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
   const { summary, onTurn, thresholds } = useSessionSummary(sessionId, { autoloadOnMount: false });
   const [turnsSinceRefresh, setTurnsSinceRefresh] = React.useState<number>(0);
   const lastUpdatedRef = React.useRef<number | undefined>(undefined);
+  const lastRidRef = React.useRef<string | null>(null);
+  const [promptPreview, setPromptPreview] = React.useState<PromptPreview>(null);
   React.useEffect(() => {
     const upd = typeof summary?.updatedAt === "number" ? summary.updatedAt : undefined;
     if (upd && upd !== lastUpdatedRef.current) {
@@ -50,6 +63,17 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     }
   }
 
+  const fetchPromptPreview = useCallback(async (rid: string) => {
+    if (!rid) return;
+    try {
+      const res = await fetch(`/api/v1/chat/prompt-preview?rid=${encodeURIComponent(rid)}`, { method: 'GET', headers: { accept: 'application/json' }, cache: 'no-store' });
+      const data = await res.json().catch(() => ({} as any));
+      if (res.ok && data?.preview) {
+        setPromptPreview(data.preview as PromptPreview);
+      }
+    } catch {}
+  }, []);
+
   const chatToText = useCallback(async (prompt: string): Promise<string> => {
     if (!prompt || !prompt.trim()) return "";
     // Build minimal history param from the last 2 messages (excluding this prompt)
@@ -58,10 +82,14 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     const items = sys ? ([{ role: "system", content: sys.slice(0, 480) }] as const).concat(last2 as any) : last2;
     const histParam = items.length ? `&history=${encodeURIComponent(toBase64Url(JSON.stringify(items)))}` : "";
 
+    const rid = Math.random().toString(36).slice(2);
+    lastRidRef.current = rid;
+    setPromptPreview(null);
+
     const startOnce = (): Promise<string | null> => new Promise((resolve, reject) => {
       try {
         let es: EventSource | null = null;
-        try { es = new EventSource(`/api/chat?prompt=${encodeURIComponent(prompt)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""}${histParam}`, { withCredentials: false }); } catch {}
+        try { es = new EventSource(`/api/chat?prompt=${encodeURIComponent(prompt)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""}${histParam}&rid=${encodeURIComponent(rid)}&debug=1`, { withCredentials: false }); } catch {}
         if (!es) { reject(new Error("stream failed")); return; }
         let acc = "";
         es.onmessage = (evt) => {
@@ -77,11 +105,14 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
       }
     });
     const first = await startOnce();
+    // Attempt to pull prompt preview (best-effort)
+    try { await fetchPromptPreview(rid); } catch {}
     if (typeof first === "string") return first;
     const second = await startOnce();
+    try { await fetchPromptPreview(rid); } catch {}
     if (typeof second === "string") return second;
     throw new Error("stream failed");
-  }, []);
+  }, [sessionId, summary?.text, fetchPromptPreview]);
 
   // Push user/assistant messages into minimal history when chatToText resolves
   const chatToTextWithHistory = useCallback(async (prompt: string): Promise<string> => {
@@ -137,7 +168,13 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     return { ready, updatedAt: summary?.updatedAt, turnsUntilDue, thresholdTurns };
   }, [summary, thresholds?.turns, turnsSinceRefresh]);
 
-  const value = useMemo<MinimalConversationContextValue>(() => ({ chatToText: chatToTextWithHistory, getImmediateHistory, getSummaryMeta }), [chatToTextWithHistory, getImmediateHistory, getSummaryMeta]);
+  const value = useMemo<MinimalConversationContextValue>(() => ({
+    chatToText: chatToTextWithHistory,
+    getImmediateHistory,
+    getSummaryMeta,
+    getLastPromptPreview: () => promptPreview,
+    refreshPromptPreview: async () => { const rid = lastRidRef.current; if (rid) { await fetchPromptPreview(rid); } },
+  }), [chatToTextWithHistory, getImmediateHistory, getSummaryMeta, promptPreview, fetchPromptPreview]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
