@@ -15,6 +15,7 @@ export type MinimalMicContextValue = {
   status: "idle" | "audio" | "stt" | "chat" | "tts" | "playback";
   vadLoop: boolean;
   toggleVadLoop: () => void;
+  inputSpeaking: boolean;
 };
 
 const Ctx = createContext<MinimalMicContextValue | undefined>(undefined);
@@ -37,6 +38,7 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
   const [assistantText, setAssistantText] = useState("");
   const [status, setStatus] = useState<"idle" | "audio" | "stt" | "chat" | "tts" | "playback">("idle");
   const [vadLoop, setVadLoop] = useState(false);
+  const [inputSpeaking, setInputSpeaking] = useState(false);
   const mediaRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const vadLoopRef = useRef<boolean>(false);
@@ -67,6 +69,7 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
   const stopRecording = useCallback(() => {
     try { console.log("MinimalMic: stopRecording() called; recording=", recording); } catch {}
     setRecording(false);
+    setInputSpeaking(false);
     try {
       const rec = mediaRef.current;
       if (rec && rec.state === "recording") rec.stop();
@@ -245,6 +248,7 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
                 } else {
                   try { console.log("MinimalMic: VAD speech start (no playback)", { rms: Number(rms.toFixed(3)) }); } catch {}
                 }
+                try { setInputSpeaking(true); } catch {}
               }
             }
             if (hasSpeech && rms < silenceThreshold) { silenceMs += 100; if (silenceMs === 300) { try { console.log("MinimalMic: VAD accumulating silenceMs=", silenceMs, "rms=", rms.toFixed(3)); } catch {} } }
@@ -252,6 +256,7 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
             const endSil = bargeInActiveRef.current ? 400 : endSilenceMs;
             if (hasSpeech && silenceMs >= endSil) {
               try { console.log("MinimalMic: VAD end-of-speech; stopping recorder; silenceMs=", silenceMs); } catch {}
+              try { setInputSpeaking(false); } catch {}
               try { if (rec.state === "recording") { try { rec.requestData?.(); } catch {} rec.stop(); } } catch {}
               return;
             }
@@ -290,7 +295,8 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
       }
     },
     status,
-  }), [recording, transcript, assistantText, startRecording, stopRecording, vadLoop, status]);
+    inputSpeaking,
+  }), [recording, transcript, assistantText, startRecording, stopRecording, vadLoop, status, inputSpeaking]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
