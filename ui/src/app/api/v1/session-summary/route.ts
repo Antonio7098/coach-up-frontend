@@ -220,26 +220,25 @@ export async function POST(request: Request) {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(String((data as any)?.error || res.status));
+      const headerEmpty = String(res.headers.get('x-summary-empty') || '').trim() === '1';
       text = String((data as any)?.text || '');
+      if (headerEmpty || !text || text.trim().length === 0) {
+        console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, sessionId, msg: 'ai_returned_empty', headerEmpty }));
+        // Do not persist a new summary row; signal emptiness explicitly to the client
+        return new Response(JSON.stringify({ status: 'empty' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json; charset=utf-8', 'X-Request-Id': requestId, 'X-Summary-Empty': '1', ...corsHeaders },
+        });
+      }
     } catch (e) {
       // If AI API fails, return upstream error
       console.log(JSON.stringify({ level: 'error', route: routePath, requestId, status: 502, sessionId, msg: 'ai_api_generate_failed', error: (e as any)?.message, latencyMs: Date.now() - started }));
       return respond(502, { error: "ai generate failed" });
     }
 
-    // Guard: if AI produced empty text, fallback to previous summary and keep previous cutoff
+    // At this point, text is non-empty due to early return above
     let effectiveText = text;
     let effectiveLastMessageTs = Date.now();
-    if (!effectiveText || effectiveText.trim().length === 0) {
-      const fallback = (prev || '').trim();
-      if (!fallback) {
-        console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 200, sessionId, msg: 'generate_empty_text_skipped_no_prev' }));
-        return respond(200, { status: 'skipped_empty' });
-      }
-      effectiveText = fallback;
-      effectiveLastMessageTs = Number(latest?.lastMessageTs || Date.now());
-      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, sessionId, msg: 'generate_fallback_prev' }));
-    }
     // Persist new summary row in Convex
     const resIns: any = await convex.mutation("functions/summaries:insert", { sessionId, text: effectiveText, lastMessageTs: effectiveLastMessageTs, meta: { tokenBudget } });
     const payload = { status: 'completed', summary: { sessionId, version: resIns?.version || 1, updatedAt: resIns?.updatedAt || Date.now() } };

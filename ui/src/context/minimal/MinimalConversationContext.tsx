@@ -19,6 +19,7 @@ export type MinimalConversationContextValue = {
   getSummaryMeta: () => { ready: boolean; updatedAt?: number; turnsUntilDue: number; thresholdTurns: number };
   getLastPromptPreview: () => PromptPreview;
   refreshPromptPreview: () => Promise<void>;
+  promptPreview: PromptPreview;
 };
 
 const Ctx = createContext<MinimalConversationContextValue | undefined>(undefined);
@@ -187,6 +188,7 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     getSummaryMeta,
     getLastPromptPreview: () => promptPreview,
     refreshPromptPreview: async () => { const rid = lastRidRef.current; if (rid) { await fetchPromptPreview(rid); } },
+    promptPreview,
   }), [chatToTextWithHistory, getImmediateHistory, getSummaryMeta, promptPreview, fetchPromptPreview]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

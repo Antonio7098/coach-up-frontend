@@ -27,11 +27,14 @@ function convexBaseUrl() {
 function b64urlDecode(s: string): string {
   try {
     const base = s.replace(/-/g, "+").replace(/_/g, "/");
-    return atob(base);
+    const pad = "=".repeat((4 - (base.length % 4)) % 4);
+    return Buffer.from(base + pad, "base64").toString("utf-8");
   } catch { return ""; }
 }
 function b64urlEncode(s: string): string {
-  try { return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, ""); } catch { return ""; }
+  try {
+    return Buffer.from(s, "utf-8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  } catch { return ""; }
 }
 
 export async function OPTIONS() {

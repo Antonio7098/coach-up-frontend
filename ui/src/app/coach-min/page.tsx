@@ -22,6 +22,13 @@ function Content() {
   const [ingestTestStatus, setIngestTestStatus] = React.useState<string>("");
   const [dbgPrompt, setDbgPrompt] = React.useState<{ prevSummary: string; messages: Array<{ role: 'user'|'assistant'; content: string }> } | null>(null);
   const [promptPreview, setPromptPreview] = React.useState<any>(null);
+  // Keep the latest prompt preview from SSE in sync automatically
+  const lastSsePreview = convo.promptPreview;
+  React.useEffect(() => {
+    if (lastSsePreview && typeof lastSsePreview?.prompt === 'string' && lastSsePreview.prompt.trim().length > 0) {
+      setPromptPreview(lastSsePreview);
+    }
+  }, [lastSsePreview]);
   // Local in-session history of summaries (ascending by version)
   const [history, setHistory] = React.useState<Array<{ version: number; updatedAt: number; text: string }>>([]);
   const [openMap, setOpenMap] = React.useState<Record<number, boolean>>({});
@@ -274,13 +281,13 @@ function Content() {
           <div className="flex items-center justify-between mb-1">
             <div className="text-sm font-medium">LLM Prompt (debug)</div>
             <div className="flex gap-2">
-              <button type="button" onClick={async () => { try { await convo.refreshPromptPreview(); setPromptPreview(convo.getLastPromptPreview()); } catch {} }} className="px-2 py-1 text-xs border rounded">Refresh</button>
+              <button type="button" onClick={() => { try { setPromptPreview(convo.getLastPromptPreview()); } catch {} }} className="px-2 py-1 text-xs border rounded">Refresh</button>
             </div>
           </div>
           <div className="text-[11px] text-zinc-600 mb-1">{promptPreview ? 'ready' : 'empty'}</div>
           {promptPreview ? (
             <div className="text-[11px] space-y-1">
-              <div className="font-medium">rendered prompt:</div>
+              <div className="font-medium">full prompt sent to LLM:</div>
               <pre className="whitespace-pre-wrap bg-zinc-50 p-2 border rounded max-h-56 overflow-auto">{promptPreview.prompt || ''}</pre>
             </div>
           ) : (
