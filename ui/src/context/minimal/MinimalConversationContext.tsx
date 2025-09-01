@@ -96,6 +96,19 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
           if (evt.data === "[DONE]") { try { es?.close(); } catch {}; resolve(acc); }
           else { acc += evt.data; }
         };
+        es.addEventListener('prompt', (evt: MessageEvent) => {
+          try {
+            const data = JSON.parse(evt.data || '{}');
+            setPromptPreview({
+              system: typeof data?.system === 'string' ? data.system : '',
+              summary: undefined,
+              summaryLen: undefined,
+              recentMessages: undefined,
+              prompt: typeof data?.user === 'string' ? data.user : '',
+              createdAt: Date.now(),
+            });
+          } catch {}
+        });
         es.onerror = () => {
           try { es?.close(); } catch {}
           if (acc) resolve(acc); else resolve(null);
