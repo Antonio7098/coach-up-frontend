@@ -4,6 +4,7 @@ import React, { createContext, useCallback, useContext, useMemo, useRef, useStat
 import { useMinimalVoice } from "./MinimalVoiceContext";
 import { useMinimalAudio } from "./MinimalAudioContext";
 import { useMinimalConversation } from "./MinimalConversationContext";
+import { useMinimalSession } from "./MinimalSessionContext";
 
 export type MinimalMicContextValue = {
   recording: boolean;
@@ -28,6 +29,9 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
   const voice = useMinimalVoice();
   const audio = useMinimalAudio();
   const convo = useMinimalConversation();
+  const { sessionId } = useMinimalSession();
+  const sessionIdRef = useRef<string | null>(null);
+  React.useEffect(() => { sessionIdRef.current = sessionId || null; }, [sessionId]);
   const [recording, setRecording] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [assistantText, setAssistantText] = useState("");
@@ -122,6 +126,37 @@ export function MinimalMicProvider({ children }: { children: React.ReactNode }) 
             setStatus("chat"); try { console.log("MinimalMic: Chat start"); } catch {}
             const reply = await convo.chatToText(text);
             setAssistantText(reply); try { console.log("MinimalMic: Chat done; replyLen=", (reply || "").length); } catch {}
+            // Persist interactions to backend to enable server cadence
+            try {
+              const sid = (sessionIdRef.current || '').toString();
+              if (sid) {
+                const now = Date.now();
+                const reqId = Math.random().toString(36).slice(2);
+                const djb2 = (input: string): string => {
+                  const s = (input || '').trim();
+                  if (s.length === 0) return '0';
+                  let h = 5381;
+                  for (let i = 0; i < s.length; i++) { h = ((h << 5) + h) ^ s.charCodeAt(i); }
+                  return (h >>> 0).toString(16);
+                };
+                // user message
+                try { console.log('[ingest] mic → POST user', { sid, len: (text || '').length }); } catch {}
+                void fetch('/api/v1/interactions', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json', 'x-request-id': reqId },
+                  body: JSON.stringify({ sessionId: sid, messageId: `m_user_${now}`, role: 'user', contentHash: djb2(text || `m_user_${now}`), text, ts: now })
+                }).catch(() => {});
+                // assistant message (slightly later ts)
+                try { console.log('[ingest] mic → POST assistant', { sid, len: (reply || '').length }); } catch {}
+                void fetch('/api/v1/interactions', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json', 'x-request-id': reqId },
+                  body: JSON.stringify({ sessionId: sid, messageId: `m_assistant_${now+1}`, role: 'assistant', contentHash: djb2((reply || `m_assistant_${now+1}`)), text: reply, ts: now + 1 })
+                }).catch(() => {});
+              } else {
+                try { console.warn('[ingest] mic skip: no sessionId available yet'); } catch {}
+              }
+            } catch {}
             setStatus("tts"); try { console.log("MinimalMic: TTS start"); } catch {}
             try { voice.cancelTTS?.(); } catch {}
             // Start playback fire-and-forget; mark pending to prevent status flicker

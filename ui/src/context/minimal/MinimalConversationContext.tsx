@@ -94,9 +94,37 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
       // Trigger background summary refresh according to thresholds (non-blocking)
       try { onTurn(); } catch {}
       setTurnsSinceRefresh((n) => (Number.isFinite(n) ? n + 1 : 1));
+      // Persist interactions (user + assistant) to enable backend cadence even without mic
+      try {
+        const sid = (sessionId || '').toString();
+        if (sid) {
+          const now = Date.now();
+          const reqId = Math.random().toString(36).slice(2);
+          const djb2 = (input: string): string => {
+            const s = (input || '').trim();
+            if (s.length === 0) return '0';
+            let h = 5381; for (let i = 0; i < s.length; i++) { h = ((h << 5) + h) ^ s.charCodeAt(i); }
+            return (h >>> 0).toString(16);
+          };
+          // user
+          try { console.log('[ingest] POST user', { sid, len: prompt.length }); } catch {}
+          void fetch('/api/v1/interactions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-request-id': reqId },
+            body: JSON.stringify({ sessionId: sid, messageId: `c_user_${now}`, role: 'user', contentHash: djb2(prompt || `c_user_${now}`), text: prompt, ts: now })
+          }).catch(() => {});
+          // assistant
+          try { console.log('[ingest] POST assistant', { sid, len: reply.length }); } catch {}
+          void fetch('/api/v1/interactions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-request-id': reqId },
+            body: JSON.stringify({ sessionId: sid, messageId: `c_assistant_${now+1}`, role: 'assistant', contentHash: djb2(reply || `c_assistant_${now+1}`), text: reply, ts: now + 1 })
+          }).catch(() => {});
+        }
+      } catch {}
     } catch {}
     return reply;
-  }, [chatToText, onTurn]);
+  }, [chatToText, onTurn, sessionId]);
 
   const getImmediateHistory = useCallback(() => {
     return historyRef.current.slice(-2);

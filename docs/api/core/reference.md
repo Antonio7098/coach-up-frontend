@@ -270,6 +270,80 @@ Notes:
   }
   ```
 
+## Session Summary
+
+### GET /api/v1/session-summary
+- Summary: Return the latest rolling summary for a session (independent of assessments).
+- Auth: required
+- Headers: `X-Request-Id` (optional), see shared headers for rate limit fields
+- Query:
+  - `sessionId` (string, required)
+- Responses:
+  - 200
+    ```json
+    {
+      "sessionId": "sess_123",
+      "text": "…cumulative conversation summary…",
+      "updatedAt": 1692712345678,
+      "version": 3
+    }
+    ```
+  - 404
+    ```json
+    { "sessionId": "sess_123", "summary": null }
+    ```
+- Notes:
+  - Implements best-effort rate limiting and returns `X-RateLimit-*` headers on responses. See `docs/api/shared/headers.md#rate-limits`.
+  - Echoes `Idempotency-Key` when provided. See `docs/api/shared/headers.md#idempotency`.
+  - In local E2E, `MOCK_CONVEX=1` serves from an in-memory store.
+- curl:
+  ```bash
+  curl -s \
+    -H 'authorization: Bearer <JWT>' \
+    'http://localhost:3000/api/v1/session-summary?sessionId=sess_123' | jq
+  ```
+
+### POST /api/v1/session-summary
+- Summary: Generate and persist a new rolling summary for the session.
+- Auth: required
+- Headers: `Content-Type: application/json`, `X-Request-Id` (optional)
+- Body (v1):
+  ```json
+  {
+    "sessionId": "sess_123",
+    "prevSummary": "(optional prior text)",
+    "messages": [
+      { "role": "user", "content": "..." },
+      { "role": "assistant", "content": "..." }
+    ],
+    "tokenBudget": 600
+  }
+  ```
+- Response (sync):
+  ```json
+  {
+    "status": "completed",
+    "summary": { "sessionId": "sess_123", "version": 4, "updatedAt": 1692712400000 }
+  }
+  ```
+- Notes:
+  - The request composes a cumulative prompt (previous summary + recent messages) server-side.
+  - In `MOCK_CONVEX=1`, a stub summarizer generates text and persists to an in-memory store.
+  - Current implementation does not return the full `text` in the sync response; clients should refresh via GET to read the latest.
+- curl:
+  ```bash
+  curl -s -X POST \
+    -H 'authorization: Bearer <JWT>' \
+    -H 'content-type: application/json' \
+    --data-binary '{
+      "sessionId":"sess_123",
+      "prevSummary":"",
+      "messages":[{"role":"user","content":"Hi"}],
+      "tokenBudget":600
+    }' \
+    http://localhost:3000/api/v1/session-summary | jq
+  ```
+
 ## Speech (STT/TTS)
 
 ### Provider selection

@@ -27,16 +27,20 @@ function safeUUID(): string {
   }
 }
 
+function convexBaseUrl() {
+  return process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || "http://127.0.0.1:3210";
+}
+
 export async function GET(request: Request) {
   const headersIn = new Headers(request.headers);
   const requestId = headersIn.get("x-request-id") || safeUUID();
-  const routePath = "/api/v1/transcripts";
+  const routePath = "/api/v1/sessions";
   const method = "GET";
   const started = Date.now();
   const mode = process.env.MOCK_CONVEX === '1' ? 'mock' : 'convex';
   const endTimer = promMetrics.requestDurationSeconds.startTimer();
 
-  function respond(status: number, body: unknown) {
+  const respond = (status: number, body: unknown) => {
     const labels = { route: routePath, method, status: String(status), mode } as const;
     promMetrics.requestsTotal.labels(labels.route, labels.method, labels.status, labels.mode).inc();
     if (status >= 500) {
@@ -47,9 +51,9 @@ export async function GET(request: Request) {
       status,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
     });
-  }
+  };
 
-  // Auth (optional gating via CLERK_ENABLED)
+  // Optional auth gating
   const auth = await requireAuth(request);
   if (!auth.ok) {
     console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 401, reason: auth.reason, latencyMs: Date.now() - started }));
@@ -57,67 +61,28 @@ export async function GET(request: Request) {
   }
 
   const url = new URL(request.url);
-  const sessionId = url.searchParams.get("sessionId");
-  const groupId = url.searchParams.get("groupId");
-  const limitRaw = url.searchParams.get("limit");
-  const cursor = url.searchParams.get("cursor") || undefined;
-
-  if (!sessionId || sessionId.trim().length === 0) {
+  const sessionId = url.searchParams.get("sessionId") || "";
+  if (!sessionId.trim()) {
     console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 400, msg: 'Missing sessionId', latencyMs: Date.now() - started }));
     return respond(400, { error: "sessionId is required" });
   }
 
-  let limit = 20;
-  if (limitRaw) {
-    const n = Number(limitRaw);
-    if (Number.isFinite(n)) {
-      limit = Math.max(1, Math.min(100, Math.trunc(n)));
-    }
-  }
-
   try {
-    // Fetch underlying interaction rows to serve as transcript items (text may be populated by STT later)
-    let docs: Array<Record<string, any>> = [];
     if (mode === 'mock') {
-      if (groupId) {
-        docs = await mockConvex.listInteractionsByGroup({ groupId, limit }) as any[];
-      } else if (sessionId) {
-        docs = await mockConvex.listInteractionsBySession({ sessionId, limit }) as any[];
-      }
-    } else {
-      const convexUrl = convexBaseUrl();
-      const client = makeConvex(convexUrl);
-      if (groupId) {
-        docs = await client.query("functions/interactions:listByGroup", { groupId, limit }) as any[];
-      } else if (sessionId) {
-        docs = await client.query("functions/interactions:listBySession", { sessionId, limit }) as any[];
-      }
+      const doc = await mockConvex.getSessionById?.({ sessionId });
+      const payload = { session: doc ?? null };
+      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, sessionId, mode, hasSession: !!doc, latencyMs: Date.now() - started }));
+      return respond(200, payload);
     }
-
-    // Map to public transcript item shape
-    const items = (docs || []).map((d) => ({
-      id: d.messageId ?? `${d.sessionId}:${d.ts ?? d.createdAt ?? ''}`,
-      sessionId: d.sessionId,
-      groupId: d.groupId,
-      role: d.role ?? null,
-      text: d.text ?? null,
-      audioUrl: d.audioUrl ?? null,
-      createdAt: d.createdAt ?? d.ts ?? Date.now(),
-    }));
-
-    const payload = {
-      items,
-      ...(cursor ? { nextCursor: undefined } : {}),
-    } as const;
-
-    console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, sessionId, groupId, limit, mode, itemsReturned: items.length, latencyMs: Date.now() - started }));
+    const client = makeConvex(convexBaseUrl());
+    const data: any = await client.query("functions/sessions:getBySessionId", { sessionId });
+    const payload = { session: data ?? null };
+    console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, sessionId, mode, hasSession: !!data, latencyMs: Date.now() - started }));
     return respond(200, payload);
   } catch (err: unknown) {
-    try { console.error('[transcripts] GET failed', err); } catch {}
+    try { console.error('[sessions] GET failed', err); } catch {}
     return respond(502, { error: "Backend query failed" });
   }
 }
 
-function convexBaseUrl() {
-  return process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || "http://127.0.0.1:3210";
-}
+

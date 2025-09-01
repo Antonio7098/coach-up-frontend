@@ -290,6 +290,11 @@ export async function listEventsBySession(args: { sessionId: string; limit: numb
   return filtered.slice(0, lim);
 }
 
+export async function getSessionById(args: { sessionId: string }) {
+  const doc = _sessions.find(s => s.sessionId === args.sessionId);
+  return doc ? { ...doc } : null;
+}
+
 // -------------------- Skills (mock) --------------------
 export type SkillDoc = {
   id: string;

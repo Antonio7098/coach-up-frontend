@@ -2,7 +2,7 @@
 // Convex Functions — Summary cadence state (SPR-008 v2)
 
 import { v } from "convex/values";
-import { mutation } from "../_generated/server";
+import { mutation, query } from "../_generated/server";
 
 function now() { return Date.now(); }
 
@@ -100,5 +100,30 @@ export const releaseLock = mutation({
     return { ok: true } as const;
   },
 });
+
+export const getState = query({
+  args: { sessionId: v.string() },
+  handler: async (ctx, args) => {
+    const sid = args.sessionId;
+    const everyN = Number(process.env.SUMMARY_GENERATE_ASSISTANT_EVERY_N || 4);
+    const [doc] = await ctx.db
+      .query("summary_state")
+      .withIndex("by_session", (q: any) => q.eq("sessionId", sid))
+      .collect();
+    const turnsSince = Number(doc?.turnsSince ?? 0);
+    const assistantMsgSince = Number(doc?.assistantMsgSince ?? 0);
+    const lastGeneratedAt = Number(doc?.lastGeneratedAt ?? 0);
+    const lastVersion = Number(doc?.lastVersion ?? 0);
+    return {
+      sessionId: sid,
+      turnsSince,
+      assistantMsgSince,
+      lastGeneratedAt,
+      lastVersion,
+      thresholdTurns: everyN,
+    } as const;
+  },
+});
+
 
 

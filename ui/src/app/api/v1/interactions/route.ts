@@ -14,6 +14,7 @@ interface InteractionsBody {
   role: InteractionRole;
   contentHash: string;
   audioUrl?: string;
+  text?: string;
   ts: number;
   userId?: string;
 }
@@ -190,6 +191,12 @@ export async function POST(request: Request) {
       });
     }
   }
+  if (obj.text !== undefined && obj.text !== null && typeof obj.text !== 'string') {
+    return new Response(JSON.stringify({ error: "text, if provided, must be a string" }), {
+      status: 400,
+      headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
+    });
+  }
   if (obj.userId !== undefined && obj.userId !== null && !isNonEmptyString(obj.userId)) {
     return new Response(JSON.stringify({ error: "userId, if provided, must be a non-empty string" }), {
       status: 400,
@@ -214,6 +221,7 @@ export async function POST(request: Request) {
     role: roleStr,
     contentHash: String(obj.contentHash),
     audioUrl: obj.audioUrl !== undefined && obj.audioUrl !== null ? String(obj.audioUrl) : undefined,
+    text: obj.text !== undefined && obj.text !== null ? String(obj.text) : undefined,
     ts: Number(obj.ts),
     userId: obj.userId !== undefined && obj.userId !== null ? String(obj.userId) : undefined,
   };
@@ -230,6 +238,7 @@ export async function POST(request: Request) {
         messageId: body.messageId,
         role: body.role,
         contentHash: body.contentHash,
+        text: body.text,
         audioUrl: body.audioUrl,
         ts: body.ts,
       });
@@ -270,6 +279,7 @@ export async function POST(request: Request) {
       messageId: body.messageId,
       role: body.role,
       contentHash: body.contentHash,
+      text: body.text,
       audioUrl: body.audioUrl,
       ts: body.ts,
     });
@@ -328,11 +338,48 @@ export async function POST(request: Request) {
             try { await client.mutation("functions/summary_state:releaseLock", { sessionId: body.sessionId }); } catch {}
             throw e;
           }
+          // If AI returned empty, fallback to previous summary text (don't advance cutoff)
+          let effectiveLastMessageTs: number = Date.now();
+          if (!text || text.trim().length === 0) {
+            const fallback = (prevSummary || '').trim();
+            if (!fallback) {
+              // No previous summary to fallback to → release lock and skip
+              try { await client.mutation("functions/summary_state:releaseLock", { sessionId: body.sessionId }); } catch {}
+              try {
+                await client.mutation("functions/events:logEvent", {
+                  userId: effectiveUserId,
+                  sessionId: body.sessionId,
+                  groupId: body.groupId,
+                  requestId,
+                  trackedSkillIdHash,
+                  kind: 'summary_cadence_generate_empty',
+                  payload: { messageId: body.messageId },
+                });
+              } catch {}
+              return new Response(JSON.stringify({ ok: true, skipped: 'empty_text' }), {
+                status: 200,
+                headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
+              });
+            }
+            text = fallback;
+            effectiveLastMessageTs = Number(latest?.lastMessageTs || Date.now());
+            try {
+              await client.mutation("functions/events:logEvent", {
+                userId: effectiveUserId,
+                sessionId: body.sessionId,
+                groupId: body.groupId,
+                requestId,
+                trackedSkillIdHash,
+                kind: 'summary_cadence_generate_fallback_prev',
+                payload: { messageId: body.messageId },
+              });
+            } catch {}
+          }
 
           // Persist to Convex
           let inserted: any = null;
           try {
-            inserted = await client.mutation("functions/summaries:insert", { sessionId: body.sessionId, text, lastMessageTs: Date.now(), meta: { tokenBudget } });
+            inserted = await client.mutation("functions/summaries:insert", { sessionId: body.sessionId, text, lastMessageTs: effectiveLastMessageTs, meta: { tokenBudget } });
           } catch (e) {
             // Release lock if persist fails
             try { await client.mutation("functions/summary_state:releaseLock", { sessionId: body.sessionId }); } catch {}

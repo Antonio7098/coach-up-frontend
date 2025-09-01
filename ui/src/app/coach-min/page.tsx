@@ -15,27 +15,80 @@ function Content() {
   const { sessionId } = useMinimalSession();
 
   // Fresh panel: independent state that directly calls the API
-  const [fresh, setFresh] = React.useState<{ text: string; updatedAt: number; version: number } | null>(null);
+  const [fresh, setFresh] = React.useState<{ text: string; updatedAt: number; version: number; lastMessageTs?: number; thresholdTurns?: number; turnsSince?: number } | null>(null);
   const [freshStatus, setFreshStatus] = React.useState<"idle" | "loading" | "ready" | "error">("idle");
   const [freshErr, setFreshErr] = React.useState<string | undefined>(undefined);
   const [dbgOpen, setDbgOpen] = React.useState<boolean>(false);
+  const [ingestTestStatus, setIngestTestStatus] = React.useState<string>("");
   const [dbgPrompt, setDbgPrompt] = React.useState<{ prevSummary: string; messages: Array<{ role: 'user'|'assistant'; content: string }> } | null>(null);
   // Local in-session history of summaries (ascending by version)
   const [history, setHistory] = React.useState<Array<{ version: number; updatedAt: number; text: string }>>([]);
   const [openMap, setOpenMap] = React.useState<Record<number, boolean>>({});
+  // Local delta since last server cadence fetch
+  const [sinceFetchDelta, setSinceFetchDelta] = React.useState<number>(0);
+  // Server transcript (Convex-backed)
+  const [serverTranscript, setServerTranscript] = React.useState<Array<{ id: string; role: 'user'|'assistant'|'system'|string; text: string; createdAt: number }>>([]);
+  const [serverTranscriptStatus, setServerTranscriptStatus] = React.useState<"idle"|"loading"|"ready"|"error">("idle");
+  const [serverTranscriptErr, setServerTranscriptErr] = React.useState<string | undefined>(undefined);
+  const refreshServerTranscript = React.useCallback(async () => {
+    if (!sessionId) return;
+    setServerTranscriptStatus("loading");
+    setServerTranscriptErr(undefined);
+    try {
+      const reqId = Math.random().toString(36).slice(2);
+      const res = await fetch(`/api/v1/transcripts?sessionId=${encodeURIComponent(sessionId)}&limit=200`, {
+        method: 'GET',
+        headers: { accept: 'application/json', 'x-request-id': reqId },
+        cache: 'no-store',
+      });
+      const data = await res.json().catch(() => ({} as any));
+      if (!res.ok) throw new Error(data?.error || `transcripts failed: ${res.status}`);
+      const items = Array.isArray(data?.items) ? data.items : [];
+      const mapped = items.map((it: any) => ({ id: String(it.id || ''), role: String(it.role || ''), text: String(it.text || ''), createdAt: Number(it.createdAt || Date.now()) }));
+      setServerTranscript(mapped);
+      setServerTranscriptStatus('ready');
+    } catch (e) {
+      setServerTranscriptErr(e instanceof Error ? e.message : String(e));
+      setServerTranscriptStatus('error');
+    }
+  }, [sessionId]);
+  // Session state (Convex-backed)
+  const [sessionState, setSessionState] = React.useState<any>(null);
+  const [sessionStateStatus, setSessionStateStatus] = React.useState<"idle"|"loading"|"ready"|"error">("idle");
+  const [sessionStateErr, setSessionStateErr] = React.useState<string | undefined>(undefined);
+  const refreshSessionState = React.useCallback(async () => {
+    if (!sessionId) return;
+    setSessionStateStatus('loading');
+    setSessionStateErr(undefined);
+    try {
+      const reqId = Math.random().toString(36).slice(2);
+      const res = await fetch(`/api/v1/sessions?sessionId=${encodeURIComponent(sessionId)}`, {
+        method: 'GET',
+        headers: { accept: 'application/json', 'x-request-id': reqId },
+        cache: 'no-store',
+      });
+      const data = await res.json().catch(() => ({} as any));
+      if (!res.ok) throw new Error(data?.error || `sessions failed: ${res.status}`);
+      setSessionState(data?.session ?? null);
+      setSessionStateStatus('ready');
+    } catch (e) {
+      setSessionStateErr(e instanceof Error ? e.message : String(e));
+      setSessionStateStatus('error');
+    }
+  }, [sessionId]);
   // Track assistant-completed turns since last summary refresh to display turns-until-due
   const [turnsSince, setTurnsSince] = React.useState<number>(0);
-  const thresholdTurns = Number.parseInt(process.env.NEXT_PUBLIC_SUMMARY_REFRESH_TURNS || "8", 10) || 8;
+  // Server-driven cadence values (fallbacks remain for local-only)
+  const thresholdTurns = Number.isFinite(Number(fresh?.['thresholdTurns'])) ? Number((fresh as any)['thresholdTurns']) : (Number.parseInt(process.env.NEXT_PUBLIC_SUMMARY_REFRESH_TURNS || "8", 10) || 8);
   const refreshFresh = React.useCallback(async () => {
     if (!sessionId) return;
     setFreshStatus("loading");
     setFreshErr(undefined);
     try {
       try { console.log("[fresh] GET start", { sessionId }); } catch {}
-      const aiApiBase = (process.env.NEXT_PUBLIC_AI_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
       const reqId = Math.random().toString(36).slice(2);
-      // Prefer AI API (LLM-backed) session summary
-      const res = await fetch(`${aiApiBase}/api/v1/session-summary?sessionId=${encodeURIComponent(sessionId)}`, {
+      // Prefer UI API (Convex-backed) session summary
+      const res = await fetch(`/api/v1/session-summary?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "GET",
         headers: { accept: "application/json", "x-request-id": reqId },
         cache: "no-store",
@@ -46,9 +99,13 @@ function Content() {
         text: String((data?.text ?? data?.summaryText) || ""),
         updatedAt: typeof data?.updatedAt === "number" ? data.updatedAt : Date.now(),
         version: typeof data?.version === "number" ? data.version : 1,
+        lastMessageTs: typeof data?.lastMessageTs === 'number' ? data.lastMessageTs : undefined,
+        thresholdTurns: typeof data?.thresholdTurns === 'number' ? data.thresholdTurns : undefined,
+        turnsSince: typeof data?.turnsSince === 'number' ? data.turnsSince : undefined,
       };
       try { console.log("[fresh] GET ok", { len: next.text.length, version: next.version, updatedAt: next.updatedAt }); } catch {}
       setFresh(next);
+      setSinceFetchDelta(0);
       setHistory((cur) => {
         const exists = cur.some((h) => h.version === next.version);
         const arr = exists ? cur : [...cur, { version: next.version, updatedAt: next.updatedAt, text: next.text }];
@@ -78,57 +135,35 @@ function Content() {
       // Save debug prompt details for the panel
       try { setDbgPrompt({ prevSummary: prev, messages: recentMessages }); } catch {}
       try { console.log("[fresh] POST start", { sessionId, prevLen: prev.length, msgs: recentMessages.length }); } catch {}
-      const aiApiBase = (process.env.NEXT_PUBLIC_AI_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
-      const res = await fetch(`${aiApiBase}/api/v1/session-summary/generate`, {
+      const res = await fetch(`/api/v1/session-summary`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ sessionId, prevSummary: prev, messages: recentMessages, tokenBudget: 600 }),
       });
       const data = await res.json().catch(() => ({} as any));
       if (!res.ok) throw new Error(data?.error || `generate failed: ${res.status}`);
-      const next = {
-        text: String(data?.text || ""),
-        updatedAt: typeof data?.updatedAt === 'number' ? data.updatedAt : Date.now(),
-        version: typeof data?.version === 'number' ? data.version : (fresh?.version || 1) + 1,
-      };
-      setFresh(next);
+      // After ack, refresh to fetch latest text/version and transcript for diff
+      await Promise.all([
+        refreshFresh(),
+        refreshServerTranscript(),
+      ]);
       setFreshStatus("ready");
-      try { console.log("[fresh] POST ok", { len: next.text.length, version: next.version }); } catch {}
-      setHistory((cur) => {
-        const exists = cur.some((h) => h.version === next.version);
-        const arr = exists ? cur : [...cur, { version: next.version, updatedAt: next.updatedAt, text: next.text }];
-        arr.sort((a,b) => a.version - b.version);
-        return arr;
-      });
+      try { console.log("[fresh] POST ok (ack)"); } catch {}
     } catch {}
   }, [sessionId, fresh?.text, fresh?.version, convo, mic.transcript, mic.assistantText]);
-  // v1 cadence: UI-side trigger when due (by turns/seconds), non-blocking
+  // Server cadence: remove UI auto trigger; rely on backend via persisted interactions
   const lastAutoRef = React.useRef<number>(0);
   const autoInflightRef = React.useRef<boolean>(false);
   const meta = convo.getSummaryMeta();
-  React.useEffect(() => {
-    if (!sessionId) return;
-    const now = Date.now();
-    const thresholdSeconds = Number.parseInt(process.env.NEXT_PUBLIC_SUMMARY_REFRESH_SECONDS || "120", 10) || 120;
-    const ageSec = meta.updatedAt ? Math.floor((now - meta.updatedAt) / 1000) : Number.MAX_SAFE_INTEGER;
-    const hasAnyMsg = (convo.getImmediateHistory().length > 0) || !!(mic.transcript && mic.transcript.trim()) || !!(mic.assistantText && mic.assistantText.trim());
-    // Only allow time-based trigger if we already have a summary or at least one assistant turn
-    const timeDue = (fresh?.text && fresh.text.trim().length > 0) ? (ageSec >= thresholdSeconds) : false;
-    const due = (meta.turnsUntilDue <= 0 && hasAnyMsg) || timeDue;
-    const cooldownMs = 5000; // guard against repeated triggers on re-renders
-    if (due && !autoInflightRef.current && (now - lastAutoRef.current > cooldownMs)) {
-      autoInflightRef.current = true;
-      lastAutoRef.current = now;
-      try { console.log("[fresh] AUTO generate due", { sessionId, turnsUntilDue: meta.turnsUntilDue, thresholdTurns: meta.thresholdTurns, ageSec, thresholdSeconds }); } catch {}
-      void generateFresh().finally(() => { autoInflightRef.current = false; });
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, meta.turnsUntilDue, meta.updatedAt, mic.transcript, mic.assistantText, fresh?.text]);
+  // Remove UI auto cadence effect
   React.useEffect(() => {
     // Auto-start VAD loop on mount
     if (!mic.vadLoop) {
       try { mic.toggleVadLoop(); } catch {}
     }
+    // Prime server panels on mount
+    void refreshServerTranscript();
+    void refreshSessionState();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // When assistant produces a new reply, schedule a short delayed refresh to pick up
@@ -141,10 +176,15 @@ function Content() {
     if (cur && cur !== prev && !refreshInflightRef.current) {
       // Count a completed assistant turn
       setTurnsSince((n) => (Number.isFinite(n) ? n + 1 : 1));
+      setSinceFetchDelta((d) => (Number.isFinite(d) ? d + 1 : 1));
       refreshInflightRef.current = true;
       lastAssistantRef.current = cur;
       setTimeout(() => {
-        void refreshFresh().finally(() => { refreshInflightRef.current = false; });
+        void Promise.all([
+          refreshFresh(),
+          refreshServerTranscript(),
+          refreshSessionState(),
+        ]).finally(() => { refreshInflightRef.current = false; });
       }, 1200);
     }
   }, [mic.assistantText, refreshFresh]);
@@ -173,6 +213,21 @@ function Content() {
                 <button type="button" onClick={() => mic.startRecording()} disabled={isAnyLoop} className={`px-3 py-1.5 rounded border ${isAnyLoop ? 'opacity-50 cursor-not-allowed' : ''}`}>Tap to speak</button>
                 <button type="button" onClick={() => mic.stopRecording()} disabled={isAnyLoop} className={`px-3 py-1.5 rounded border ${isAnyLoop ? 'opacity-50 cursor-not-allowed' : ''}`}>Stop</button>
                 <button type="button" onClick={() => mic.toggleVadLoop()} className={`px-3 py-1.5 rounded border`}>Loop (VAD): {mic.vadLoop ? 'On' : 'Off'}</button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!sessionId) { setIngestTestStatus('no sessionId'); return; }
+                    try {
+                      const now = Date.now();
+                      const reqId = Math.random().toString(36).slice(2);
+                      const body = { sessionId, messageId: `test_${now}`, role: 'user', contentHash: 'test', text: 'ping', ts: now };
+                      const res = await fetch('/api/v1/interactions', { method: 'POST', headers: { 'content-type': 'application/json', 'x-request-id': reqId }, body: JSON.stringify(body) });
+                      const data = await res.json().catch(() => ({} as any));
+                      setIngestTestStatus(res.ok ? `ok id=${String(data?.id || '')}` : `err ${res.status}: ${String(data?.error || '')}`);
+                    } catch (e) { setIngestTestStatus(e instanceof Error ? e.message : String(e)); }
+                  }}
+                  className={`px-3 py-1.5 rounded border`}
+                >Test ingest</button>
                 <button type="button" onClick={() => (audio.isPaused ? audio.resume() : audio.pause())} className={`px-3 py-1.5 rounded border`}>{audio.isPaused ? 'Resume' : 'Pause'} playback</button>
               </>
             );
@@ -192,7 +247,26 @@ function Content() {
               )}
             </div>
           </div>
-          {/* Removed legacy Summary panel (hook-based) */}
+          {/* Server Transcript Panel */}
+          <div className="p-3 border rounded">
+            <div className="flex items-center justify-between mb-1">
+              <div className="text-sm font-medium">Server transcript</div>
+              <div className="flex gap-2">
+                <button type="button" onClick={refreshServerTranscript} className="px-2 py-1 text-xs border rounded">Refresh</button>
+              </div>
+            </div>
+            <div className="text-[11px] text-zinc-600 mb-1">status={serverTranscriptStatus}</div>
+            <div className="text-xs space-y-1 max-h-56 overflow-auto">
+              {serverTranscript.length === 0 ? (
+                <div className="text-zinc-500">(empty)</div>
+              ) : (
+                serverTranscript.map((m) => (
+                  <div key={m.id}><span className="font-medium">{m.role}:</span> {m.text || <span className="text-zinc-500">(no text)</span>}</div>
+                ))
+              )}
+            </div>
+            {serverTranscriptErr ? <div className="text-[11px] text-red-600 mt-1">error: {serverTranscriptErr}</div> : null}
+          </div>
         </div>
         {/* Fresh Summary Panel (independent) */}
         <div className="mt-4 p-3 border rounded">
@@ -207,9 +281,30 @@ function Content() {
             status={freshStatus}
             {fresh?.updatedAt ? ` · updated ${new Date(fresh.updatedAt).toLocaleTimeString()}` : ""}
             {fresh ? ` · v${fresh.version}` : ""}
-            {` · turns until due: ${Math.max(0, thresholdTurns - (Number.isFinite(turnsSince) ? turnsSince : 0))}`}
+            {(() => {
+              const serverTurnsSince = Number.isFinite(Number((fresh as any)?.turnsSince)) ? Number((fresh as any)?.turnsSince) : undefined;
+              const effectiveSince = serverTurnsSince !== undefined
+                ? Math.max(0, serverTurnsSince + (Number.isFinite(sinceFetchDelta) ? sinceFetchDelta : 0))
+                : (Number.isFinite(turnsSince) ? turnsSince : 0);
+              const suffix = serverTurnsSince !== undefined ? '' : ' (local)';
+              return ` · turns until due: ${Math.max(0, thresholdTurns - effectiveSince)}${suffix}`;
+            })()}
           </div>
           <div className="text-xs whitespace-pre-wrap min-h-[64px]">{fresh?.text || <span className="text-zinc-500">(none)</span>}</div>
+          {/* Incorporated messages since last cutoff */}
+          <div className="mt-2">
+            <div className="text-[11px] text-zinc-700 font-medium mb-1">Messages incorporated since last cutoff</div>
+            <div className="text-[11px] bg-zinc-50 p-2 border rounded max-h-40 overflow-auto">
+              {(() => {
+                const cutoff = fresh?.lastMessageTs || 0;
+                const msgs = serverTranscript
+                  .filter(m => (m.createdAt ?? 0) > cutoff)
+                  .map(m => `${m.role}: ${m.text}`);
+                if (!fresh || cutoff === 0 || msgs.length === 0) return <span className="text-zinc-500">(none)</span>;
+                return <div className="space-y-1">{msgs.map((t, i) => (<div key={i}>{t}</div>))}</div>;
+              })()}
+            </div>
+          </div>
           {freshErr ? <div className="text-[11px] text-red-600 mt-1">error: {freshErr}</div> : null}
           {/* Debug prompt details */}
           <div className="mt-2">
@@ -254,6 +349,19 @@ function Content() {
               ))}
             </div>
           )}
+        </div>
+        {/* Session State Panel */}
+        <div className="mt-3 p-3 border rounded">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-sm font-medium">Session state</div>
+            <div className="flex gap-2">
+              <button type="button" onClick={refreshSessionState} className="px-2 py-1 text-xs border rounded">Refresh</button>
+            </div>
+          </div>
+          <div className="text-[11px] text-zinc-600 mb-1">status={sessionStateStatus}</div>
+          <pre className="text-[11px] whitespace-pre-wrap bg-zinc-50 p-2 rounded border overflow-x-auto">{JSON.stringify(sessionState ?? null, null, 2)}</pre>
+          {sessionStateErr ? <div className="text-[11px] text-red-600 mt-1">error: {sessionStateErr}</div> : null}
+          {ingestTestStatus ? <div className="text-[11px] mt-1">ingest: {ingestTestStatus}</div> : null}
         </div>
       </div>
     </div>
