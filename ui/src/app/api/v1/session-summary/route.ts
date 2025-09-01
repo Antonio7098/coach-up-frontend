@@ -166,10 +166,30 @@ export async function POST(request: Request) {
 
   try {
     if (mode === 'mock') {
-      // In mock mode, synthesize text and persist to in-memory store
+      // In mock mode, still prefer the AI API for generation to mirror real behavior.
+      // Fall back to local synthesizer only if AI API fails, and persist in-memory.
       const prev = prevSummary || getLatestSummary(sessionId)?.text || '';
-      const combined = generateSummaryText(prev, clientMessages, tokenBudget);
-      const row = upsertSummary({ sessionId, text: combined, lastMessageTs: Date.now(), meta: { tokenBudget } });
+      const recentMessages = Array.isArray(clientMessages) ? clientMessages : [];
+      let text = '';
+      try {
+        const res = await fetch(`${aiApiBaseUrl().replace(/\/$/, '')}/api/v1/session-summary/generate`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-request-id': requestId },
+          body: JSON.stringify({ sessionId, prevSummary: prev, messages: recentMessages, tokenBudget }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(String((data as any)?.error || res.status));
+        const headerEmpty = String(res.headers.get('x-summary-empty') || '').trim() === '1';
+        text = String((data as any)?.text || '');
+        if (headerEmpty || !text || text.trim().length === 0) {
+          // Skip creating an empty summary; fall back to previous synthesizer
+          text = generateSummaryText(prev, recentMessages, tokenBudget);
+        }
+      } catch {
+        // Fallback synthesizer in mock mode when AI API is unavailable
+        text = generateSummaryText(prev, recentMessages, tokenBudget);
+      }
+      const row = upsertSummary({ sessionId, text, lastMessageTs: Date.now(), meta: { tokenBudget } });
       const payload = { status: 'completed', summary: { sessionId, version: row.version, updatedAt: row.updatedAt } };
       return respond(200, payload);
     }
