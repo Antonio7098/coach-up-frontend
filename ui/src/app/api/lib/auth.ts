@@ -24,8 +24,8 @@ export async function requireAuth(_request: Request): Promise<AuthResult> {
     // This commonly occurs during unit tests or when auth() is called outside middleware context
     const errorMessage = e instanceof Error ? e.message : String(e);
     if (errorMessage.includes("clerkMiddleware") || errorMessage.includes("cannot detect")) {
-      // During unit tests or when middleware context is unavailable, fall back to anonymous
-      return { ok: true, userId: "anonymous" };
+      // When CLERK_ENABLED=1, middleware errors should still require authentication
+      return { ok: false, reason: "middleware_error" };
     }
 
     try { console.error("[auth] error:", e); } catch {}

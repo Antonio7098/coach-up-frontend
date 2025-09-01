@@ -27,14 +27,45 @@ function convexBaseUrl() {
 
 async function getMockUserData(sessionId: string) {
   try {
+    console.log(`[ui/api/chat] getMockUserData called for sessionId: ${sessionId}`);
+
+    // Seed mock data if not already seeded
+    mockConvex.__devSeedUserData?.();
+
+    // First try to get userId from session
+    let userId = null;
     const session = await mockConvex.getSessionById?.({ sessionId });
-    if (!session?.userId) return null;
+    console.log(`[ui/api/chat] Session lookup result:`, session);
+    if (session?.userId) {
+      userId = session.userId;
+      console.log(`[ui/api/chat] Found userId from session: ${userId}`);
+    } else {
+      // Fallback: try common test userIds
+      console.log(`[ui/api/chat] No session userId, trying fallback userIds`);
+      const testUserIds = ['test_user', 'sales_demo', 'demo_user'];
+      for (const testId of testUserIds) {
+        console.log(`[ui/api/chat] Trying userId: ${testId}`);
+        const profile = await mockConvex.getUserProfile?.({ userId: testId });
+        console.log(`[ui/api/chat] Profile for ${testId}:`, profile);
+        if (profile) {
+          userId = testId;
+          console.log(`[ui/api/chat] Found user with profile: ${userId}`);
+          break;
+        }
+      }
+    }
+
+    if (!userId) {
+      console.log(`[ui/api/chat] No userId found, returning null`);
+      return null;
+    }
 
     const [profile, goals] = await Promise.all([
-      mockConvex.getUserProfile?.({ userId: session.userId }),
-      mockConvex.listUserGoals?.({ userId: session.userId })
+      mockConvex.getUserProfile?.({ userId }),
+      mockConvex.listUserGoals?.({ userId })
     ]);
 
+    console.log(`[ui/api/chat] Final result - profile: ${!!profile}, goals: ${goals?.length || 0}`);
     return { profile, goals: goals || [] };
   } catch (e) {
     console.warn('[ui/api/chat] Failed to fetch mock user data:', e);
@@ -60,6 +91,7 @@ export async function OPTIONS() {
 }
 
 export async function GET(request: Request) {
+  console.log(`[ui/api/chat] GET request received: ${request.url}`);
   const controller = new AbortController();
   const url = new URL(request.url);
   const { search } = url;
@@ -84,11 +116,19 @@ export async function GET(request: Request) {
   // Check if we need to fetch mock user data
   let mockUserData = null;
   const isMockMode = process.env.MOCK_CONVEX === '1';
+  console.log(`[ui/api/chat] Mock mode check: MOCK_CONVEX=${process.env.MOCK_CONVEX}, isMockMode=${isMockMode}, sessionId=${sessionId}`);
   if (isMockMode && sessionId) {
+    console.log(`[ui/api/chat] Attempting to fetch mock user data`);
     mockUserData = await getMockUserData(sessionId);
     if (mockUserData) {
       console.log(`[ui/api/chat] Fetched mock user data for session ${sessionId}: profile=${!!mockUserData.profile}, goals=${mockUserData.goals.length}`);
+      console.log(`[ui/api/chat] Profile:`, mockUserData.profile);
+      console.log(`[ui/api/chat] Goals:`, mockUserData.goals);
+    } else {
+      console.log(`[ui/api/chat] No mock user data found`);
     }
+  } else {
+    console.log(`[ui/api/chat] Not fetching mock user data: isMockMode=${isMockMode}, sessionId=${sessionId}`);
   }
 
   // Merge in server-side summary to history (as system) when available
@@ -118,6 +158,7 @@ export async function GET(request: Request) {
           if (mockUserData) {
             const userDataEnc = b64urlEncode(JSON.stringify(mockUserData));
             params.set("mockUserData", userDataEnc);
+            console.log(`[ui/api/chat] Added mockUserData to params: ${userDataEnc.substring(0, 50)}...`);
           }
 
           upstreamUrl = `${aiApiBaseUrl()}/chat/stream?${params.toString()}`;
@@ -126,6 +167,7 @@ export async function GET(request: Request) {
           const params = new URLSearchParams(url.searchParams);
           const userDataEnc = b64urlEncode(JSON.stringify(mockUserData));
           params.set("mockUserData", userDataEnc);
+          console.log(`[ui/api/chat] Added mockUserData to params (no summary): ${userDataEnc.substring(0, 50)}...`);
           upstreamUrl = `${aiApiBaseUrl()}/chat/stream?${params.toString()}`;
 
           if (debugOn) {

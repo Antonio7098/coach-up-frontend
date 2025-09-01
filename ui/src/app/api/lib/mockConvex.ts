@@ -875,3 +875,50 @@ export async function deleteGoal(args: { userId: string; goalId: string }) {
   _userGoals.splice(idx, 1);
   return { ok: true, deleted: true } as const;
 }
+
+// Dev-only: seed user profile and goals for testing (idempotent)
+export function __devSeedUserData() {
+  const now = Date.now();
+
+  // Seed test user profile
+  if (!_usersProfile['test_user']) {
+    _usersProfile['test_user'] = {
+      userId: 'test_user',
+      displayName: 'Test Salesman',
+      email: 'sam.seller@example.com',
+      bio: 'Experienced B2B sales professional with 8+ years helping companies scale their revenue through strategic partnerships and consultative selling.',
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+
+  // Seed test user goals
+  const goalsToSeed = [
+    {
+      goalId: 'improve_clarity',
+      title: 'Improve communication clarity',
+      description: 'Focus on being more clear and concise in presentations and meetings',
+      status: 'active' as const,
+      tags: ['communication', 'presentation'],
+    },
+    {
+      goalId: 'reduce_filler_words',
+      title: 'Reduce filler words',
+      description: 'Minimize use of "um", "ah", and other filler words during conversations',
+      status: 'active' as const,
+      tags: ['communication', 'confidence'],
+    }
+  ];
+
+  for (const goal of goalsToSeed) {
+    const existingIdx = _userGoals.findIndex(g => g.userId === 'test_user' && g.goalId === goal.goalId);
+    if (existingIdx === -1) {
+      _userGoals.push({
+        userId: 'test_user',
+        ...goal,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+  }
+}
