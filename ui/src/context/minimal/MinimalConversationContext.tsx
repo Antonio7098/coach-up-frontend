@@ -104,7 +104,7 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
               summary: undefined,
               summaryLen: undefined,
               recentMessages: undefined,
-              prompt: typeof data?.user === 'string' ? data.user : '',
+              prompt: typeof data?.rendered === 'string' ? data.rendered : (typeof data?.user === 'string' ? data.user : ''),
               createdAt: Date.now(),
             });
           } catch {}

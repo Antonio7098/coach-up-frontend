@@ -280,14 +280,8 @@ function Content() {
           <div className="text-[11px] text-zinc-600 mb-1">{promptPreview ? 'ready' : 'empty'}</div>
           {promptPreview ? (
             <div className="text-[11px] space-y-1">
-              <div><span className="font-medium">summary</span>: {(promptPreview.summary || '').slice(0, 300)}{(promptPreview.summaryLen || 0) > 300 ? '…' : ''} ({promptPreview.summaryLen || 0} chars)</div>
-              <div><span className="font-medium">prompt</span>: {(promptPreview.prompt || '').slice(0, 200)}{(promptPreview.prompt || '').length > 200 ? '…' : ''}</div>
-              <div className="font-medium">recent:</div>
-              <div className="space-y-0.5">
-                {(promptPreview.recentMessages || []).map((m: any, i: number) => (
-                  <div key={i}><span className="font-medium">{m.role}</span>: {m.content}</div>
-                ))}
-              </div>
+              <div className="font-medium">rendered prompt:</div>
+              <pre className="whitespace-pre-wrap bg-zinc-50 p-2 border rounded max-h-56 overflow-auto">{promptPreview.prompt || ''}</pre>
             </div>
           ) : (
             <div className="text-[11px] text-zinc-500">(none)</div>
