@@ -64,16 +64,8 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     }
   }
 
-  const fetchPromptPreview = useCallback(async (rid: string) => {
-    if (!rid) return;
-    try {
-      const res = await fetch(`/api/v1/chat/prompt-preview?rid=${encodeURIComponent(rid)}`, { method: 'GET', headers: { accept: 'application/json' }, cache: 'no-store' });
-      const data = await res.json().catch(() => ({} as any));
-      if (res.ok && data?.preview) {
-        setPromptPreview(data.preview as PromptPreview);
-      }
-    } catch {}
-  }, []);
+  // Deprecated: preview GET is removed; SSE 'prompt' event is source of truth.
+  const fetchPromptPreview = useCallback(async (_rid: string) => { return; }, []);
 
   const chatToText = useCallback(async (prompt: string): Promise<string> => {
     if (!prompt || !prompt.trim()) return "";
@@ -119,14 +111,11 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
       }
     });
     const first = await startOnce();
-    // Attempt to pull prompt preview (best-effort)
-    try { await fetchPromptPreview(rid); } catch {}
     if (typeof first === "string") return first;
     const second = await startOnce();
-    try { await fetchPromptPreview(rid); } catch {}
     if (typeof second === "string") return second;
     throw new Error("stream failed");
-  }, [sessionId, summary?.text, fetchPromptPreview]);
+  }, [sessionId, summary?.text]);
 
   // Push user/assistant messages into minimal history when chatToText resolves
   const chatToTextWithHistory = useCallback(async (prompt: string): Promise<string> => {
@@ -187,9 +176,9 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     getImmediateHistory,
     getSummaryMeta,
     getLastPromptPreview: () => promptPreview,
-    refreshPromptPreview: async () => { const rid = lastRidRef.current; if (rid) { await fetchPromptPreview(rid); } },
+    refreshPromptPreview: async () => {},
     promptPreview,
-  }), [chatToTextWithHistory, getImmediateHistory, getSummaryMeta, promptPreview, fetchPromptPreview]);
+  }), [chatToTextWithHistory, getImmediateHistory, getSummaryMeta, promptPreview]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
