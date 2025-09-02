@@ -1,20 +1,17 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-// Simple test middleware to verify it's running
+// Debug middleware - very simple to test if middleware runs at all
 export function middleware(request: NextRequest) {
-  console.log(`[TEST-MW] ${request.method} ${request.nextUrl.pathname}`);
+  // Force log to console.error to make sure it shows up
+  console.error(`[DEBUG-MW] Running middleware for: ${request.method} ${request.nextUrl.pathname}`);
 
-  // Add a custom header to verify middleware is running
   const response = NextResponse.next();
-  response.headers.set('X-Middleware-Test', 'working');
+  response.headers.set('X-Middleware-Debug', Date.now().toString());
 
   return response;
 }
 
 export const config = {
-  matcher: [
-    // Match all routes except static files
-    "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
-  ],
+  matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)'],
 };
