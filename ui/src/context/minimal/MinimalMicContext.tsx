@@ -256,35 +256,103 @@ export function MinimalMicProvider({
           let silenceMs = 0;
           let hasSpeech = false;
           let speechMs = 0;
-          const baseSpeechThreshold = 0.03;
-          const playbackSpeechThreshold = 0.035; // lower to recognize speech over playback
-          const silenceThreshold = 0.015; // end-of-speech threshold
-          const minSpeechMsBase = 100;  // ≥100ms voiced frames when idle (support short words)
+          let noiseFloor = 0.005; // Adaptive noise floor tracking (lower initial value)
+          let sampleCount = 0; // Track samples for noise floor adaptation
+          const baseSpeechThreshold = 0.025; // Lower base threshold for better sensitivity
+          const playbackSpeechThreshold = 0.03; // lower to recognize speech over playback
+          const silenceThreshold = 0.012; // end-of-speech threshold
+          const minSpeechMsBase = 80;   // ≥80ms voiced frames when idle (support short words)
           const minSpeechMsPlayback = 200; // ≥200ms voiced frames during playback
-          const debounceMs = 80; // extra debounce before barge-in
+          const debounceMs = 30; // extra debounce before barge-in
           const endSilenceMs = 700; // stop after ~0.7s silence following speech
           try { console.log("MinimalMic: VAD loop started", { baseSpeechThreshold, playbackSpeechThreshold, silenceThreshold, minSpeechMsBase, minSpeechMsPlayback, debounceMs, endSilenceMs }); } catch {}
           const tick = () => {
             // Use recorder state and vadLoopRef to avoid stale React state in closure
             if (rec.state !== "recording" || !vadLoopRef.current) return;
             analyser.getByteTimeDomainData(data);
+
+            // Improved RMS calculation: focus on speech-relevant frequencies and use peak detection
             let sum = 0;
-            for (let i = 0; i < data.length; i++) {
+            let maxAmplitude = 0;
+            const speechBandEnd = Math.floor(data.length * 0.3); // Focus on lower 30% of spectrum (speech frequencies)
+
+            for (let i = 0; i < speechBandEnd; i++) {
               const v = (data[i] - 128) / 128;
+              const absV = Math.abs(v);
               sum += v * v;
+              if (absV > maxAmplitude) maxAmplitude = absV;
             }
-            const rms = Math.sqrt(sum / data.length);
+
+            // Use combination of RMS and peak amplitude for better speech detection
+            const rms = Math.sqrt(sum / speechBandEnd);
+            const combinedEnergy = Math.max(rms, maxAmplitude * 0.7); // Weight peak amplitude
+
+            // Adaptive noise floor: update slowly over first 20 samples
+            sampleCount++;
+            if (sampleCount <= 20) {
+              noiseFloor = noiseFloor * 0.95 + combinedEnergy * 0.05; // Slower adaptation for first samples
+            } else {
+              // Gradual adaptation to changing noise levels
+              noiseFloor = noiseFloor * 0.995 + combinedEnergy * 0.005;
+            }
             const isPlayback = ttsActiveRef.current || playbackActiveRef.current || pendingPlaybackRef.current;
             const speechThreshold = isPlayback ? playbackSpeechThreshold : baseSpeechThreshold;
+
+            // Adaptive threshold: more conservative for first few samples, then based on noise floor
+            let adaptiveThreshold;
+            if (sampleCount <= 5) {
+              // For first 5 samples, use base threshold (don't let noise floor inflate threshold yet)
+              adaptiveThreshold = speechThreshold;
+            } else {
+              // After initial samples, use adaptive threshold but cap it
+              adaptiveThreshold = Math.max(
+                speechThreshold,
+                Math.min(noiseFloor * 2.0, speechThreshold * 1.5), // Cap adaptive threshold
+                0.015 // Absolute minimum threshold
+              );
+            }
+
+            // Immediate detection for very high energy spikes (likely speech starts)
+            const immediateSpeechThreshold = speechThreshold * 2.5; // Much higher threshold for immediate detection
+            const isImmediateSpeech = combinedEnergy > immediateSpeechThreshold;
+
             const minSpeechMs = isPlayback ? minSpeechMsPlayback : minSpeechMsBase;
             const incMs = 100;
             const decMs = isPlayback ? 30 : 30; // slower decay so intermittent speech accumulates
-            // removed periodic VAD tick log
+
+            // Debug logging for first few samples to help diagnose issues
+            if (sampleCount <= 5) {
+              try {
+                console.log("MinimalMic: VAD sample", {
+                  sampleCount,
+                  combinedEnergy: Number(combinedEnergy.toFixed(4)),
+                  adaptiveThreshold: Number(adaptiveThreshold.toFixed(4)),
+                  immediateThreshold: Number(immediateSpeechThreshold.toFixed(4)),
+                  noiseFloor: Number(noiseFloor.toFixed(4)),
+                  speechMs,
+                  isImmediate: isImmediateSpeech
+                });
+              } catch {}
+            }
+
             if (!hasSpeech) {
               const before = speechMs;
-              if (rms > speechThreshold) { speechMs += incMs; } else { speechMs = Math.max(0, speechMs - decMs); }
+
+              // Immediate speech detection for very high energy spikes (fast first-word detection)
+              if (isImmediateSpeech) {
+                speechMs += incMs * 2; // Double increment for immediate detection
+                try { console.log("MinimalMic: IMMEDIATE speech detected!", {
+                  energy: Number(combinedEnergy.toFixed(4)),
+                  threshold: Number(immediateSpeechThreshold.toFixed(4))
+                }); } catch {}
+              } else if (combinedEnergy > adaptiveThreshold) {
+                speechMs += incMs;
+              } else {
+                speechMs = Math.max(0, speechMs - decMs);
+              }
+
               // removed noisy VAD accumulator log
-              const requiredMs = minSpeechMs + debounceMs;
+              const requiredMs = isImmediateSpeech ? 20 : minSpeechMs + debounceMs; // Very fast (20ms) for immediate detection
               if (speechMs >= requiredMs) {
                 hasSpeech = true; silenceMs = 0;
                 // Barge-in path
@@ -295,7 +363,15 @@ export function MinimalMicProvider({
                   try { voice.cancelTTS?.(); } catch {}
                   try { console.log("MinimalMic: calling audio.stop() for barge-in"); } catch {}
                   try { audio.stop?.(); } catch {}
-                  try { console.log("MinimalMic: VAD speech start; barge-in;", { rms: Number(rms.toFixed(3)), speechMs, speechThreshold, requiredMs, ttsActive: ttsActiveRef.current, playbackActive: playbackActiveRef.current }); } catch {}
+                  try { console.log("MinimalMic: VAD speech start; barge-in;", {
+                    energy: Number(combinedEnergy.toFixed(3)),
+                    speechMs,
+                    adaptiveThreshold: Number(adaptiveThreshold.toFixed(3)),
+                    requiredMs,
+                    isImmediate: isImmediateSpeech,
+                    ttsActive: ttsActiveRef.current,
+                    playbackActive: playbackActiveRef.current
+                  }); } catch {}
                   // Switch to audio immediately for barge-in and clear pending playback marker
                   try { pendingPlaybackRef.current = false; } catch {}
                   try { setStatus("audio"); } catch {}
@@ -303,13 +379,28 @@ export function MinimalMicProvider({
                   try { if (rec.state === "recording") rec.stop(); } catch {}
                   return;
                 } else {
-                  try { console.log("MinimalMic: VAD speech start (no playback)", { rms: Number(rms.toFixed(3)) }); } catch {}
+                  try { console.log("MinimalMic: VAD speech start (no playback)", {
+                    energy: Number(combinedEnergy.toFixed(3)),
+                    adaptiveThreshold: Number(adaptiveThreshold.toFixed(3)),
+                    isImmediate: isImmediateSpeech
+                  }); } catch {}
                 }
                 try { setInputSpeaking(true); } catch {}
               }
             }
-            if (hasSpeech && rms < silenceThreshold) { silenceMs += 100; if (silenceMs === 300) { try { console.log("MinimalMic: VAD accumulating silenceMs=", silenceMs, "rms=", rms.toFixed(3)); } catch {} } }
-            else { silenceMs = 0; }
+            // Improved silence detection with hysteresis to prevent premature detection
+            const speechHysteresis = 0.005; // Prevent oscillation around threshold
+            const clearSpeechThreshold = adaptiveThreshold + speechHysteresis; // Require speech to exceed threshold + hysteresis
+
+            if (hasSpeech && combinedEnergy < silenceThreshold) {
+              silenceMs += 100;
+              if (silenceMs === 300) {
+                try { console.log("MinimalMic: VAD accumulating silenceMs=", silenceMs, "energy=", combinedEnergy.toFixed(3)); } catch {}
+              }
+            } else if (hasSpeech && combinedEnergy >= clearSpeechThreshold) {
+              // Only reset silence counter if speech clearly exceeds threshold (hysteresis)
+              silenceMs = 0;
+            }
             const endSil = bargeInActiveRef.current ? 400 : endSilenceMs;
             if (hasSpeech && silenceMs >= endSil) {
               try { console.log("MinimalMic: VAD end-of-speech; stopping recorder; silenceMs=", silenceMs); } catch {}

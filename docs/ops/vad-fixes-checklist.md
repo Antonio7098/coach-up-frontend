@@ -29,19 +29,19 @@ This document outlines the identified issues with VAD in coach-min and coach-deb
 
 ### 🔴 HIGH PRIORITY (Immediate Impact)
 
-#### [ ] Reduce Debounce Time for Faster Detection
+#### [x] Reduce Debounce Time for Faster Detection ✅ COMPLETED
 - **File**: `MinimalMicContext.tsx`
 - **Lines**: 262-264
-- **Change**: Reduce `debounceMs` from 80ms to 30ms
-- **Change**: Reduce `minSpeechMsBase` from 100ms to 80ms
+- **Change**: Reduced `debounceMs` from 80ms to 30ms
+- **Change**: Reduced `minSpeechMsBase` from 100ms to 80ms
 - **Expected Impact**: Much more responsive to short words and barge-ins
 - **Testing**: Verify "yes", "no", "hi", "ok" are detected reliably
 
-#### [ ] Improve Silence Detection Hysteresis
+#### [x] Improve Silence Detection Hysteresis ✅ COMPLETED
 - **File**: `MinimalMicContext.tsx`
-- **Lines**: 311-318
-- **Change**: Add hysteresis to prevent premature silence detection
-- **Change**: Only reset silence counter when speech exceeds threshold + hysteresis
+- **Lines**: 311-323
+- **Change**: Added hysteresis to prevent premature silence detection
+- **Change**: Only reset silence counter when speech exceeds threshold + hysteresis (0.005)
 - **Expected Impact**: Prevents false silence detection after short words
 - **Testing**: Speak short words and verify silence isn't detected immediately after
 
@@ -89,10 +89,26 @@ This document outlines the identified issues with VAD in coach-min and coach-deb
 
 ## Implementation Plan
 
-### Phase 1: Critical Fixes (Week 1)
-1. Reduce debounce time (30ms)
-2. Improve silence detection hysteresis
-3. Basic testing with short words
+### Phase 1: Critical Fixes ✅ COMPLETED
+1. ✅ Reduce debounce time (30ms)
+2. ✅ Improve silence detection hysteresis
+3. ⏳ Basic testing with short words (READY FOR TESTING)
+
+### Phase 1.5: Long Sentence Detection Fixes ✅ COMPLETED
+1. ✅ Improved RMS calculation (focus on speech frequencies)
+2. ✅ Added adaptive noise floor tracking
+3. ✅ Lowered base speech threshold (0.03 → 0.025)
+4. ✅ Added peak amplitude detection for better sensitivity
+5. ✅ Enhanced debug logging for troubleshooting
+6. ⏳ Testing long sentences (READY FOR TESTING)
+
+### Phase 1.6: First Word Detection Fixes ✅ COMPLETED
+1. ✅ Fixed adaptive threshold for first samples (use base threshold initially)
+2. ✅ Added immediate speech detection for high energy spikes
+3. ✅ Reduced initial noise floor (0.01 → 0.005)
+4. ✅ Implemented 20ms detection for immediate speech
+5. ✅ Enhanced debug logging with immediate detection flags
+6. ⏳ Testing first word detection (READY FOR TESTING)
 
 ### Phase 2: Performance Optimization (Week 2)
 1. Optimize RMS sampling
