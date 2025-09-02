@@ -27,7 +27,7 @@ function Content({
   const mic = useMinimalMic();
   const audio = useMinimalAudio();
   const convo = useMinimalConversation();
-  const { sessionId } = useMinimalSession();
+  const { sessionId, isLoading } = useMinimalSession();
 
   // Helper function for base64url encoding
   const toBase64Url = (s: string): string => {
@@ -163,10 +163,9 @@ function Content({
       setSessionStateStatus('error');
     }
   }, [sessionId]);
-  // Track assistant-completed turns since last summary refresh to display turns-until-due
-  const [turnsSince, setTurnsSince] = React.useState<number>(0);
+  // Note: turns tracking is now handled server-side only
   // Server-driven cadence values (fallbacks remain for local-only)
-  const thresholdTurns = Number.isFinite(Number(fresh?.['thresholdTurns'])) ? Number((fresh as any)['thresholdTurns']) : (Number.parseInt(process.env.NEXT_PUBLIC_SUMMARY_REFRESH_TURNS || "8", 10) || 8);
+  const thresholdTurns = Number.isFinite(Number(fresh?.['thresholdTurns'])) ? Number((fresh as any)['thresholdTurns']) : undefined;
   const refreshFresh = React.useCallback(async () => {
     if (!sessionId) return;
     setFreshStatus("loading");
@@ -261,8 +260,7 @@ function Content({
     const cur = mic.assistantText || "";
     const prev = lastAssistantRef.current || "";
     if (cur && cur !== prev && !refreshInflightRef.current) {
-      // Count a completed assistant turn
-      setTurnsSince((n) => (Number.isFinite(n) ? n + 1 : 1));
+      // Note: turn counting is now handled server-side
       setSinceFetchDelta((d) => (Number.isFinite(d) ? d + 1 : 1));
       refreshInflightRef.current = true;
       lastAssistantRef.current = cur;
@@ -275,35 +273,41 @@ function Content({
       }, 1200);
     }
   }, [mic.assistantText, refreshFresh]);
-  // Reset turn counter when a new summary arrives
-  React.useEffect(() => {
-    if (fresh?.updatedAt) setTurnsSince(0);
-  }, [fresh?.updatedAt]);
+  // Note: turn counter reset is now handled server-side
   return (
     <div className="min-h-screen p-4">
-      <h1 className="text-xl font-semibold">Coach (Debug)</h1>
-      <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-        <div className="text-blue-800 font-medium">🔧 Debug Mode</div>
-        <div className="text-sm text-blue-600">This is a debug version of the coach interface with additional debugging features.</div>
-      </div>
-      {audio.needsAudioUnlock ? (
+      {isLoading ? (
+        <div className="flex items-center justify-center min-h-screen">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
+            <p className="mt-2 text-gray-600">Initializing session...</p>
+          </div>
+        </div>
+      ) : (
+        <>
+          <h1 className="text-xl font-semibold">Coach (Debug)</h1>
+          <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+            <div className="text-blue-800 font-medium">🔧 Debug Mode</div>
+            <div className="text-sm text-blue-600">This is a debug version of the coach interface with additional debugging features.</div>
+          </div>
+          {audio.needsAudioUnlock ? (
         <div className="mb-3 p-2 rounded border bg-yellow-50 text-yellow-900 text-sm flex items-center justify-between">
           <span>Audio is blocked by the browser. Click to enable sound.</span>
           <button type="button" onClick={() => audio.unlockAudio()} className="ml-3 px-2 py-1 rounded border">Enable sound</button>
         </div>
       ) : null}
-      <div className="mt-4 space-y-3 max-w-2xl">
-        <div className="text-sm"><span className="font-medium">You:</span> {mic.transcript || <span className="text-zinc-500">(none)</span>}</div>
-        <div className="text-sm"><span className="font-medium">Assistant:</span> {mic.assistantText || <span className="text-zinc-500">(none)</span>}</div>
-        <div className="text-xs text-zinc-600">status={mic.status} · loop={String(mic.vadLoop)} · recording={String(mic.recording)} · playing={String(audio.isPlaybackActive)}</div>
-        <div className="flex gap-2">
-          {(() => {
-            const isAnyLoop = mic.vadLoop;
-            return (
-              <>
-                <button type="button" onClick={() => mic.startRecording()} disabled={isAnyLoop} className={`px-3 py-1.5 rounded border ${isAnyLoop ? 'opacity-50 cursor-not-allowed' : ''}`}>Tap to speak</button>
-                <button type="button" onClick={() => mic.stopRecording()} disabled={isAnyLoop} className={`px-3 py-1.5 rounded border ${isAnyLoop ? 'opacity-50 cursor-not-allowed' : ''}`}>Stop</button>
-                <button type="button" onClick={() => mic.toggleVadLoop()} className={`px-3 py-1.5 rounded border`}>Loop (VAD): {mic.vadLoop ? 'On' : 'Off'}</button>
+          <div className="mt-4 space-y-3 max-w-2xl">
+            <div className="text-sm"><span className="font-medium">You:</span> {mic.transcript || <span className="text-zinc-500">(none)</span>}</div>
+            <div className="text-sm"><span className="font-medium">Assistant:</span> {mic.assistantText || <span className="text-zinc-500">(none)</span>}</div>
+            <div className="text-xs text-zinc-600">status={mic.status} · loop={String(mic.vadLoop)} · recording={String(mic.recording)} · playing={String(audio.isPlaybackActive)}</div>
+            <div className="flex gap-2">
+              {(() => {
+                const isAnyLoop = mic.vadLoop;
+                return (
+                  <>
+                    <button type="button" onClick={() => mic.startRecording()} disabled={isAnyLoop} className={`px-3 py-1.5 rounded border ${isAnyLoop ? 'opacity-50 cursor-not-allowed' : ''}`}>Tap to speak</button>
+                    <button type="button" onClick={() => mic.stopRecording()} disabled={isAnyLoop} className={`px-3 py-1.5 rounded border ${isAnyLoop ? 'opacity-50 cursor-not-allowed' : ''}`}>Stop</button>
+                    <button type="button" onClick={() => mic.toggleVadLoop()} className={`px-3 py-1.5 rounded border`}>Loop (VAD): {mic.vadLoop ? 'On' : 'Off'}</button>
                 <button
                   type="button"
                   onClick={async () => {
@@ -474,12 +478,17 @@ function Content({
             {fresh?.updatedAt ? ` · updated ${new Date(fresh.updatedAt).toLocaleTimeString()}` : ""}
             {fresh ? ` · v${fresh.version}` : ""}
             {(() => {
+              // Only show turns until due if we have server data
               const serverTurnsSince = Number.isFinite(Number((fresh as any)?.turnsSince)) ? Number((fresh as any)?.turnsSince) : undefined;
-              const effectiveSince = serverTurnsSince !== undefined
-                ? Math.max(0, serverTurnsSince + (Number.isFinite(sinceFetchDelta) ? sinceFetchDelta : 0))
-                : (Number.isFinite(turnsSince) ? turnsSince : 0);
-              const suffix = serverTurnsSince !== undefined ? '' : ' (local)';
-              return ` · turns until due: ${Math.max(0, thresholdTurns - effectiveSince)}${suffix}`;
+              const serverThresholdTurns = Number.isFinite(Number((fresh as any)?.thresholdTurns)) ? Number((fresh as any)?.thresholdTurns) : undefined;
+
+              if (serverTurnsSince !== undefined && serverThresholdTurns !== undefined) {
+                const effectiveSince = Math.max(0, serverTurnsSince + (Number.isFinite(sinceFetchDelta) ? sinceFetchDelta : 0));
+                const turnsUntilDue = Math.max(0, serverThresholdTurns - effectiveSince);
+                return ` · turns until due: ${turnsUntilDue}`;
+              } else {
+                return ` · turns until due: unknown`;
+              }
             })()}
           </div>
           <div className="text-xs whitespace-pre-wrap min-h-[64px]">{fresh?.text || <span className="text-zinc-500">(none)</span>}</div>
@@ -543,19 +552,21 @@ function Content({
           )}
         </div>
         {/* Session State Panel */}
-        <div className="mt-3 p-3 border rounded">
-          <div className="flex items-center justify-between mb-2">
-            <div className="text-sm font-medium">Session state</div>
-            <div className="flex gap-2">
-              <button type="button" onClick={refreshSessionState} className="px-2 py-1 text-xs border rounded">Refresh</button>
+            <div className="mt-3 p-3 border rounded">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm font-medium">Session state</div>
+                <div className="flex gap-2">
+                  <button type="button" onClick={refreshSessionState} className="px-2 py-1 text-xs border rounded">Refresh</button>
+                </div>
+              </div>
+              <div className="text-[11px] text-zinc-600 mb-1">status={sessionStateStatus}</div>
+              <pre className="text-[11px] whitespace-pre-wrap bg-zinc-50 p-2 rounded border overflow-x-auto">{JSON.stringify(sessionState ?? null, null, 2)}</pre>
+              {sessionStateErr ? <div className="text-[11px] text-red-600 mt-1">error: {sessionStateErr}</div> : null}
+              {ingestTestStatus ? <div className="text-[11px] mt-1">ingest: {ingestTestStatus}</div> : null}
             </div>
           </div>
-          <div className="text-[11px] text-zinc-600 mb-1">status={sessionStateStatus}</div>
-          <pre className="text-[11px] whitespace-pre-wrap bg-zinc-50 p-2 rounded border overflow-x-auto">{JSON.stringify(sessionState ?? null, null, 2)}</pre>
-          {sessionStateErr ? <div className="text-[11px] text-red-600 mt-1">error: {sessionStateErr}</div> : null}
-          {ingestTestStatus ? <div className="text-[11px] mt-1">ingest: {ingestTestStatus}</div> : null}
-        </div>
-      </div>
+        </>
+      )}
     </div>
   );
 }

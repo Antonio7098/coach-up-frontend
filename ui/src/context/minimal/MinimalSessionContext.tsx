@@ -4,6 +4,7 @@ import React, { createContext, useContext, useEffect, useMemo, useState } from "
 
 export type MinimalSessionContextValue = {
   sessionId: string | null;
+  isLoading?: boolean;
 };
 
 const Ctx = createContext<MinimalSessionContextValue | undefined>(undefined);

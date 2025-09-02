@@ -195,10 +195,9 @@ function Content({
       setSessionStateStatus('error');
     }
   }, [sessionId]);
-  // Track assistant-completed turns since last summary refresh to display turns-until-due
-  const [turnsSince, setTurnsSince] = React.useState<number>(0);
+  // Note: turns tracking is now handled server-side only
   // Server-driven cadence values (fallbacks remain for local-only)
-  const thresholdTurns = Number.isFinite(Number(fresh?.['thresholdTurns'])) ? Number((fresh as any)['thresholdTurns']) : (Number.parseInt(process.env.NEXT_PUBLIC_SUMMARY_REFRESH_TURNS || "8", 10) || 8);
+  const thresholdTurns = Number.isFinite(Number(fresh?.['thresholdTurns'])) ? Number((fresh as any)['thresholdTurns']) : undefined;
   const refreshFresh = React.useCallback(async () => {
     if (!sessionId) return;
     setFreshStatus("loading");
@@ -293,8 +292,7 @@ function Content({
     const cur = mic.assistantText || "";
     const prev = lastAssistantRef.current || "";
     if (cur && cur !== prev && !refreshInflightRef.current) {
-      // Count a completed assistant turn
-      setTurnsSince((n) => (Number.isFinite(n) ? n + 1 : 1));
+      // Note: turn counting is now handled server-side
       setSinceFetchDelta((d) => (Number.isFinite(d) ? d + 1 : 1));
       refreshInflightRef.current = true;
       lastAssistantRef.current = cur;
@@ -307,10 +305,7 @@ function Content({
       }, 1200);
     }
   }, [mic.assistantText, refreshFresh]);
-  // Reset turn counter when a new summary arrives
-  React.useEffect(() => {
-    if (fresh?.updatedAt) setTurnsSince(0);
-  }, [fresh?.updatedAt]);
+  // Note: turn counter reset is now handled server-side
 
   // Fetch profile data
   const fetchProfile = React.useCallback(async () => {
@@ -1021,12 +1016,17 @@ function Content({
                       {fresh?.updatedAt ? ` | updated ${new Date(fresh.updatedAt).toLocaleTimeString()}` : ""}
                       {fresh ? ` | v${fresh.version}` : ""}
             {(() => {
+              // Only show turns until due if we have server data
               const serverTurnsSince = Number.isFinite(Number((fresh as any)?.turnsSince)) ? Number((fresh as any)?.turnsSince) : undefined;
-              const effectiveSince = serverTurnsSince !== undefined
-                ? Math.max(0, serverTurnsSince + (Number.isFinite(sinceFetchDelta) ? sinceFetchDelta : 0))
-                : (Number.isFinite(turnsSince) ? turnsSince : 0);
-              const suffix = serverTurnsSince !== undefined ? '' : ' (local)';
-                        return ` | turns_until_due: ${Math.max(0, thresholdTurns - effectiveSince)}${suffix}`;
+              const serverThresholdTurns = Number.isFinite(Number((fresh as any)?.thresholdTurns)) ? Number((fresh as any)?.thresholdTurns) : undefined;
+
+              if (serverTurnsSince !== undefined && serverThresholdTurns !== undefined) {
+                const effectiveSince = Math.max(0, serverTurnsSince + (Number.isFinite(sinceFetchDelta) ? sinceFetchDelta : 0));
+                const turnsUntilDue = Math.max(0, serverThresholdTurns - effectiveSince);
+                return ` | turns_until_due: ${turnsUntilDue}`;
+              } else {
+                return ` | turns_until_due: unknown`;
+              }
             })()}
           </div>
                     <div className="text-xs whitespace-pre-wrap min-h-[64px] text-gray-800">{fresh?.text || <span className="text-gray-500">(none)</span>}</div>

@@ -1,9 +1,15 @@
 import { v } from 'convex/values';
 import { mutation, query, QueryCtx, MutationCtx } from './_generated/server';
-import { getUser } from './users';
+import { getUser, getOrCreateUser } from './users';
 
-const getUserCtx = async (ctx: QueryCtx | MutationCtx) => {
+const getUserQueryCtx = async (ctx: QueryCtx) => {
   const user = await getUser(ctx);
+  if (!user) throw new Error('User not authenticated');
+  return user;
+};
+
+const getUserMutationCtx = async (ctx: MutationCtx) => {
+  const user = await getOrCreateUser(ctx);
   if (!user) throw new Error('User not authenticated');
   return user;
 };
@@ -11,7 +17,7 @@ const getUserCtx = async (ctx: QueryCtx | MutationCtx) => {
 export const getUserGoals = query({
   args: {},
   handler: async (ctx) => {
-    const user = await getUserCtx(ctx);
+    const user = await getUserQueryCtx(ctx);
     return await ctx.db
       .query('users_goals')
       .withIndex('by_user', (q) => q.eq('userId', user._id))
@@ -32,7 +38,7 @@ export const createGoal = mutation({
     tags: v.array(v.string()),
   },
   handler: async (ctx, args) => {
-    const user = await getUserCtx(ctx);
+    const user = await getUserMutationCtx(ctx);
     
     // Validate inputs
     if (!args.title.trim()) {
@@ -69,7 +75,7 @@ export const updateGoal = mutation({
     tags: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
-    const user = await getUserCtx(ctx);
+    const user = await getUserMutationCtx(ctx);
     
     const goal = await ctx.db
       .query('users_goals')
@@ -98,7 +104,7 @@ export const updateGoal = mutation({
 export const deleteGoal = mutation({
   args: { goalId: v.string() },
   handler: async (ctx, args) => {
-    const user = await getUserCtx(ctx);
+    const user = await getUserMutationCtx(ctx);
     
     const goal = await ctx.db
       .query('users_goals')

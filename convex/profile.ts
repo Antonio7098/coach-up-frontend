@@ -1,6 +1,6 @@
 import { v } from 'convex/values';
 import { mutation, query } from './_generated/server';
-import { getUser } from './users';
+import { getUser, getOrCreateUser } from './users';
 
 export const getUserProfile = query({
   args: {},
@@ -22,7 +22,7 @@ export const updateUserProfile = mutation({
     bio: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const user = await getUser(ctx);
+    const user = await getOrCreateUser(ctx);
     if (!user) throw new Error('User not authenticated');
 
     // Validate inputs
