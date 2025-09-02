@@ -24,11 +24,31 @@ export function MinimalVoiceProvider({ children }: { children: React.ReactNode }
   const pendingChunksRef = useRef<string[]>([]);
   const isProcessingRef = useRef(false);
 
+  // Text cleaning function to remove asterisks and other unwanted punctuation
+  const cleanTextForSpeech = useCallback((text: string): string => {
+    return text
+      // Remove asterisks used for emphasis
+      .replace(/\*/g, '')
+      // Remove markdown-style bold/italic markers
+      .replace(/\*\*/g, '')
+      .replace(/\_\_/g, '')
+      .replace(/\`/g, '')
+      // Remove excessive punctuation that TTS might mispronounce
+      .replace(/\.{3,}/g, '.')  // Replace multiple dots with single dot
+      .replace(/\!{2,}/g, '!')  // Replace multiple exclamation marks
+      .replace(/\?{2,}/g, '?')  // Replace multiple question marks
+      // Clean up extra whitespace
+      .replace(/\s+/g, ' ')
+      .trim()
+  }, []);
+
   const enqueueTTSSegment = useCallback(async (text: string) => {
     if (!text || !text.trim()) return;
     const myGen = ttsGenRef.current;
+    // Clean text before processing
+    const cleanedText = cleanTextForSpeech(text);
     // Minimal segmentation by sentence-ending punctuation. Coalesce tiny parts.
-    const raw = String(text).replace(/\s+/g, " ").trim();
+    const raw = String(cleanedText).replace(/\s+/g, " ").trim();
     const parts = raw
       .split(/(?<=[.!?])\s+/)
       .map((s) => s.trim())
@@ -68,7 +88,7 @@ export function MinimalVoiceProvider({ children }: { children: React.ReactNode }
     }
     // Resolve only after all enqueued segments have finished playing
     try { await Promise.all(playPromises); } catch {}
-  }, [audio]);
+  }, [audio, cleanTextForSpeech]);
 
   const processPendingChunks = useCallback(async () => {
     if (isProcessingRef.current || pendingChunksRef.current.length === 0) return;
@@ -80,8 +100,11 @@ export function MinimalVoiceProvider({ children }: { children: React.ReactNode }
       const chunk = pendingChunksRef.current.shift();
       if (!chunk || !chunk.trim()) continue;
 
+      // Clean the chunk before processing
+      const cleanedChunk = cleanTextForSpeech(chunk);
+
       // Split chunk into sentences and process immediately
-      const segments = chunk
+      const segments = cleanedChunk
         .split(/(?<=[.!?])\s+/)
         .map((s) => s.trim())
         .filter(Boolean);
@@ -111,7 +134,7 @@ export function MinimalVoiceProvider({ children }: { children: React.ReactNode }
     }
 
     isProcessingRef.current = false;
-  }, [audio]);
+  }, [audio, cleanTextForSpeech]);
 
   const enqueueTTSChunk = useCallback(async (text: string) => {
     if (!text || !text.trim()) return;
