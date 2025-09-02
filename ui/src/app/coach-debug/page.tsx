@@ -7,6 +7,7 @@ import { MinimalConversationProvider, useMinimalConversation } from "../../conte
 import { useMinimalSession } from "../../context/minimal/MinimalSessionContext";
 import { MinimalMicProvider, useMinimalMic } from "../../context/minimal/MinimalMicContext";
 import { MinimalSessionProvider } from "../../context/minimal/MinimalSessionContext";
+import { useUser } from "@clerk/nextjs";
 
 function Content() {
   const mic = useMinimalMic();

@@ -16,7 +16,7 @@ export default function GlobalMicGate() {
   const audio = useAudio();
 
   useEffect(() => {
-    if (pathname?.startsWith("/coach-min")) {
+    if (pathname?.startsWith("/coach-min") || pathname?.startsWith("/coach-debug")) {
       try { mic.setVoiceLoop(false); } catch {}
       try { mic.stopRecording(); } catch {}
       try { convo.cancelActiveChatStream(); } catch {}
@@ -26,7 +26,7 @@ export default function GlobalMicGate() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname]);
 
-  if (pathname?.startsWith("/coach-min")) return null;
+  if (pathname?.startsWith("/coach-min") || pathname?.startsWith("/coach-debug")) return null;
   return <GlobalMicButton />;
 }
 

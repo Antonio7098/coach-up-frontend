@@ -35,12 +35,23 @@ export function MinimalMicProvider({
   userProfile?: any;
   userGoals?: any[];
 }) {
+
   const voice = useMinimalVoice();
   const audio = useMinimalAudio();
   const convo = useMinimalConversation();
   const { sessionId } = useMinimalSession();
   const sessionIdRef = useRef<string | null>(null);
   React.useEffect(() => { sessionIdRef.current = sessionId || null; }, [sessionId]);
+
+  // Refs to track current profile/goals for use in async callbacks
+  const userProfileRef = useRef<any>(null);
+  const userGoalsRef = useRef<any[]>([]);
+
+  // Update refs when props change
+  React.useEffect(() => {
+    userProfileRef.current = userProfile;
+    userGoalsRef.current = userGoals;
+  }, [userProfile, userGoals]);
   const [recording, setRecording] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [assistantText, setAssistantText] = useState("");
@@ -48,6 +59,8 @@ export function MinimalMicProvider({
   const [vadLoop, setVadLoop] = useState(false);
   const [inputSpeaking, setInputSpeaking] = useState(false);
   const mediaRef = useRef<MediaRecorder | null>(null);
+
+
   const streamRef = useRef<MediaStream | null>(null);
   const vadLoopRef = useRef<boolean>(false);
   React.useEffect(() => { vadLoopRef.current = vadLoop; }, [vadLoop]);
@@ -135,7 +148,8 @@ export function MinimalMicProvider({
             const { text } = await voice.sttFromBlob(blob);
             setTranscript(text); try { console.log("MinimalMic: STT done; textLen=", (text || "").length); } catch {}
             setStatus("chat"); try { console.log("MinimalMic: Chat start"); } catch {}
-            const reply = await convo.chatToText(text, { userProfile, userGoals });
+
+            const reply = await convo.chatToText(text, { userProfile: userProfileRef.current, userGoals: userGoalsRef.current });
             setAssistantText(reply); try { console.log("MinimalMic: Chat done; replyLen=", (reply || "").length); } catch {}
             // Persist interactions to backend to enable server cadence
             try {

@@ -8,6 +8,7 @@ import { useMinimalSession } from "../../context/minimal/MinimalSessionContext";
 import { MinimalMicProvider, useMinimalMic } from "../../context/minimal/MinimalMicContext";
 import { MinimalSessionProvider } from "../../context/minimal/MinimalSessionContext";
 import MicMinButton from "../../components/MicMinButton";
+import { useUser } from "@clerk/nextjs";
 
 function App() {
   // Profile and Goals data - moved to parent so it can be passed to MinimalMicProvider
@@ -15,6 +16,7 @@ function App() {
   const [goals, setGoals] = React.useState<any[]>([]);
   const [profileLoading, setProfileLoading] = React.useState<boolean>(false);
   const [goalsLoading, setGoalsLoading] = React.useState<boolean>(false);
+
 
   return (
     <MinimalAudioProvider>
@@ -63,6 +65,7 @@ function Content({
   const audio = useMinimalAudio();
   const convo = useMinimalConversation();
   const { sessionId } = useMinimalSession();
+  const { user } = useUser();
 
   // Dashboard state management
   const [showDashboard, setShowDashboard] = React.useState<boolean>(false);
@@ -78,8 +81,8 @@ function Content({
   const [profileDisplayName, setProfileDisplayName] = React.useState<string>('');
   const [profileBio, setProfileBio] = React.useState<string>('');
 
-  // Mock userId for now (in a real app this would come from auth context)
-  const userId = "mock-user-id";
+  // Get userId from Clerk authentication
+  const userId = user?.id || "anonymous";
 
   // Fresh panel: independent state that directly calls the API
   const [fresh, setFresh] = React.useState<{ text: string; updatedAt: number; version: number; lastMessageTs?: number; thresholdTurns?: number; turnsSince?: number } | null>(null);
@@ -303,6 +306,16 @@ function Content({
       setGoalsLoading(false);
     }
   }, [userId]);
+
+  // Fetch profile and goals on mount and when userId changes
+  React.useEffect(() => {
+    if (userId && userId !== "anonymous") {
+      fetchProfile();
+      fetchGoals();
+    }
+  }, [userId, fetchProfile, fetchGoals]);
+
+
 
   // Add new goal
   const addGoal = React.useCallback(async (title: string, description?: string) => {
@@ -685,7 +698,7 @@ function Content({
                             className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
                           />
                         </div>
-                        <div className="flex gap-2">
+        <div className="flex gap-2">
                           <button
                             onClick={() => addGoal(newGoalTitle, newGoalDescription)}
                             disabled={!newGoalTitle.trim()}
@@ -824,34 +837,34 @@ function Content({
                   <div><span className="text-blue-600 font-semibold">&gt; ASSISTANT:</span> {mic.assistantText || <span className="text-gray-500">(none)</span>}</div>
                   <div className="text-xs text-gray-600">status={mic.status} | loop={String(mic.vadLoop)} | recording={String(mic.recording)} | playing={String(audio.isPlaybackActive)}</div>
                   <div className="flex gap-2 flex-wrap">
-                    {(() => {
-                      const isAnyLoop = mic.vadLoop;
-                      return (
-                        <>
+          {(() => {
+            const isAnyLoop = mic.vadLoop;
+            return (
+              <>
                           <button type="button" onClick={() => mic.startRecording()} disabled={isAnyLoop} className={`px-3 py-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-50 ${isAnyLoop ? 'opacity-50 cursor-not-allowed' : ''}`}>[TAP_TO_SPEAK]</button>
                           <button type="button" onClick={() => mic.stopRecording()} disabled={isAnyLoop} className={`px-3 py-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-50 ${isAnyLoop ? 'opacity-50 cursor-not-allowed' : ''}`}>[STOP]</button>
                           <button type="button" onClick={() => mic.toggleVadLoop()} className={`px-3 py-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-50`}>[VAD_LOOP]: {mic.vadLoop ? 'ON' : 'OFF'}</button>
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              if (!sessionId) { setIngestTestStatus('no sessionId'); return; }
-                              try {
-                                const now = Date.now();
-                                const reqId = Math.random().toString(36).slice(2);
-                                const body = { sessionId, messageId: `test_${now}`, role: 'user', contentHash: 'test', text: 'ping', ts: now };
-                                const res = await fetch('/api/v1/interactions', { method: 'POST', headers: { 'content-type': 'application/json', 'x-request-id': reqId }, body: JSON.stringify(body) });
-                                const data = await res.json().catch(() => ({} as any));
-                                setIngestTestStatus(res.ok ? `ok id=${String(data?.id || '')}` : `err ${res.status}: ${String(data?.error || '')}`);
-                              } catch (e) { setIngestTestStatus(e instanceof Error ? e.message : String(e)); }
-                            }}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!sessionId) { setIngestTestStatus('no sessionId'); return; }
+                    try {
+                      const now = Date.now();
+                      const reqId = Math.random().toString(36).slice(2);
+                      const body = { sessionId, messageId: `test_${now}`, role: 'user', contentHash: 'test', text: 'ping', ts: now };
+                      const res = await fetch('/api/v1/interactions', { method: 'POST', headers: { 'content-type': 'application/json', 'x-request-id': reqId }, body: JSON.stringify(body) });
+                      const data = await res.json().catch(() => ({} as any));
+                      setIngestTestStatus(res.ok ? `ok id=${String(data?.id || '')}` : `err ${res.status}: ${String(data?.error || '')}`);
+                    } catch (e) { setIngestTestStatus(e instanceof Error ? e.message : String(e)); }
+                  }}
                             className={`px-3 py-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-50`}
                           >[TEST_INGEST]</button>
                           <button type="button" onClick={() => (audio.isPaused ? audio.resume() : audio.pause())} className={`px-3 py-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-50`}>[{audio.isPaused ? 'RESUME' : 'PAUSE'}_PLAYBACK]</button>
-                        </>
-                      );
-                    })()}
-                  </div>
-                </div>
+              </>
+            );
+          })()}
+              </div>
+            </div>
               )}
 
               {activeTab === 'prompt' && (
@@ -859,17 +872,17 @@ function Content({
                   <div className="flex items-center justify-between mb-3">
                     <div className="text-sm font-mono text-blue-600 font-semibold">[LLM_PROMPT_DEBUG]</div>
                     <button type="button" onClick={() => { try { setPromptPreview(convo.getLastPromptPreview()); } catch {} }} className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-50">[REFRESH]</button>
-                  </div>
+            </div>
                   <div className="text-xs text-gray-600 mb-2">{promptPreview ? 'STATUS: READY' : 'STATUS: EMPTY'}</div>
-                  {promptPreview ? (
+          {promptPreview ? (
                     <div className="text-xs space-y-1">
                       <div className="text-blue-600 font-semibold">&gt; FULL_PROMPT_TO_LLM:</div>
                       <pre className="whitespace-pre-wrap bg-gray-50 border border-gray-200 p-3 rounded max-h-56 overflow-auto text-xs text-gray-800 font-mono">{promptPreview.prompt || ''}</pre>
-                    </div>
-                  ) : (
+            </div>
+          ) : (
                     <div className="text-xs text-gray-500">(none)</div>
-                  )}
-                </div>
+          )}
+        </div>
               )}
 
               {activeTab === 'summary' && (
@@ -878,88 +891,88 @@ function Content({
                   <div className="border border-gray-200 rounded p-3 bg-gray-50">
                     <div className="flex items-center justify-between mb-2">
                       <div className="text-sm font-mono text-blue-600 font-semibold">[FRESH_SUMMARY]</div>
-                      <div className="flex gap-2">
+            <div className="flex gap-2">
                         <button type="button" onClick={refreshFresh} className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-100">[REFRESH]</button>
                         <button type="button" onClick={generateFresh} className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-100">[GENERATE]</button>
-                      </div>
-                    </div>
+            </div>
+          </div>
                     <div className="text-xs text-gray-600 mb-2">
-                      status={freshStatus}
+            status={freshStatus}
                       {fresh?.updatedAt ? ` | updated ${new Date(fresh.updatedAt).toLocaleTimeString()}` : ""}
                       {fresh ? ` | v${fresh.version}` : ""}
-                      {(() => {
-                        const serverTurnsSince = Number.isFinite(Number((fresh as any)?.turnsSince)) ? Number((fresh as any)?.turnsSince) : undefined;
-                        const effectiveSince = serverTurnsSince !== undefined
-                          ? Math.max(0, serverTurnsSince + (Number.isFinite(sinceFetchDelta) ? sinceFetchDelta : 0))
-                          : (Number.isFinite(turnsSince) ? turnsSince : 0);
-                        const suffix = serverTurnsSince !== undefined ? '' : ' (local)';
+            {(() => {
+              const serverTurnsSince = Number.isFinite(Number((fresh as any)?.turnsSince)) ? Number((fresh as any)?.turnsSince) : undefined;
+              const effectiveSince = serverTurnsSince !== undefined
+                ? Math.max(0, serverTurnsSince + (Number.isFinite(sinceFetchDelta) ? sinceFetchDelta : 0))
+                : (Number.isFinite(turnsSince) ? turnsSince : 0);
+              const suffix = serverTurnsSince !== undefined ? '' : ' (local)';
                         return ` | turns_until_due: ${Math.max(0, thresholdTurns - effectiveSince)}${suffix}`;
-                      })()}
-                    </div>
+            })()}
+          </div>
                     <div className="text-xs whitespace-pre-wrap min-h-[64px] text-gray-800">{fresh?.text || <span className="text-gray-500">(none)</span>}</div>
 
                     {/* Incorporated messages */}
                     <div className="mt-3">
                       <div className="text-xs text-gray-700 font-mono mb-2 font-semibold">&gt; MESSAGES_INCORPORATED_SINCE_LAST_CUTOFF:</div>
                       <div className="text-xs bg-white border border-gray-200 p-2 rounded max-h-40 overflow-auto font-mono">
-                        {(() => {
-                          const cutoff = fresh?.lastMessageTs || 0;
-                          const msgs = serverTranscript
-                            .filter(m => (m.createdAt ?? 0) > cutoff)
-                            .map(m => `${m.role}: ${m.text}`);
+              {(() => {
+                const cutoff = fresh?.lastMessageTs || 0;
+                const msgs = serverTranscript
+                  .filter(m => (m.createdAt ?? 0) > cutoff)
+                  .map(m => `${m.role}: ${m.text}`);
                           if (!fresh || cutoff === 0 || msgs.length === 0) return <span className="text-gray-500">(none)</span>;
                           return <div className="space-y-1">{msgs.map((t, i) => (<div key={i} className="text-gray-800">{t}</div>))}</div>;
-                        })()}
-                      </div>
-                    </div>
+              })()}
+            </div>
+          </div>
 
                     {freshErr ? <div className="text-xs text-red-600 mt-2 font-mono font-semibold">&gt; ERROR: {freshErr}</div> : null}
 
-                    {/* Debug prompt details */}
+          {/* Debug prompt details */}
                     <div className="mt-3">
                       <button type="button" onClick={() => setDbgOpen(o => !o)} className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-100">[{dbgOpen ? 'HIDE' : 'SHOW'}_LLM_PROMPT_DEBUG]</button>
-                      {dbgOpen && (
+            {dbgOpen && (
                         <div className="mt-2 text-xs text-gray-700 space-y-2 font-mono">
                           <div className="text-blue-600 font-semibold">&gt; PREV_SUMMARY_PREVIEW:</div>
                           <div className="whitespace-pre-wrap bg-white border border-gray-200 p-2 rounded text-gray-800">{dbgPrompt?.prevSummary ? (dbgPrompt.prevSummary.length > 300 ? dbgPrompt.prevSummary.slice(0,300) + '…' : dbgPrompt.prevSummary) : '(none)'}</div>
                           <div className="text-blue-600 font-semibold mt-2">&gt; RECENT_MESSAGES ({dbgPrompt?.messages?.length ?? 0}):</div>
-                          <div className="space-y-1">
-                            {(dbgPrompt?.messages || []).slice(0, 6).map((m, i) => (
+                <div className="space-y-1">
+                  {(dbgPrompt?.messages || []).slice(0, 6).map((m, i) => (
                               <div key={i} className="bg-white border border-gray-200 p-2 rounded">
                                 <span className="text-blue-600 font-semibold">{m.role}:</span> <span className="text-gray-800">{m.content.length > 120 ? m.content.slice(0,120) + '…' : m.content}</span>
-                              </div>
-                            ))}
-                            {(dbgPrompt?.messages || []).length > 6 ? <div className="text-gray-500">…and more</div> : null}
-                          </div>
-                        </div>
-                      )}
                     </div>
-                  </div>
+                  ))}
+                            {(dbgPrompt?.messages || []).length > 6 ? <div className="text-gray-500">…and more</div> : null}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
 
                   {/* Summary History */}
                   <div className="border border-gray-200 rounded p-3 bg-gray-50">
-                    <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center justify-between mb-2">
                       <div className="text-sm font-mono text-blue-600 font-semibold">[SUMMARY_HISTORY_LOCAL]</div>
                       <div className="text-xs text-gray-600">{history.length} versions</div>
-                    </div>
-                    {history.length === 0 ? (
+          </div>
+          {history.length === 0 ? (
                       <div className="text-xs text-gray-500">(empty)</div>
-                    ) : (
-                      <div className="space-y-2">
-                        {history.map((h) => (
+          ) : (
+            <div className="space-y-2">
+              {history.map((h) => (
                           <div key={h.version} className="border border-gray-200 rounded bg-white">
                             <div className="flex items-center justify-between px-2 py-1 bg-gray-100">
                               <div className="text-xs text-gray-700 font-mono">v{h.version} | {new Date(h.updatedAt).toLocaleTimeString()}</div>
                               <button type="button" className="text-xs px-2 py-0.5 border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-200" onClick={() => setOpenMap((m) => ({ ...m, [h.version]: !m[h.version] }))}>[{openMap[h.version] ? 'HIDE' : 'SHOW'}]</button>
-                            </div>
-                            {openMap[h.version] ? (
-                              <div className="p-2 text-xs whitespace-pre-wrap text-gray-800 font-mono">{h.text}</div>
-                            ) : null}
-                          </div>
-                        ))}
-                      </div>
-                    )}
                   </div>
+                  {openMap[h.version] ? (
+                              <div className="p-2 text-xs whitespace-pre-wrap text-gray-800 font-mono">{h.text}</div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
                 </div>
               )}
 
@@ -981,7 +994,7 @@ function Content({
 
                   {/* Server Transcript */}
                   <div className="border border-gray-200 rounded p-3 bg-gray-50">
-                    <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center justify-between mb-2">
                       <div className="text-sm font-mono text-blue-600 font-semibold">[SERVER_TRANSCRIPT]</div>
                       <button type="button" onClick={refreshServerTranscript} className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-100">[REFRESH]</button>
                     </div>
