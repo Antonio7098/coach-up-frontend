@@ -16,6 +16,10 @@ export type MinimalMicContextValue = {
   vadLoop: boolean;
   toggleVadLoop: () => void;
   inputSpeaking: boolean;
+  // Advanced VAD features
+  triggerVadCalibration: () => void;
+  resetVadState: () => void;
+  getVadCalibrationData: () => any;
 };
 
 const Ctx = createContext<MinimalMicContextValue | undefined>(undefined);
@@ -30,12 +34,16 @@ export function MinimalMicProvider({
   children,
   userProfile,
   userGoals,
-  customSystemPrompt
+  customSystemPrompt,
+  model,
+  onModelChange
 }: {
   children: React.ReactNode;
   userProfile?: any;
   userGoals?: any[];
   customSystemPrompt?: string;
+  model?: string;
+  onModelChange?: (model: string, provider: string) => void;
 }) {
 
   const voice = useMinimalVoice();
@@ -51,13 +59,15 @@ export function MinimalMicProvider({
   const userProfileRef = useRef<any>(null);
   const userGoalsRef = useRef<any[]>([]);
   const customSystemPromptRef = useRef<string>("");
+  const modelRef = useRef<string>("");
 
   // Update refs when props change
   React.useEffect(() => {
     userProfileRef.current = userProfile;
     userGoalsRef.current = userGoals || [];
     customSystemPromptRef.current = customSystemPrompt || "";
-  }, [userProfile, userGoals, customSystemPrompt]);
+    modelRef.current = model || "";
+  }, [userProfile, userGoals, customSystemPrompt, model]);
   const [recording, setRecording] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [assistantText, setAssistantText] = useState("");
@@ -65,6 +75,110 @@ export function MinimalMicProvider({
   const [vadLoop, setVadLoop] = useState(false);
   const [inputSpeaking, setInputSpeaking] = useState(false);
   const mediaRef = useRef<MediaRecorder | null>(null);
+
+  // Advanced VAD Calibration System (component-level state)
+  const [calibrationData, setCalibrationData] = useState({
+    voiceProfile: {
+      avgEnergy: 0.02,
+      peakEnergy: 0.08,
+      noiseFloor: 0.005,
+      samples: 0
+    },
+    environmentProfile: {
+      backgroundNoise: 0.01,
+      echoLevel: 0,
+      lastCalibration: 0
+    },
+    performance: {
+      falsePositives: 0,
+      falseNegatives: 0,
+      totalDetections: 0,
+      accuracy: 1.0
+    }
+  });
+
+  // Load calibration data from localStorage
+  React.useEffect(() => {
+    try {
+      const savedCalibration = localStorage.getItem('cu.vad.calibration');
+      if (savedCalibration) {
+        setCalibrationData(JSON.parse(savedCalibration));
+      }
+    } catch {}
+  }, []);
+
+  // Calibration management functions
+  const saveCalibrationData = React.useCallback(() => {
+    try {
+      localStorage.setItem('cu.vad.calibration', JSON.stringify({
+        ...calibrationData,
+        timestamp: Date.now()
+      }));
+    } catch {}
+  }, [calibrationData]);
+
+  const updateCalibrationData = React.useCallback((updates: Partial<typeof calibrationData>) => {
+    setCalibrationData(prev => ({ ...prev, ...updates }));
+  }, []);
+
+  const triggerVadCalibration = React.useCallback(() => {
+    // Manual VAD calibration triggered
+    // Reset calibration data to force recalibration
+    setCalibrationData({
+      voiceProfile: {
+        avgEnergy: 0.02,
+        peakEnergy: 0.08,
+        noiseFloor: 0.005,
+        samples: 0
+      },
+      environmentProfile: {
+        backgroundNoise: 0.01,
+        echoLevel: 0,
+        lastCalibration: Date.now()
+      },
+      performance: {
+        falsePositives: 0,
+        falseNegatives: 0,
+        totalDetections: 0,
+        accuracy: 1.0
+      }
+    });
+    try {
+      localStorage.setItem('cu.vad.force_calibration', 'true');
+    } catch {}
+  }, []);
+
+  const resetVadState = React.useCallback(() => {
+    // VAD state reset triggered
+    // Reset calibration data
+    try {
+      localStorage.removeItem('cu.vad.calibration');
+      localStorage.removeItem('cu.vad.force_calibration');
+    } catch {}
+    setCalibrationData({
+      voiceProfile: {
+        avgEnergy: 0.02,
+        peakEnergy: 0.08,
+        noiseFloor: 0.005,
+        samples: 0
+      },
+      environmentProfile: {
+        backgroundNoise: 0.01,
+        echoLevel: 0,
+        lastCalibration: 0
+      },
+      performance: {
+        falsePositives: 0,
+        falseNegatives: 0,
+        totalDetections: 0,
+        accuracy: 1.0
+      }
+    });
+  }, []);
+
+  const getVadCalibrationData = React.useCallback(() => {
+    return calibrationData;
+  }, [calibrationData]);
 
 
   const streamRef = useRef<MediaStream | null>(null);
@@ -88,13 +202,13 @@ export function MinimalMicProvider({
   const ttsActiveRef = useRef<boolean>(false);
   React.useEffect(() => {
     ttsActiveRef.current = (status === "tts" || status === "playback");
-    try { console.log("MinimalMic: TTS/playback state:", { status, ttsActive: ttsActiveRef.current, playbackActive: playbackActiveRef.current, pending: pendingPlaybackRef.current }); } catch {}
+    // Check TTS/playback state
   }, [status]);
   const bargeInActiveRef = useRef<boolean>(false);
   const resumeAfterBargeInRef = useRef<boolean>(false);
 
   const stopRecording = useCallback(() => {
-    try { console.log("MinimalMic: stopRecording() called; recording=", recording); } catch {}
+    // Stop recording called
     setRecording(false);
     setInputSpeaking(false);
     try {
@@ -119,7 +233,7 @@ export function MinimalMicProvider({
 
   const cancelCurrentCapture = useCallback(() => {
     skipSttOnStopRef.current = true;
-    try { console.log("MinimalMic: cancelCurrentCapture → skipSttOnStop=true"); } catch {}
+    // Cancel current capture
     try { stopRecording(); } catch {}
   }, [stopRecording]);
 
@@ -127,7 +241,7 @@ export function MinimalMicProvider({
     if (recording || startingRef.current) return;
     try {
       startingRef.current = true;
-      try { console.log("MinimalMic: startRecording() vadLoop=", vadLoopRef.current, "forceVad=", forceVad); } catch {}
+      // Start recording
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
       const rec = new MediaRecorder(stream);
@@ -136,7 +250,7 @@ export function MinimalMicProvider({
       rec.ondataavailable = (ev) => { if (ev.data && ev.data.size > 0) chunks.push(ev.data); };
       rec.onstop = async () => {
         try {
-          try { console.log("MinimalMic: onstop fired; skipSttOnStop=", skipSttOnStopRef.current, "vadLoop=", vadLoopRef.current); } catch {}
+          // Onstop fired
           // Reflect capture ended immediately
           setRecording(false);
           // Ensure the media stream is torn down between turns
@@ -147,23 +261,34 @@ export function MinimalMicProvider({
           } catch {}
           const shouldSkip = skipSttOnStopRef.current;
           const blob = new Blob(chunks, { type: "audio/webm" });
-          try { console.log("MinimalMic: onstop blobSize=", blob.size); } catch {}
-          if (blob.size === 0) { try { console.log("MinimalMic: empty blob; returning"); } catch {}; return; }
+          if (blob.size === 0) { return; }
           if (!shouldSkip) {
-            setStatus("stt"); try { console.log("MinimalMic: STT start"); } catch {}
+            setStatus("stt");
             const { text } = await voice.sttFromBlob(blob);
-            setTranscript(text); try { console.log("MinimalMic: STT done; textLen=", (text || "").length); } catch {}
-            setStatus("chat"); try { console.log("MinimalMic: Chat start"); } catch {}
+            setTranscript(text);
+            if (!text || text.trim().length === 0) {
+              try { console.warn("MinimalMic: STT returned empty text"); } catch {}
+            }
+            setStatus("chat");
 
             const chatOptions = {
               userProfile: userProfileRef.current,
               userGoals: userGoalsRef.current,
-              customSystemPrompt: customSystemPromptRef.current && customSystemPromptRef.current.trim() ? customSystemPromptRef.current.trim() : undefined
+              customSystemPrompt: customSystemPromptRef.current && customSystemPromptRef.current.trim() ? customSystemPromptRef.current.trim() : undefined,
+              model: modelRef.current && modelRef.current.trim() ? modelRef.current.trim() : undefined,
+              onModelUsed: (model: string, provider: string) => {
+                // Update the model if it differs from current selection
+                if (model && model !== modelRef.current && onModelChange) {
+                  console.log(`[MinimalMic] Model updated from ${modelRef.current} to ${model}`);
+                  onModelChange(model, provider);
+                }
+              }
             };
 
 
-            const reply = await convo.chatToText(text, chatOptions);
-            setAssistantText(reply); try { console.log("MinimalMic: Chat done; replyLen=", (reply || "").length); } catch {}
+            // REMOVED: Non-streaming call that was causing race condition
+            // const reply = await convo.chatToText(text, chatOptions);
+            // Chat processing complete
             // Persist interactions to backend to enable server cadence
             try {
               const sid = (sessionIdRef.current || '').toString();
@@ -184,24 +309,22 @@ export function MinimalMicProvider({
                   headers: { 'content-type': 'application/json', 'x-request-id': reqId },
                   body: JSON.stringify({ sessionId: sid, messageId: `m_user_${now}`, role: 'user', contentHash: djb2(text || `m_user_${now}`), text, ts: now })
                 }).catch(() => {});
-                // assistant message (slightly later ts)
-                try { console.log('[ingest] mic → POST assistant', { sid, len: (reply || '').length }); } catch {}
-                void fetch('/api/v1/interactions', {
-                  method: 'POST',
-                  headers: { 'content-type': 'application/json', 'x-request-id': reqId },
-                  body: JSON.stringify({ sessionId: sid, messageId: `m_assistant_${now+1}`, role: 'assistant', contentHash: djb2((reply || `m_assistant_${now+1}`)), text: reply, ts: now + 1 })
-                }).catch(() => {});
+                // assistant message (slightly later ts) - will be updated after streaming completes
+                // Note: We can't persist here because streamingReply isn't available yet
+                // The persistence will happen after the streaming response is complete
               } else {
                 try { console.warn('[ingest] mic skip: no sessionId available yet'); } catch {}
               }
             } catch {}
-            setStatus("tts"); try { console.log("MinimalMic: TTS start"); } catch {}
+            setStatus("tts");
             try { voice.cancelTTS?.(); } catch {}
 
             // Use streaming TTS instead of waiting for full response
             let accumulatedText = "";
+            let chunkCount = 0;
             const onChunk = (chunk: string) => {
               accumulatedText += chunk;
+              chunkCount++;
               // Process chunk for TTS immediately (sentence-based)
               void voice.enqueueTTSChunk?.(chunk);
             };
@@ -210,18 +333,53 @@ export function MinimalMicProvider({
             const streamingOptions = {
               userProfile: userProfileRef.current,
               userGoals: userGoalsRef.current,
-              customSystemPrompt: customSystemPromptRef.current && customSystemPromptRef.current.trim() ? customSystemPromptRef.current.trim() : undefined
+              customSystemPrompt: customSystemPromptRef.current && customSystemPromptRef.current.trim() ? customSystemPromptRef.current.trim() : undefined,
+              model: modelRef.current && modelRef.current.trim() ? modelRef.current.trim() : undefined,
+              onModelUsed: (model: string, provider: string) => {
+                // Update the model if it differs from current selection
+                if (model && model !== modelRef.current && onModelChange) {
+                  console.log(`[MinimalMic] Model updated from ${modelRef.current} to ${model}`);
+                  onModelChange(model, provider);
+                }
+              }
             };
 
+            // Starting streaming chat with history
 
-            const streamingReply = await convo.chatToTextStreaming(text, onChunk, streamingOptions);
+            // Use chatToTextStreamingWithHistory to ensure conversation history is properly updated with streaming
+            const streamingReply = await convo.chatToTextStreamingWithHistory(text, onChunk, streamingOptions);
+
+            // Streaming chat completed
 
             // Final TTS for any remaining text (in case streaming missed some)
             if (accumulatedText && accumulatedText !== streamingReply) {
               try { void voice.enqueueTTSChunk?.(streamingReply.slice(accumulatedText.length)); } catch {}
             }
 
-            setAssistantText(streamingReply); try { console.log("MinimalMic: Chat done; replyLen=", (streamingReply || "").length); } catch {}
+            setAssistantText(streamingReply);
+
+            // Persist the assistant message now that we have the streaming reply
+            try {
+              const sid = (sessionIdRef.current || '').toString();
+              if (sid && streamingReply) {
+                const now = Date.now();
+                const reqId = Math.random().toString(36).slice(2);
+                const djb2 = (input: string): string => {
+                  const s = (input || '').trim();
+                  if (s.length === 0) return '0';
+                  let h = 5381;
+                  for (let i = 0; i < s.length; i++) { h = ((h << 5) + h) ^ s.charCodeAt(i); }
+                  return (h >>> 0).toString(16);
+                };
+                try { console.log('[ingest] mic → POST assistant', { sid, len: (streamingReply || '').length }); } catch {}
+                void fetch('/api/v1/interactions', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json', 'x-request-id': reqId },
+                  body: JSON.stringify({ sessionId: sid, messageId: `m_assistant_${now}`, role: 'assistant', contentHash: djb2((streamingReply || `m_assistant_${now}`)), text: streamingReply, ts: now })
+                }).catch(() => {});
+              }
+            } catch {}
+
             // Ensure concurrent capture during playback for barge-in
             if (vadLoopRef.current && !recording) { try { void startRecordingInternal(true); } catch {} }
           }
@@ -232,7 +390,7 @@ export function MinimalMicProvider({
           bargeInActiveRef.current = false;
           if (resumeAfterBargeInRef.current && vadLoopRef.current && !recording) {
             resumeAfterBargeInRef.current = false;
-            try { console.log("MinimalMic: restarting capture after barge-in"); } catch {}
+            // Restart capture after barge-in
             try { void startRecordingInternal(true); } catch {}
           }
         }
@@ -241,7 +399,7 @@ export function MinimalMicProvider({
       setRecording(true);
       // If playback is ongoing or pending, do not flip to audio; otherwise show audio
       if (!audio.isPlaybackActive && !pendingPlaybackRef.current) { setStatus("audio"); }
-      try { console.log("MinimalMic: recording started"); } catch {}
+      // Recording started
       startingRef.current = false;
       const useVad = forceVad || vadLoopRef.current;
       if (useVad) {
@@ -256,8 +414,36 @@ export function MinimalMicProvider({
           let silenceMs = 0;
           let hasSpeech = false;
           let speechMs = 0;
-          let noiseFloor = 0.005; // Adaptive noise floor tracking (lower initial value)
+          let noiseFloor = calibrationData.voiceProfile.noiseFloor;
           let sampleCount = 0; // Track samples for noise floor adaptation
+
+          // Calibration update function (uses component-level state)
+          const updateCalibration = (energy: number, wasSpeech: boolean) => {
+            setCalibrationData(prevData => {
+              const newSamples = prevData.voiceProfile.samples + 1;
+              const alpha = 1.0 / Math.min(newSamples, 100); // Adaptive learning rate
+
+              let newData = { ...prevData };
+              newData.voiceProfile.samples = newSamples;
+
+              if (wasSpeech) {
+                // Update voice profile for successful speech detection
+                newData.voiceProfile.avgEnergy =
+                  prevData.voiceProfile.avgEnergy * (1 - alpha) + energy * alpha;
+                newData.voiceProfile.peakEnergy =
+                  Math.max(prevData.voiceProfile.peakEnergy, energy);
+                newData.performance.totalDetections = prevData.performance.totalDetections + 1;
+              } else if (energy > prevData.voiceProfile.avgEnergy * 0.5) {
+                // Update background noise profile
+                newData.environmentProfile.backgroundNoise =
+                  prevData.environmentProfile.backgroundNoise * (1 - alpha * 0.1) + energy * (alpha * 0.1);
+              }
+
+              return newData;
+            });
+          };
+
+
           const baseSpeechThreshold = 0.025; // Lower base threshold for better sensitivity
           const playbackSpeechThreshold = 0.03; // lower to recognize speech over playback
           const silenceThreshold = 0.012; // end-of-speech threshold
@@ -265,11 +451,13 @@ export function MinimalMicProvider({
           const minSpeechMsPlayback = 200; // ≥200ms voiced frames during playback
           const debounceMs = 30; // extra debounce before barge-in
           const endSilenceMs = 700; // stop after ~0.7s silence following speech
-          try { console.log("MinimalMic: VAD loop started", { baseSpeechThreshold, playbackSpeechThreshold, silenceThreshold, minSpeechMsBase, minSpeechMsPlayback, debounceMs, endSilenceMs }); } catch {}
+          // VAD loop started
           const tick = () => {
             // Use recorder state and vadLoopRef to avoid stale React state in closure
             if (rec.state !== "recording" || !vadLoopRef.current) return;
-            analyser.getByteTimeDomainData(data);
+
+            try {
+              analyser.getByteTimeDomainData(data);
 
             // Optimized RMS calculation: focus on speech frequencies with efficient downsampling
             let sum = 0;
@@ -300,16 +488,25 @@ export function MinimalMicProvider({
             const isPlayback = ttsActiveRef.current || playbackActiveRef.current || pendingPlaybackRef.current;
             const speechThreshold = isPlayback ? playbackSpeechThreshold : baseSpeechThreshold;
 
-            // Adaptive threshold: more conservative for first few samples, then based on noise floor
+            // Advanced adaptive threshold with calibration data
             let adaptiveThreshold;
             if (sampleCount <= 5) {
               // For first 5 samples, use base threshold (don't let noise floor inflate threshold yet)
               adaptiveThreshold = speechThreshold;
             } else {
-              // After initial samples, use adaptive threshold but cap it
+              // Use calibrated thresholds when available
+              const calibratedThreshold = calibrationData.voiceProfile.avgEnergy * 0.8; // 80% of average voice energy
+              const noiseAdjustedThreshold = Math.max(
+                calibrationData.environmentProfile.backgroundNoise * 3.0, // 3x background noise
+                0.012 // Absolute minimum
+              );
+
               adaptiveThreshold = Math.max(
                 speechThreshold,
-                Math.min(noiseFloor * 2.0, speechThreshold * 1.5), // Cap adaptive threshold
+                Math.min(
+                  Math.max(calibratedThreshold, noiseAdjustedThreshold),
+                  speechThreshold * 1.5 // Cap at 1.5x base threshold
+                ),
                 0.015 // Absolute minimum threshold
               );
             }
@@ -334,23 +531,7 @@ export function MinimalMicProvider({
             // Use barge-in optimized thresholds during playback
             const effectiveThreshold = isPlayback ? Math.min(adaptiveThreshold, bargeInThreshold) : adaptiveThreshold;
 
-            // Debug logging for first few samples to help diagnose issues
-            if (sampleCount <= 5) {
-              try {
-                console.log("MinimalMic: VAD sample", {
-                  sampleCount,
-                  combinedEnergy: Number(combinedEnergy.toFixed(4)),
-                  adaptiveThreshold: Number(adaptiveThreshold.toFixed(4)),
-                  bargeInThreshold: Number(bargeInThreshold.toFixed(4)),
-                  immediateThreshold: Number(bargeInImmediateThreshold.toFixed(4)),
-                  effectiveThreshold: Number(effectiveThreshold.toFixed(4)),
-                  noiseFloor: Number(noiseFloor.toFixed(4)),
-                  speechMs,
-                  isImmediate: isImmediateSpeech,
-                  isPlayback
-                });
-              } catch {}
-            }
+            // VAD sample processing (debug logs removed for cleaner output)
 
             if (!hasSpeech) {
               const before = speechMs;
@@ -358,38 +539,40 @@ export function MinimalMicProvider({
               // Immediate speech detection for very high energy spikes (fast first-word detection)
               if (isImmediateSpeech) {
                 speechMs += incMs * 2; // Double increment for immediate detection
-                try { console.log("MinimalMic: IMMEDIATE speech detected!", {
-                  energy: Number(combinedEnergy.toFixed(4)),
-                  threshold: Number(bargeInImmediateThreshold.toFixed(4)),
-                  isPlayback
-                }); } catch {}
+                // Immediate speech detected
               } else if (combinedEnergy > effectiveThreshold) {
                 speechMs += incMs;
-              } else {
-                speechMs = Math.max(0, speechMs - decMs);
-              }
+                          } else {
+              speechMs = Math.max(0, speechMs - decMs);
 
-              // removed noisy VAD accumulator log
-              const requiredMs = isImmediateSpeech ? 20 : minSpeechMs + debounceMs; // Very fast (20ms) for immediate detection
+              // Update calibration for non-speech samples (background noise learning)
+              if (sampleCount > 10 && combinedEnergy < adaptiveThreshold * 0.5) {
+                updateCalibration(combinedEnergy, false);
+              }
+            }
+
+            // Periodic calibration save (every 1000 samples)
+            if (sampleCount > 0 && sampleCount % 1000 === 0) {
+              saveCalibrationData();
+            }
+
+            // removed noisy VAD accumulator log
+            const requiredMs = isImmediateSpeech ? 20 : minSpeechMs + debounceMs; // Very fast (20ms) for immediate detection
               if (speechMs >= requiredMs) {
                 hasSpeech = true; silenceMs = 0;
+
+                // Update calibration with successful speech detection
+                updateCalibration(combinedEnergy, true);
+
                 // Barge-in path
                 if (isPlayback) {
                   bargeInActiveRef.current = true;
                   skipSttOnStopRef.current = true;
                   resumeAfterBargeInRef.current = true;
                   try { voice.cancelTTS?.(); } catch {}
-                  try { console.log("MinimalMic: calling audio.stop() for barge-in"); } catch {}
+                  // Stop audio for barge-in
                   try { audio.stop?.(); } catch {}
-                  try { console.log("MinimalMic: VAD speech start; barge-in;", {
-                    energy: Number(combinedEnergy.toFixed(3)),
-                    speechMs,
-                    adaptiveThreshold: Number(adaptiveThreshold.toFixed(3)),
-                    requiredMs,
-                    isImmediate: isImmediateSpeech,
-                    ttsActive: ttsActiveRef.current,
-                    playbackActive: playbackActiveRef.current
-                  }); } catch {}
+                  // Barge-in speech start detected
                   // Switch to audio immediately for barge-in and clear pending playback marker
                   try { pendingPlaybackRef.current = false; } catch {}
                   try { setStatus("audio"); } catch {}
@@ -397,11 +580,7 @@ export function MinimalMicProvider({
                   try { if (rec.state === "recording") rec.stop(); } catch {}
                   return;
                 } else {
-                  try { console.log("MinimalMic: VAD speech start (no playback)", {
-                    energy: Number(combinedEnergy.toFixed(3)),
-                    adaptiveThreshold: Number(adaptiveThreshold.toFixed(3)),
-                    isImmediate: isImmediateSpeech
-                  }); } catch {}
+                  // Speech start detected (no playback)
                 }
                 try { setInputSpeaking(true); } catch {}
               }
@@ -413,7 +592,7 @@ export function MinimalMicProvider({
             if (hasSpeech && combinedEnergy < silenceThreshold) {
               silenceMs += 100;
               if (silenceMs === 300) {
-                try { console.log("MinimalMic: VAD accumulating silenceMs=", silenceMs, "energy=", combinedEnergy.toFixed(3), "isPlayback=", isPlayback); } catch {}
+                // Accumulating silence
               }
             } else if (hasSpeech && combinedEnergy >= clearSpeechThreshold) {
               // Only reset silence counter if speech clearly exceeds threshold (hysteresis)
@@ -421,17 +600,32 @@ export function MinimalMicProvider({
             }
             const endSil = bargeInActiveRef.current ? 400 : endSilenceMs;
             if (hasSpeech && silenceMs >= endSil) {
-              try { console.log("MinimalMic: VAD end-of-speech; stopping recorder; silenceMs=", silenceMs); } catch {}
+              // End of speech detected
               try { setInputSpeaking(false); } catch {}
               try { if (rec.state === "recording") { try { rec.requestData?.(); } catch {} rec.stop(); } } catch {}
               return;
             }
-            window.setTimeout(tick, 100);
+              window.setTimeout(tick, 100);
+            } catch (error) {
+              // Error recovery mechanism
+              try { console.warn("MinimalMic: VAD error", error); } catch {}
+              window.setTimeout(tick, 100);
+            }
           };
           window.setTimeout(tick, 100);
-        } catch {}
+        } catch (error) {
+          console.error("MinimalMic: Failed to start recording", error);
+        }
       }
-    } catch {}
+
+      // Save calibration data when VAD stops
+      try {
+        saveCalibrationData();
+        // VAD stopped, calibration saved
+      } catch {}
+    } catch (error) {
+      console.error("MinimalMic: Failed to start recording", error);
+    }
     finally {
       // If we failed before rec.start, clear starting state
       startingRef.current = false;
@@ -450,10 +644,10 @@ export function MinimalMicProvider({
     stopRecording,
     vadLoop,
     toggleVadLoop: () => {
-      try { console.log("MinimalMic: toggleVadLoop() from", vadLoop); } catch {}
+      // Toggle VAD loop
       const next = !vadLoop;
       setVadLoop(next);
-      try { console.log("MinimalMic: vadLoop=", next); } catch {}
+      // VAD loop state changed
       if (next) {
         if (!recording && !startingRef.current) { try { void startRecordingInternal(true); } catch {} }
       } else {
@@ -462,7 +656,11 @@ export function MinimalMicProvider({
     },
     status,
     inputSpeaking,
-  }), [recording, transcript, assistantText, startRecording, stopRecording, vadLoop, status, inputSpeaking]);
+    // Advanced VAD features
+    triggerVadCalibration,
+    resetVadState,
+    getVadCalibrationData,
+  }), [recording, transcript, assistantText, startRecording, stopRecording, vadLoop, status, inputSpeaking, triggerVadCalibration, resetVadState, getVadCalibrationData]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

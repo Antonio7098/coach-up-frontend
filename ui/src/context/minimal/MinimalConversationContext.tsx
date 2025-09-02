@@ -14,8 +14,9 @@ export type PromptPreview = {
 } | null;
 
 export type MinimalConversationContextValue = {
-  chatToText: (prompt: string, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string }) => Promise<string>;
-  chatToTextStreaming: (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string }) => Promise<string>;
+  chatToText: (prompt: string, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }) => Promise<string>;
+  chatToTextStreaming: (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }) => Promise<string>;
+  chatToTextStreamingWithHistory: (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }) => Promise<string>;
   getImmediateHistory: () => Array<{ role: "user" | "assistant"; content: string }>;
   getSummaryMeta: () => { ready: boolean; updatedAt?: number; turnsUntilDue: number; thresholdTurns: number };
   getLastPromptPreview: () => PromptPreview;
@@ -68,7 +69,7 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
   // Deprecated: preview GET is removed; SSE 'prompt' event is source of truth.
   const fetchPromptPreview = useCallback(async (_rid: string) => { return; }, []);
 
-  const chatToTextStreaming = useCallback(async (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string }): Promise<string> => {
+  const chatToTextStreaming = useCallback(async (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }): Promise<string> => {
     if (!prompt || !prompt.trim()) return "";
     // Build minimal history param from the last 2 messages (excluding this prompt)
     const last2 = historyRef.current.slice(-2).map((m) => ({ role: m.role, content: (m.content || "").slice(0, 240) }));
@@ -106,21 +107,33 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
           let systemPromptParam = "";
           if (options?.customSystemPrompt && options.customSystemPrompt.trim()) {
             systemPromptParam = `&systemPrompt=${encodeURIComponent(options.customSystemPrompt.trim())}`;
-            
+
           }
 
-          const url = `/api/chat?prompt=${encodeURIComponent(prompt)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""}${histParam}${profileParam}${goalsParam}${systemPromptParam}&rid=${encodeURIComponent(rid)}&debug=1`;
+          // Add model parameter if provided
+          let modelParam = "";
+          if (options?.model && options.model.trim()) {
+            modelParam = `&model=${encodeURIComponent(options.model.trim())}`;
+          }
+
+          const url = `/api/chat?prompt=${encodeURIComponent(prompt)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""}${histParam}${profileParam}${goalsParam}${systemPromptParam}${modelParam}&rid=${encodeURIComponent(rid)}&debug=1`;
 
           es = new EventSource(url, { withCredentials: false });
         } catch {}
         if (!es) { reject(new Error("stream failed")); return; }
         let acc = "";
+        let chunkCount = 0;
         es.onmessage = (evt) => {
           if (evt.data === "[DONE]") {
-            try { es?.close(); } catch {};
+            try {
+              // Streaming complete
+              es?.close();
+            } catch {};
             resolve(acc);
           } else {
             acc += evt.data;
+            chunkCount++;
+            // Stream chunk received
             // Call the chunk callback for streaming TTS
             if (onChunk && evt.data) {
               onChunk(evt.data);
@@ -140,6 +153,16 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
             });
           } catch {}
         });
+        es.addEventListener('model', (evt: MessageEvent) => {
+          try {
+            const data = JSON.parse(evt.data || '{}');
+            const model = typeof data?.model === 'string' ? data.model : '';
+            const provider = typeof data?.provider === 'string' ? data.provider : '';
+            if (model && provider && options?.onModelUsed) {
+              options.onModelUsed(model, provider);
+            }
+          } catch {}
+        });
         es.onerror = () => {
           try { es?.close(); } catch {}
           if (acc) resolve(acc); else resolve(null);
@@ -155,18 +178,27 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     throw new Error("stream failed");
   }, [sessionId, summary?.text]);
 
-  const chatToText = useCallback(async (prompt: string, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string }): Promise<string> => {
+  const chatToText = useCallback(async (prompt: string, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }): Promise<string> => {
     return chatToTextStreaming(prompt, undefined, options);
   }, [chatToTextStreaming]);
 
   // Push user/assistant messages into minimal history when chatToText resolves
-  const chatToTextWithHistory = useCallback(async (prompt: string, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string }): Promise<string> => {
+  const chatToTextWithHistory = useCallback(async (prompt: string, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }): Promise<string> => {
     const reply = await chatToText(prompt, options);
     try {
+      const beforeLength = historyRef.current.length;
       historyRef.current.push({ role: "user", content: prompt });
       historyRef.current.push({ role: "assistant", content: reply });
       // Keep only last 2
       if (historyRef.current.length > 2) historyRef.current = historyRef.current.slice(-2);
+
+      console.log("MinimalConversation: History updated", {
+        beforeLength,
+        afterLength: historyRef.current.length,
+        userMessage: prompt?.substring(0, 50) + (prompt?.length > 50 ? "..." : ""),
+        assistantReply: reply?.substring(0, 50) + (reply?.length > 50 ? "..." : ""),
+        recentHistory: historyRef.current.map(m => `${m.role}: ${m.content?.substring(0, 30)}...`)
+      });
       // Trigger background summary refresh according to thresholds (non-blocking)
       try { onTurn(); } catch {}
       setTurnsSinceRefresh((n) => (Number.isFinite(n) ? n + 1 : 1));
@@ -202,8 +234,58 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     return reply;
   }, [chatToText, onTurn, sessionId]);
 
+  // Streaming version that also updates history
+  const chatToTextStreamingWithHistory = useCallback(async (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }): Promise<string> => {
+    const reply = await chatToTextStreaming(prompt, onChunk, options);
+    try {
+      const beforeLength = historyRef.current.length;
+      historyRef.current.push({ role: "user", content: prompt });
+      historyRef.current.push({ role: "assistant", content: reply });
+      // Keep only last 2
+      if (historyRef.current.length > 2) historyRef.current = historyRef.current.slice(-2);
+
+      // Streaming history updated
+      // Trigger background summary refresh according to thresholds (non-blocking)
+      try { onTurn(); } catch {}
+      setTurnsSinceRefresh((n) => (Number.isFinite(n) ? n + 1 : 1));
+      // Persist interactions (user + assistant) to enable backend cadence even without mic
+      try {
+        const sid = (sessionId || '').toString();
+        if (sid) {
+          const now = Date.now();
+          const reqId = Math.random().toString(36).slice(2);
+          const djb2 = (input: string): string => {
+            const s = (input || '').trim();
+            if (s.length === 0) return '0';
+            let h = 5381; for (let i = 0; i < s.length; i++) { h = ((h << 5) + h) ^ s.charCodeAt(i); }
+            return (h >>> 0).toString(16);
+          };
+          // user
+          try { console.log('[ingest] POST user streaming', { sid, len: prompt.length }); } catch {}
+          void fetch('/api/v1/interactions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-request-id': reqId },
+            body: JSON.stringify({ sessionId: sid, messageId: `c_user_stream_${now}`, role: 'user', contentHash: djb2(prompt || `c_user_stream_${now}`), text: prompt, ts: now })
+          }).catch(() => {});
+          // assistant
+          try { console.log('[ingest] POST assistant streaming', { sid, len: reply.length }); } catch {}
+          void fetch('/api/v1/interactions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-request-id': reqId },
+            body: JSON.stringify({ sessionId: sid, messageId: `c_assistant_stream_${now+1}`, role: 'assistant', contentHash: djb2(reply || `c_assistant_stream_${now+1}`), text: reply, ts: now + 1 })
+          }).catch(() => {});
+        }
+      } catch {}
+    } catch {}
+    return reply;
+  }, [chatToTextStreaming, onTurn, sessionId]);
+
   const getImmediateHistory = useCallback(() => {
-    return historyRef.current.slice(-2);
+    const history = historyRef.current.slice(-2);
+    try {
+      // getImmediateHistory called
+    } catch {}
+    return history;
   }, []);
 
   const getSummaryMeta = useCallback(() => {
@@ -215,13 +297,14 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
 
   const value = useMemo<MinimalConversationContextValue>(() => ({
     chatToText: chatToTextWithHistory,
-    chatToTextStreaming: (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string }) => chatToTextStreaming(prompt, onChunk, options),
+    chatToTextStreaming: (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }) => chatToTextStreaming(prompt, onChunk, options),
+    chatToTextStreamingWithHistory,
     getImmediateHistory,
     getSummaryMeta,
     getLastPromptPreview: () => promptPreview,
     refreshPromptPreview: async () => {},
     promptPreview,
-  }), [chatToTextWithHistory, chatToTextStreaming, getImmediateHistory, getSummaryMeta, promptPreview]);
+  }), [chatToTextWithHistory, chatToTextStreaming, chatToTextStreamingWithHistory, getImmediateHistory, getSummaryMeta, promptPreview]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

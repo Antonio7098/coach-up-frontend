@@ -87,6 +87,11 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
   // --- TTS helpers (built-in) ---
   const callTTSChunk = useCallback(async (text: string): Promise<string> => {
     try {
+      console.log("VoiceContext: TTS chunk processing started", {
+        text: text || "(empty)",
+        textLength: (text || "").length,
+        sessionId: sessionId || "none"
+      });
       const doOnce = async (): Promise<Response> => {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), TTS_TIMEOUT_MS);
@@ -111,10 +116,27 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
       if (!res && timedOut) {
         try { res = await doOnce(); } catch {}
       }
-      if (!res) return "";
+      if (!res) {
+        console.log("VoiceContext: TTS request failed - no response");
+        return "";
+      }
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || `tts failed: ${res.status}`);
-      return String(data?.audioUrl || "");
+      if (!res.ok) {
+        console.log("VoiceContext: TTS request failed", {
+          status: res.status,
+          error: data?.error,
+          textLength: (text || "").length
+        });
+        throw new Error(data?.error || `tts failed: ${res.status}`);
+      }
+
+      const audioUrl = String(data?.audioUrl || "");
+      console.log("VoiceContext: TTS response received", {
+        audioUrl: audioUrl || "(empty)",
+        textLength: (text || "").length,
+        hasAudio: !!audioUrl
+      });
+      return audioUrl;
     } catch {
       return "";
     }
@@ -148,12 +170,35 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
           if (next.length >= MIN_SEG_CHARS) break;
         }
         const text = next;
+        console.log("VoiceContext: TTS worker processing chunk", {
+          text: text || "(empty)",
+          textLength: (text || "").length,
+          queueRemaining: ttsTextQueueRef.current.length,
+          generation: myGen,
+          currentCancelGen: ttsCancelRef.current
+        });
+
         const url = await callTTSChunk(text);
-        if (ttsCancelRef.current !== myGen) break;
+        if (ttsCancelRef.current !== myGen) {
+          console.log("VoiceContext: TTS worker cancelled", { myGen, currentGen: ttsCancelRef.current });
+          break;
+        }
+
         if (url) {
           try {
+            console.log("VoiceContext: Dispatching TTS audio", {
+              audioUrl: url,
+              textLength: (text || "").length
+            });
             window.dispatchEvent(new CustomEvent<string>('cu.audio.enqueue', { detail: url }));
-          } catch {}
+          } catch (error) {
+            console.error("VoiceContext: Failed to dispatch TTS audio", error);
+          }
+        } else {
+          console.log("VoiceContext: No TTS audio URL received", {
+            text: text || "(empty)",
+            textLength: (text || "").length
+          });
         }
       }
     } finally {
@@ -163,6 +208,16 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
 
   const enqueueTTSSegmentImpl = useCallback((text: string) => {
     if (!text || !text.trim()) return;
+
+    try {
+      console.log("VoiceContext: TTS chunk enqueued", {
+        chunk: text.trim() || "(empty)",
+        chunkLength: (text.trim() || "").length,
+        queueLength: ttsTextQueueRef.current.length,
+        ttsProcessing: ttsProcessingRef.current
+      });
+    } catch {}
+
     // Stop "Thinking" ring when first TTS segment is ready
     try { voicePublishState({ processingRing: false }); } catch {}
     // Minimal time-based spacing can be derived from queue pressure; for now, push then coalesce in worker

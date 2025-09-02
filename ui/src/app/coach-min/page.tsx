@@ -21,6 +21,9 @@ function App() {
   const [customSystemPrompt, setCustomSystemPrompt] = React.useState<string>("");
   const [isSystemPromptEnabled, setIsSystemPromptEnabled] = React.useState<boolean>(false);
 
+  // Model selection functionality
+  const [selectedModel, setSelectedModel] = React.useState<string>("google/gemini-2.5-flash-lite");
+
 
   return (
     <MinimalAudioProvider>
@@ -31,6 +34,14 @@ function App() {
               userProfile={profile}
               userGoals={goals}
               customSystemPrompt={isSystemPromptEnabled && customSystemPrompt.trim() ? customSystemPrompt.trim() : undefined}
+              model={selectedModel || undefined}
+              onModelChange={(model: string, provider: string) => {
+                // Update the model selector to reflect the actual model used
+                if (model && model !== selectedModel) {
+                  setSelectedModel(model);
+                  try { localStorage.setItem("chat:model", model); } catch {}
+                }
+              }}
             >
               <Content
                 profile={profile}
@@ -45,6 +56,8 @@ function App() {
                 setCustomSystemPrompt={setCustomSystemPrompt}
                 isSystemPromptEnabled={isSystemPromptEnabled}
                 setIsSystemPromptEnabled={setIsSystemPromptEnabled}
+                selectedModel={selectedModel}
+                setSelectedModel={setSelectedModel}
               />
             </MinimalMicProvider>
           </MinimalConversationProvider>
@@ -66,7 +79,9 @@ function Content({
   customSystemPrompt,
   setCustomSystemPrompt,
   isSystemPromptEnabled,
-  setIsSystemPromptEnabled
+  setIsSystemPromptEnabled,
+  selectedModel,
+  setSelectedModel
 }: {
   profile: any;
   setProfile: React.Dispatch<React.SetStateAction<any>>;
@@ -80,6 +95,8 @@ function Content({
   setCustomSystemPrompt: (value: string) => void;
   isSystemPromptEnabled: boolean;
   setIsSystemPromptEnabled: (value: boolean) => void;
+  selectedModel: string;
+  setSelectedModel: (value: string) => void;
 }) {
   const mic = useMinimalMic();
   const audio = useMinimalAudio();
@@ -458,7 +475,7 @@ function Content({
         <button
           type="button"
           onClick={() => setShowDashboard(true)}
-          className="fixed top-4 left-4 p-3 rounded-full bg-white border border-gray-300 shadow-sm hover:bg-gray-50 transition-colors z-40"
+          className="fixed top-4 left-1/2 transform -translate-x-1/2 p-3 rounded-full bg-white border border-gray-300 shadow-sm hover:bg-gray-50 transition-colors z-40"
           title="Open dashboard"
         >
           <svg viewBox="0 0 24 24" className="w-5 h-5 text-gray-700" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -902,6 +919,26 @@ function Content({
           ) : (
                     <div className="text-xs text-gray-500">(none)</div>
           )}
+
+          {/* Model Selection Section */}
+          <div className="border-t border-gray-200 mt-4 pt-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-sm font-mono text-blue-600 font-semibold">[MODEL_SELECTION]</div>
+            </div>
+            <div className="mb-3">
+              <select
+                value={selectedModel}
+                onChange={(e) => setSelectedModel(e.target.value)}
+                className="w-full p-2 border border-gray-300 rounded text-xs bg-white font-mono"
+              >
+                <option value="google/gemini-2.5-flash-lite">GEMINI-2.5-FLASH-LITE</option>
+                <option value="google/gemini-2.5-flash">GEMINI-2.5-FLASH</option>
+              </select>
+              <div className="text-xs text-gray-600 mt-1">
+                Selected model will be used for chat requests
+              </div>
+            </div>
+          </div>
 
           {/* System Prompt Editor Section */}
           <div className="border-t border-gray-200 mt-4 pt-4">

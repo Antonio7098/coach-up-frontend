@@ -13,12 +13,16 @@ function Content({
   customSystemPrompt,
   setCustomSystemPrompt,
   isSystemPromptEnabled,
-  setIsSystemPromptEnabled
+  setIsSystemPromptEnabled,
+  selectedModel,
+  setSelectedModel
 }: {
   customSystemPrompt: string;
   setCustomSystemPrompt: (value: string) => void;
   isSystemPromptEnabled: boolean;
   setIsSystemPromptEnabled: (value: boolean) => void;
+  selectedModel: string;
+  setSelectedModel: (value: string) => void;
 }) {
   const mic = useMinimalMic();
   const audio = useMinimalAudio();
@@ -45,26 +49,42 @@ function Content({
 
 
 
-  // Create enhanced chat function that includes custom system prompt
+  // Create enhanced chat function that includes custom system prompt and model
   const enhancedChatToText = React.useCallback(async (prompt: string, options?: { userProfile?: any; userGoals?: any[] }) => {
     const enhancedOptions = {
       ...options,
-      customSystemPrompt: isSystemPromptEnabled && customSystemPrompt.trim() ? customSystemPrompt.trim() : undefined
+      customSystemPrompt: isSystemPromptEnabled && customSystemPrompt.trim() ? customSystemPrompt.trim() : undefined,
+      model: selectedModel || undefined,
+      onModelUsed: (model: string, provider: string) => {
+        // Update the model selector to reflect the actual model used
+        if (model && model !== selectedModel) {
+          setSelectedModel(model);
+          try { localStorage.setItem("chat:model", model); } catch {}
+        }
+      }
     };
 
 
 
     return convo.chatToText(prompt, enhancedOptions);
-  }, [convo, isSystemPromptEnabled, customSystemPrompt]);
+  }, [convo, isSystemPromptEnabled, customSystemPrompt, selectedModel]);
 
   const enhancedChatToTextStreaming = React.useCallback(async (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[] }) => {
     const enhancedOptions = {
       ...options,
-      customSystemPrompt: isSystemPromptEnabled && customSystemPrompt.trim() ? customSystemPrompt.trim() : undefined
+      customSystemPrompt: isSystemPromptEnabled && customSystemPrompt.trim() ? customSystemPrompt.trim() : undefined,
+      model: selectedModel || undefined,
+      onModelUsed: (model: string, provider: string) => {
+        // Update the model selector to reflect the actual model used
+        if (model && model !== selectedModel) {
+          setSelectedModel(model);
+          try { localStorage.setItem("chat:model", model); } catch {}
+        }
+      }
     };
 
     return convo.chatToTextStreaming(prompt, onChunk, enhancedOptions);
-  }, [convo, isSystemPromptEnabled, customSystemPrompt]);
+  }, [convo, isSystemPromptEnabled, customSystemPrompt, selectedModel]);
 
   // Override convo functions with enhanced versions
   const effectiveConvo = React.useMemo(() => ({
@@ -372,6 +392,21 @@ function Content({
           <div className="text-[11px] text-zinc-600 mb-2">
             {isSystemPromptEnabled ? 'Custom system prompt enabled - will override default' : 'Using default system prompt'}
           </div>
+          {/* Model Selection */}
+          <div className="mb-3">
+            <label className="block text-xs font-medium mb-1">Model Selection</label>
+            <select
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+              className="w-full p-2 border rounded text-xs bg-white"
+            >
+              <option value="google/gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
+              <option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option>
+            </select>
+            <div className="text-[10px] text-zinc-500 mt-1">
+              Selected model will be used for chat requests
+            </div>
+          </div>
           <div className="space-y-2">
             <textarea
               value={customSystemPrompt}
@@ -530,17 +565,32 @@ export default function CoachMinimalPage() {
   const [customSystemPrompt, setCustomSystemPrompt] = React.useState<string>("");
   const [isSystemPromptEnabled, setIsSystemPromptEnabled] = React.useState<boolean>(false);
 
+  // State for model selection
+  const [selectedModel, setSelectedModel] = React.useState<string>("google/gemini-2.5-flash-lite");
+
   return (
     <MinimalAudioProvider>
       <MinimalSessionProvider>
         <MinimalVoiceProvider>
           <MinimalConversationProvider>
-            <MinimalMicProvider customSystemPrompt={isSystemPromptEnabled && customSystemPrompt.trim() ? customSystemPrompt.trim() : undefined}>
+            <MinimalMicProvider
+              customSystemPrompt={isSystemPromptEnabled && customSystemPrompt.trim() ? customSystemPrompt.trim() : undefined}
+              model={selectedModel || undefined}
+              onModelChange={(model: string, provider: string) => {
+                // Update the model selector to reflect the actual model used
+                if (model && model !== selectedModel) {
+                  setSelectedModel(model);
+                  try { localStorage.setItem("chat:model", model); } catch {}
+                }
+              }}
+            >
               <Content
                 customSystemPrompt={customSystemPrompt}
                 setCustomSystemPrompt={setCustomSystemPrompt}
                 isSystemPromptEnabled={isSystemPromptEnabled}
                 setIsSystemPromptEnabled={setIsSystemPromptEnabled}
+                selectedModel={selectedModel}
+                setSelectedModel={setSelectedModel}
               />
             </MinimalMicProvider>
           </MinimalConversationProvider>
