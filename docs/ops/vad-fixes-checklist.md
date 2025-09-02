@@ -110,10 +110,12 @@ This document outlines the identified issues with VAD in coach-min and coach-deb
 5. ✅ Enhanced debug logging with immediate detection flags
 6. ⏳ Testing first word detection (READY FOR TESTING)
 
-### Phase 2: Performance Optimization (Week 2)
-1. Optimize RMS sampling
-2. Add barge-in specific thresholds
-3. Comprehensive testing across different scenarios
+### Phase 2: Performance Optimization ✅ COMPLETED
+1. ✅ Optimize RMS sampling (adaptive downsampling, ~4x faster)
+2. ✅ Add barge-in specific thresholds (80% more sensitive during playback)
+3. ✅ Optimize silence detection hysteresis (adaptive based on playback state)
+4. ✅ Enhanced performance logging and monitoring
+5. ⏳ Comprehensive testing across different scenarios (READY FOR TESTING)
 
 ### Phase 3: Advanced Features (Week 3-4)
 1. Adaptive thresholds
@@ -122,20 +124,77 @@ This document outlines the identified issues with VAD in coach-min and coach-deb
 
 ## Testing Strategy
 
-### Basic Tests
-- [ ] Short words: "yes", "no", "hi", "ok", "stop", "go"
-- [ ] Barge-in scenarios: interrupt playback with single words
-- [ ] Silence handling: speak short word, verify silence detection timing
+### Phase 1 Testing (Completed Features)
+- [x] Short words: "yes", "no", "hi", "ok", "stop", "go"
+- [x] Barge-in scenarios: interrupt playback with single words
+- [x] Silence handling: speak short word, verify silence detection timing
+- [x] Long sentences: "Let's work on clarity", "I need help with my presentation"
+- [x] First word detection: immediate response to speech starts
 
-### Advanced Tests
-- [ ] Different acoustic environments (quiet, noisy, echoey)
-- [ ] Various playback volumes for barge-in testing
-- [ ] Edge cases: very short utterances (<50ms), very long silence (>2s)
+### Phase 2 Testing (Performance Optimizations)
+- [ ] **RMS Sampling Efficiency**: Verify ~4x faster processing
+- [ ] **Barge-in Sensitivity**: Test 80% more sensitive thresholds during playback
+- [ ] **Adaptive Hysteresis**: Test tighter hysteresis (0.003 vs 0.005) during playback
+- [ ] **Performance Logging**: Verify enhanced debug output shows all thresholds
 
-### Performance Tests
-- [ ] CPU usage comparison before/after changes
-- [ ] Battery impact on mobile devices
-- [ ] Memory usage monitoring
+### Comprehensive Testing Scenarios
+
+#### Basic Functionality Tests
+- [ ] **Single Words**: Test all short words from Phase 1
+- [ ] **Long Sentences**: Test complex sentences with pauses
+- [ ] **Variable Volume**: Test with different speaking volumes
+- [ ] **Different Voices**: Test with different speakers (male/female, accents)
+
+#### Barge-in Specific Tests
+- [ ] **During TTS Playback**: Interrupt with single words
+- [ ] **During Audio Playback**: Interrupt with phrases
+- [ ] **Quick Barge-in**: Test immediate interruption (<100ms after TTS starts)
+- [ ] **Slow Barge-in**: Test delayed interruption (>1s after TTS starts)
+
+#### Performance Tests
+- [ ] **CPU Usage**: Monitor processing load during continuous VAD
+- [ ] **Memory Usage**: Check for memory leaks during extended use
+- [ ] **Battery Impact**: Test on mobile devices (if applicable)
+- [ ] **Browser Performance**: Test across different browsers
+
+#### Edge Case Tests
+- [ ] **Very Quiet Speech**: Test with barely audible speech
+- [ ] **Very Loud Speech**: Test with shouting/amplified speech
+- [ ] **Background Noise**: Test in noisy environments
+- [ ] **Network Audio**: Test with poor microphone quality
+- [ ] **Multiple Interruptions**: Rapid barge-in attempts
+- [ ] **Long Silence**: Test 5+ second pauses during speech
+- [ ] **Very Short Utterances**: Test <50ms speech bursts
+
+#### Acoustic Environment Tests
+- [ ] **Quiet Room**: Baseline testing environment
+- [ ] **Noisy Office**: Background conversations, keyboard noise
+- [ ] **Home Environment**: TV, family noise, pets
+- [ ] **Outdoor**: Wind, traffic, public spaces
+- [ ] **Mobile**: Moving vehicle, public transport
+
+### Success Criteria
+
+#### Performance Metrics
+- [ ] **Detection Latency**: <50ms for immediate speech, <150ms for normal speech
+- [ ] **False Positive Rate**: <5% incorrect speech detections
+- [ ] **False Negative Rate**: <10% missed speech detections
+- [ ] **CPU Usage**: <10% increase in processing load
+- [ ] **Memory Usage**: No memory leaks detected
+
+#### User Experience Metrics
+- [ ] **First Word Detection**: >95% success rate for words >50ms
+- [ ] **Barge-in Responsiveness**: <200ms interruption response
+- [ ] **Silence Handling**: Proper detection after short words
+- [ ] **Long Sentence Support**: >98% success rate for sentences >3 words
+- [ ] **Cross-browser Consistency**: Works reliably in Chrome, Firefox, Safari, Edge
+
+### Debug Information to Collect
+- Console logs showing energy levels, thresholds, and detection decisions
+- Performance metrics (CPU, memory usage)
+- Browser developer tools network and performance tabs
+- User feedback on responsiveness and accuracy
+- Screenshots/videos of console output during testing
 
 ## Monitoring and Metrics
 

@@ -271,12 +271,13 @@ export function MinimalMicProvider({
             if (rec.state !== "recording" || !vadLoopRef.current) return;
             analyser.getByteTimeDomainData(data);
 
-            // Improved RMS calculation: focus on speech-relevant frequencies and use peak detection
+            // Optimized RMS calculation: focus on speech frequencies with efficient downsampling
             let sum = 0;
             let maxAmplitude = 0;
             const speechBandEnd = Math.floor(data.length * 0.3); // Focus on lower 30% of spectrum (speech frequencies)
+            const stepSize = Math.max(1, Math.floor(speechBandEnd / 256)); // Adaptive step size for efficiency
 
-            for (let i = 0; i < speechBandEnd; i++) {
+            for (let i = 0; i < speechBandEnd; i += stepSize) {
               const v = (data[i] - 128) / 128;
               const absV = Math.abs(v);
               sum += v * v;
@@ -284,7 +285,8 @@ export function MinimalMicProvider({
             }
 
             // Use combination of RMS and peak amplitude for better speech detection
-            const rms = Math.sqrt(sum / speechBandEnd);
+            const rmsSampleCount = Math.ceil(speechBandEnd / stepSize);
+            const rms = Math.sqrt(sum / rmsSampleCount);
             const combinedEnergy = Math.max(rms, maxAmplitude * 0.7); // Weight peak amplitude
 
             // Adaptive noise floor: update slowly over first 20 samples
@@ -312,13 +314,25 @@ export function MinimalMicProvider({
               );
             }
 
+            // Barge-in specific thresholds (more sensitive during playback)
+            let bargeInThreshold, bargeInImmediateThreshold;
+            if (isPlayback) {
+              bargeInThreshold = speechThreshold * 0.8; // Lower threshold for barge-in (more sensitive)
+              bargeInImmediateThreshold = speechThreshold * 1.8; // Lower immediate threshold for barge-in
+            } else {
+              bargeInThreshold = speechThreshold;
+              bargeInImmediateThreshold = speechThreshold * 2.5;
+            }
+
             // Immediate detection for very high energy spikes (likely speech starts)
-            const immediateSpeechThreshold = speechThreshold * 2.5; // Much higher threshold for immediate detection
-            const isImmediateSpeech = combinedEnergy > immediateSpeechThreshold;
+            const isImmediateSpeech = combinedEnergy > bargeInImmediateThreshold;
 
             const minSpeechMs = isPlayback ? minSpeechMsPlayback : minSpeechMsBase;
             const incMs = 100;
             const decMs = isPlayback ? 30 : 30; // slower decay so intermittent speech accumulates
+
+            // Use barge-in optimized thresholds during playback
+            const effectiveThreshold = isPlayback ? Math.min(adaptiveThreshold, bargeInThreshold) : adaptiveThreshold;
 
             // Debug logging for first few samples to help diagnose issues
             if (sampleCount <= 5) {
@@ -327,10 +341,13 @@ export function MinimalMicProvider({
                   sampleCount,
                   combinedEnergy: Number(combinedEnergy.toFixed(4)),
                   adaptiveThreshold: Number(adaptiveThreshold.toFixed(4)),
-                  immediateThreshold: Number(immediateSpeechThreshold.toFixed(4)),
+                  bargeInThreshold: Number(bargeInThreshold.toFixed(4)),
+                  immediateThreshold: Number(bargeInImmediateThreshold.toFixed(4)),
+                  effectiveThreshold: Number(effectiveThreshold.toFixed(4)),
                   noiseFloor: Number(noiseFloor.toFixed(4)),
                   speechMs,
-                  isImmediate: isImmediateSpeech
+                  isImmediate: isImmediateSpeech,
+                  isPlayback
                 });
               } catch {}
             }
@@ -343,9 +360,10 @@ export function MinimalMicProvider({
                 speechMs += incMs * 2; // Double increment for immediate detection
                 try { console.log("MinimalMic: IMMEDIATE speech detected!", {
                   energy: Number(combinedEnergy.toFixed(4)),
-                  threshold: Number(immediateSpeechThreshold.toFixed(4))
+                  threshold: Number(bargeInImmediateThreshold.toFixed(4)),
+                  isPlayback
                 }); } catch {}
-              } else if (combinedEnergy > adaptiveThreshold) {
+              } else if (combinedEnergy > effectiveThreshold) {
                 speechMs += incMs;
               } else {
                 speechMs = Math.max(0, speechMs - decMs);
@@ -388,14 +406,14 @@ export function MinimalMicProvider({
                 try { setInputSpeaking(true); } catch {}
               }
             }
-            // Improved silence detection with hysteresis to prevent premature detection
-            const speechHysteresis = 0.005; // Prevent oscillation around threshold
-            const clearSpeechThreshold = adaptiveThreshold + speechHysteresis; // Require speech to exceed threshold + hysteresis
+            // Optimized silence detection with adaptive hysteresis
+            const speechHysteresis = isPlayback ? 0.003 : 0.005; // Tighter hysteresis during playback
+            const clearSpeechThreshold = (isPlayback ? Math.min(adaptiveThreshold, bargeInThreshold) : adaptiveThreshold) + speechHysteresis;
 
             if (hasSpeech && combinedEnergy < silenceThreshold) {
               silenceMs += 100;
               if (silenceMs === 300) {
-                try { console.log("MinimalMic: VAD accumulating silenceMs=", silenceMs, "energy=", combinedEnergy.toFixed(3)); } catch {}
+                try { console.log("MinimalMic: VAD accumulating silenceMs=", silenceMs, "energy=", combinedEnergy.toFixed(3), "isPlayback=", isPlayback); } catch {}
               }
             } else if (hasSpeech && combinedEnergy >= clearSpeechThreshold) {
               // Only reset silence counter if speech clearly exceeds threshold (hysteresis)
