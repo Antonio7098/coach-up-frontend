@@ -14,7 +14,7 @@ export default clerkMiddleware(async (auth, req) => {
     // Light diagnostic to verify middleware execution and matcher coverage
     // Note: keep concise to avoid noisy logs in CI
     // eslint-disable-next-line no-console
-    console.info(`[clerk-mw] ${req.method} ${req.nextUrl.pathname}`);
+    console.info(`[clerk-mw] ${req.method} ${req.nextUrl.pathname} - protectAll: ${protectAll}`);
   } catch {}
   if (protectAll && !isPublicRoute(req)) {
     await auth.protect();
