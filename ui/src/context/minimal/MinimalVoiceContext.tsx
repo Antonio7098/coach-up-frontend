@@ -5,6 +5,7 @@ import { useMinimalAudio } from "./MinimalAudioContext";
 
 export type MinimalVoiceContextValue = {
   enqueueTTSSegment: (text: string) => Promise<void>;
+  enqueueTTSChunk: (text: string) => Promise<void>;
   sttFromBlob: (b: Blob) => Promise<{ text: string }>;
   cancelTTS: () => void;
 };
@@ -20,6 +21,8 @@ export function useMinimalVoice() {
 export function MinimalVoiceProvider({ children }: { children: React.ReactNode }) {
   const audio = useMinimalAudio();
   const ttsGenRef = useRef(0);
+  const pendingChunksRef = useRef<string[]>([]);
+  const isProcessingRef = useRef(false);
 
   const enqueueTTSSegment = useCallback(async (text: string) => {
     if (!text || !text.trim()) return;
@@ -67,6 +70,55 @@ export function MinimalVoiceProvider({ children }: { children: React.ReactNode }
     try { await Promise.all(playPromises); } catch {}
   }, [audio]);
 
+  const processPendingChunks = useCallback(async () => {
+    if (isProcessingRef.current || pendingChunksRef.current.length === 0) return;
+    isProcessingRef.current = true;
+
+    const myGen = ttsGenRef.current;
+
+    while (pendingChunksRef.current.length > 0 && ttsGenRef.current === myGen) {
+      const chunk = pendingChunksRef.current.shift();
+      if (!chunk || !chunk.trim()) continue;
+
+      // Split chunk into sentences and process immediately
+      const segments = chunk
+        .split(/(?<=[.!?])\s+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      for (const seg of segments) {
+        if (ttsGenRef.current !== myGen) break;
+
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 12000);
+          const res = await fetch("/api/v1/tts", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ text: seg }),
+            signal: controller.signal,
+          });
+          clearTimeout(timeout);
+          const data: any = await res.json().catch(() => ({}));
+          if (!res.ok) continue;
+          const url = String(data?.audioUrl || "");
+          if (url && ttsGenRef.current === myGen) {
+            // Don't wait for this segment to finish - let it play asynchronously
+            audio.enqueueAudio?.(url);
+          }
+        } catch {}
+      }
+    }
+
+    isProcessingRef.current = false;
+  }, [audio]);
+
+  const enqueueTTSChunk = useCallback(async (text: string) => {
+    if (!text || !text.trim()) return;
+    pendingChunksRef.current.push(text);
+    void processPendingChunks();
+  }, [processPendingChunks]);
+
   const sttFromBlob = useCallback(async (b: Blob): Promise<{ text: string }> => {
     const form = new FormData();
     form.set("audio", b, "u.webm");
@@ -76,9 +128,18 @@ export function MinimalVoiceProvider({ children }: { children: React.ReactNode }
     return { text: String(data?.text || "") };
   }, []);
 
-  const cancelTTS = useCallback(() => { ttsGenRef.current++; }, []);
+  const cancelTTS = useCallback(() => {
+    ttsGenRef.current++;
+    pendingChunksRef.current = [];
+    isProcessingRef.current = false;
+  }, []);
 
-  const value = useMemo<MinimalVoiceContextValue>(() => ({ enqueueTTSSegment, sttFromBlob, cancelTTS }), [enqueueTTSSegment, sttFromBlob, cancelTTS]);
+  const value = useMemo<MinimalVoiceContextValue>(() => ({
+    enqueueTTSSegment,
+    enqueueTTSChunk,
+    sttFromBlob,
+    cancelTTS
+  }), [enqueueTTSSegment, enqueueTTSChunk, sttFromBlob, cancelTTS]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

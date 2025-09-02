@@ -239,7 +239,7 @@ export async function POST(request: Request) {
         role: body.role,
         contentHash: body.contentHash,
         text: body.text,
-        audioUrl: body.audioUrl,
+        audioUrl: body.audioUrl !== undefined && body.audioUrl !== null ? String(body.audioUrl) : undefined,
         ts: body.ts,
       });
       await mockConvex.logEvent({
@@ -296,7 +296,7 @@ export async function POST(request: Request) {
     // Ingest-driven cadence: when assistant message finalized, ask Convex to update cadence state
     if (body.role === 'assistant') {
       try {
-        const cadence = await client.mutation("functions/summary_state:onAssistantMessage", { sessionId: body.sessionId });
+        const cadence = await client.mutation("functions/summary_state:onAssistantMessage", { sessionId: body.sessionId }) as any;
         await client.mutation("functions/events:logEvent", {
           userId: effectiveUserId,
           sessionId: body.sessionId,

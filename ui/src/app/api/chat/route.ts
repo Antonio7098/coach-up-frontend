@@ -99,9 +99,9 @@ export async function GET(request: Request) {
   const sessionId = url.searchParams.get("sessionId") || "";
   const ridIn = url.searchParams.get("rid") || "";
   const debugOn = (process.env.PROMPT_DEBUG === "1") || (url.searchParams.get("debug") === "1");
+  const systemPromptParam = url.searchParams.get("systemPrompt") || "";
   try {
-    const prev = promptParam.slice(0, 200).replace(/\n/g, " \\n ");
-    console.log(`[ui/api/chat] promptLen=%d preview="%s"`, promptParam.length, prev);
+    console.log(`[ui/api/chat] promptLen=%d systemPromptLen=%d`, promptParam.length, systemPromptParam.length);
   } catch {}
   const requestId = (() => {
     try {
@@ -133,6 +133,12 @@ export async function GET(request: Request) {
 
   // Merge in server-side summary to history (as system) when available
   let upstreamUrl = `${aiApiBaseUrl()}/chat/stream${search}`;
+
+  // Add custom system prompt parameter if provided
+  if (systemPromptParam && systemPromptParam.trim().length > 0) {
+    const separator = upstreamUrl.includes('?') ? '&' : '?';
+    upstreamUrl += `${separator}systemPrompt=${encodeURIComponent(systemPromptParam)}`;
+  }
   try {
     const clientHistParam = url.searchParams.get("history") || "";
     let historyItems: Array<{ role: string; content: string }> = [];
@@ -140,13 +146,14 @@ export async function GET(request: Request) {
       try { historyItems = JSON.parse(b64urlDecode(clientHistParam)); } catch { historyItems = []; }
     }
     // Prepend summary as system if sessionId provided and summary exists
+    let systemItem: { role: string; content: string } | null = null;
     if (sessionId) {
       try {
         const client = makeConvex(convexBaseUrl());
         const latest: any = await client.query("functions/summaries:getLatest", { sessionId });
         const summaryText: string = String(latest?.text || "").trim();
         if (summaryText) {
-          const systemItem = { role: "system", content: summaryText.length > 3200 ? summaryText.slice(0, 3200) : summaryText };
+          systemItem = { role: "system", content: summaryText.length > 3200 ? summaryText.slice(0, 3200) : summaryText };
           // Remove any existing system entry to avoid duplication
           historyItems = [systemItem].concat(historyItems.filter((it) => it.role !== "system"));
 
@@ -172,10 +179,11 @@ export async function GET(request: Request) {
 
           if (debugOn) {
             const recentPreview = historyItems.filter((it) => it.role !== "system").slice(-6).map((m) => ({ role: m.role, content: m.content.slice(0, 240), len: m.content.length }));
+            const summaryText = systemItem ? (systemItem as { role: string; content: string }).content : "";
             savePromptPreview(requestId, {
               system: "Coach-min chat",
-              summary: systemItem.content.slice(0, 1000),
-              summaryLen: systemItem.content.length,
+              summary: summaryText.slice(0, 1000),
+              summaryLen: summaryText.length,
               recentMessages: recentPreview,
               prompt: promptParam.slice(0, 400),
             });

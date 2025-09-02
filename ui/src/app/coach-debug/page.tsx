@@ -9,11 +9,69 @@ import { MinimalMicProvider, useMinimalMic } from "../../context/minimal/Minimal
 import { MinimalSessionProvider } from "../../context/minimal/MinimalSessionContext";
 import { useUser } from "@clerk/nextjs";
 
-function Content() {
+function Content({
+  customSystemPrompt,
+  setCustomSystemPrompt,
+  isSystemPromptEnabled,
+  setIsSystemPromptEnabled
+}: {
+  customSystemPrompt: string;
+  setCustomSystemPrompt: (value: string) => void;
+  isSystemPromptEnabled: boolean;
+  setIsSystemPromptEnabled: (value: boolean) => void;
+}) {
   const mic = useMinimalMic();
   const audio = useMinimalAudio();
   const convo = useMinimalConversation();
   const { sessionId } = useMinimalSession();
+
+  // Helper function for base64url encoding
+  const toBase64Url = (s: string): string => {
+    try {
+      const bytes = new TextEncoder().encode(s);
+      let bin = "";
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      const b64 = btoa(bin);
+      return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+    } catch {
+      try {
+        const b64 = btoa(unescape(encodeURIComponent(s)));
+        return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+      } catch {
+        return "";
+      }
+    }
+  };
+
+
+
+  // Create enhanced chat function that includes custom system prompt
+  const enhancedChatToText = React.useCallback(async (prompt: string, options?: { userProfile?: any; userGoals?: any[] }) => {
+    const enhancedOptions = {
+      ...options,
+      customSystemPrompt: isSystemPromptEnabled && customSystemPrompt.trim() ? customSystemPrompt.trim() : undefined
+    };
+
+
+
+    return convo.chatToText(prompt, enhancedOptions);
+  }, [convo, isSystemPromptEnabled, customSystemPrompt]);
+
+  const enhancedChatToTextStreaming = React.useCallback(async (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[] }) => {
+    const enhancedOptions = {
+      ...options,
+      customSystemPrompt: isSystemPromptEnabled && customSystemPrompt.trim() ? customSystemPrompt.trim() : undefined
+    };
+
+    return convo.chatToTextStreaming(prompt, onChunk, enhancedOptions);
+  }, [convo, isSystemPromptEnabled, customSystemPrompt]);
+
+  // Override convo functions with enhanced versions
+  const effectiveConvo = React.useMemo(() => ({
+    ...convo,
+    chatToText: enhancedChatToText,
+    chatToTextStreaming: enhancedChatToTextStreaming
+  }), [convo, enhancedChatToText, enhancedChatToTextStreaming]);
 
   // Fresh panel: independent state that directly calls the API
   const [fresh, setFresh] = React.useState<{ text: string; updatedAt: number; version: number; lastMessageTs?: number; thresholdTurns?: number; turnsSince?: number } | null>(null);
@@ -132,17 +190,17 @@ function Content() {
     if (!sessionId) return;
     try {
       const prev = fresh?.text || "";
-      let recentMessages = convo.getImmediateHistory();
+      let recentMessages = effectiveConvo.getImmediateHistory();
       if (!recentMessages || recentMessages.length === 0) {
         const fallback: Array<{ role: 'user'|'assistant'; content: string }> = [];
         if (mic.transcript && mic.transcript.trim()) fallback.push({ role: 'user', content: mic.transcript });
         if (mic.assistantText && mic.assistantText.trim()) fallback.push({ role: 'assistant', content: mic.assistantText });
         if (fallback.length > 0) recentMessages = fallback;
       }
-      // If still no messages, skip generation
-      if (!recentMessages || recentMessages.length === 0) return;
       // Save debug prompt details for the panel
       try { setDbgPrompt({ prevSummary: prev, messages: recentMessages }); } catch {}
+      // If still no messages, skip generation
+      if (!recentMessages || recentMessages.length === 0) return;
       try { console.log("[fresh] POST start", { sessionId, prevLen: prev.length, msgs: recentMessages.length }); } catch {}
       const res = await fetch(`/api/v1/session-summary`, {
         method: 'POST',
@@ -159,11 +217,11 @@ function Content() {
       setFreshStatus("ready");
       try { console.log("[fresh] POST ok (ack)"); } catch {}
     } catch {}
-  }, [sessionId, fresh?.text, fresh?.version, convo, mic.transcript, mic.assistantText]);
+  }, [sessionId, fresh?.text, fresh?.version, effectiveConvo, mic.transcript, mic.assistantText]);
   // Server cadence: remove UI auto trigger; rely on backend via persisted interactions
   const lastAutoRef = React.useRef<number>(0);
   const autoInflightRef = React.useRef<boolean>(false);
-  const meta = convo.getSummaryMeta();
+  const meta = effectiveConvo.getSummaryMeta();
   // Remove UI auto cadence effect
   React.useEffect(() => {
     // Auto-start VAD loop on mount
@@ -251,10 +309,10 @@ function Content() {
           <div className="p-3 border rounded">
             <div className="text-sm font-medium mb-1">Recent messages</div>
             <div className="text-xs space-y-1">
-              {convo.getImmediateHistory().length === 0 ? (
+              {effectiveConvo.getImmediateHistory().length === 0 ? (
                 <div className="text-zinc-500">(empty)</div>
               ) : (
-                convo.getImmediateHistory().map((m, i) => (
+                effectiveConvo.getImmediateHistory().map((m, i) => (
                   <div key={i}><span className="font-medium">{m.role}:</span> {m.content}</div>
                 ))
               )}
@@ -286,7 +344,7 @@ function Content() {
           <div className="flex items-center justify-between mb-1">
             <div className="text-sm font-medium">LLM Prompt (debug)</div>
             <div className="flex gap-2">
-              <button type="button" onClick={() => { try { setPromptPreview(convo.getLastPromptPreview()); } catch {} }} className="px-2 py-1 text-xs border rounded">Refresh</button>
+              <button type="button" onClick={() => { try { setPromptPreview(effectiveConvo.getLastPromptPreview()); } catch {} }} className="px-2 py-1 text-xs border rounded">Refresh</button>
             </div>
           </div>
           <div className="text-[11px] text-zinc-600 mb-1">{promptPreview ? 'ready' : 'empty'}</div>
@@ -298,6 +356,74 @@ function Content() {
           ) : (
             <div className="text-[11px] text-zinc-500">(none)</div>
           )}
+        </div>
+        {/* System Prompt Editor Panel */}
+        <div className="mt-4 p-3 border rounded">
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-sm font-medium">System Prompt Editor</div>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => {
+                const newState = !isSystemPromptEnabled;
+
+                setIsSystemPromptEnabled(newState);
+              }} className={`px-2 py-1 text-xs border rounded ${isSystemPromptEnabled ? 'bg-green-50 border-green-300' : 'bg-gray-50 border-gray-300'}`}>{isSystemPromptEnabled ? 'Enabled' : 'Disabled'}</button>
+            </div>
+          </div>
+          <div className="text-[11px] text-zinc-600 mb-2">
+            {isSystemPromptEnabled ? 'Custom system prompt enabled - will override default' : 'Using default system prompt'}
+          </div>
+          <div className="space-y-2">
+            <textarea
+              value={customSystemPrompt}
+              onChange={(e) => {
+                const newValue = e.target.value;
+
+                setCustomSystemPrompt(newValue);
+              }}
+              placeholder="Enter custom system prompt here..."
+              disabled={!isSystemPromptEnabled}
+              className={`w-full p-2 border rounded text-xs font-mono ${isSystemPromptEnabled ? 'bg-white' : 'bg-gray-50 text-gray-400'}`}
+              rows={6}
+            />
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const defaultPrompt = "You are a concise, friendly speech coach. Your purpose is to help users improve speaking skills through short, actionable guidance and practice.\n\nBehavioral rules:\n- Greetings and small talk: reply with 1 short friendly sentence, then immediately pivot to the goal.\n- Default response length: at most 2–3 sentences or 5 short bullets.\n- Ask exactly one question to clarify goals or select the next focus area.\n- When providing guidance, prefer practical, immediately applicable tips.\n- Stay conversational, positive, and time-efficient.";
+
+                  setCustomSystemPrompt(defaultPrompt);
+                }}
+                disabled={!isSystemPromptEnabled}
+                className="px-2 py-1 text-xs border rounded disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Load Default
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+
+                  setCustomSystemPrompt("");
+                }}
+                disabled={!isSystemPromptEnabled}
+                className="px-2 py-1 text-xs border rounded disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Clear
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+
+                  // The prompt is already applied automatically when typing, but this button
+                  // provides explicit confirmation and can be used for future enhancements
+                  // like saving to localStorage or sending to backend for validation
+                }}
+                disabled={!isSystemPromptEnabled}
+                className="px-3 py-1 text-xs border rounded bg-green-50 border-green-300 text-green-700 hover:bg-green-100 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Apply
+              </button>
+            </div>
+          </div>
         </div>
         {/* Fresh Summary Panel (independent) */}
         <div className="mt-4 p-3 border rounded">
@@ -400,13 +526,22 @@ function Content() {
 }
 
 export default function CoachMinimalPage() {
+  // State for system prompt functionality - lifted up to share with MinimalMicProvider
+  const [customSystemPrompt, setCustomSystemPrompt] = React.useState<string>("");
+  const [isSystemPromptEnabled, setIsSystemPromptEnabled] = React.useState<boolean>(false);
+
   return (
     <MinimalAudioProvider>
       <MinimalSessionProvider>
         <MinimalVoiceProvider>
           <MinimalConversationProvider>
-            <MinimalMicProvider>
-              <Content />
+            <MinimalMicProvider customSystemPrompt={isSystemPromptEnabled && customSystemPrompt.trim() ? customSystemPrompt.trim() : undefined}>
+              <Content
+                customSystemPrompt={customSystemPrompt}
+                setCustomSystemPrompt={setCustomSystemPrompt}
+                isSystemPromptEnabled={isSystemPromptEnabled}
+                setIsSystemPromptEnabled={setIsSystemPromptEnabled}
+              />
             </MinimalMicProvider>
           </MinimalConversationProvider>
         </MinimalVoiceProvider>

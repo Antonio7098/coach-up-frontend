@@ -29,29 +29,35 @@ export function useMinimalMic() {
 export function MinimalMicProvider({
   children,
   userProfile,
-  userGoals
+  userGoals,
+  customSystemPrompt
 }: {
   children: React.ReactNode;
   userProfile?: any;
   userGoals?: any[];
+  customSystemPrompt?: string;
 }) {
 
   const voice = useMinimalVoice();
   const audio = useMinimalAudio();
   const convo = useMinimalConversation();
   const { sessionId } = useMinimalSession();
+
+
   const sessionIdRef = useRef<string | null>(null);
   React.useEffect(() => { sessionIdRef.current = sessionId || null; }, [sessionId]);
 
   // Refs to track current profile/goals for use in async callbacks
   const userProfileRef = useRef<any>(null);
   const userGoalsRef = useRef<any[]>([]);
+  const customSystemPromptRef = useRef<string>("");
 
   // Update refs when props change
   React.useEffect(() => {
     userProfileRef.current = userProfile;
-    userGoalsRef.current = userGoals;
-  }, [userProfile, userGoals]);
+    userGoalsRef.current = userGoals || [];
+    customSystemPromptRef.current = customSystemPrompt || "";
+  }, [userProfile, userGoals, customSystemPrompt]);
   const [recording, setRecording] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [assistantText, setAssistantText] = useState("");
@@ -149,7 +155,14 @@ export function MinimalMicProvider({
             setTranscript(text); try { console.log("MinimalMic: STT done; textLen=", (text || "").length); } catch {}
             setStatus("chat"); try { console.log("MinimalMic: Chat start"); } catch {}
 
-            const reply = await convo.chatToText(text, { userProfile: userProfileRef.current, userGoals: userGoalsRef.current });
+            const chatOptions = {
+              userProfile: userProfileRef.current,
+              userGoals: userGoalsRef.current,
+              customSystemPrompt: customSystemPromptRef.current && customSystemPromptRef.current.trim() ? customSystemPromptRef.current.trim() : undefined
+            };
+
+
+            const reply = await convo.chatToText(text, chatOptions);
             setAssistantText(reply); try { console.log("MinimalMic: Chat done; replyLen=", (reply || "").length); } catch {}
             // Persist interactions to backend to enable server cadence
             try {
@@ -184,9 +197,31 @@ export function MinimalMicProvider({
             } catch {}
             setStatus("tts"); try { console.log("MinimalMic: TTS start"); } catch {}
             try { voice.cancelTTS?.(); } catch {}
-            // Start playback fire-and-forget; mark pending to prevent status flicker
-            pendingPlaybackRef.current = true;
-            try { void voice.enqueueTTSSegment(reply); } catch {}
+
+            // Use streaming TTS instead of waiting for full response
+            let accumulatedText = "";
+            const onChunk = (chunk: string) => {
+              accumulatedText += chunk;
+              // Process chunk for TTS immediately (sentence-based)
+              void voice.enqueueTTSChunk?.(chunk);
+            };
+
+            // Get streaming response
+            const streamingOptions = {
+              userProfile: userProfileRef.current,
+              userGoals: userGoalsRef.current,
+              customSystemPrompt: customSystemPromptRef.current && customSystemPromptRef.current.trim() ? customSystemPromptRef.current.trim() : undefined
+            };
+
+
+            const streamingReply = await convo.chatToTextStreaming(text, onChunk, streamingOptions);
+
+            // Final TTS for any remaining text (in case streaming missed some)
+            if (accumulatedText && accumulatedText !== streamingReply) {
+              try { void voice.enqueueTTSChunk?.(streamingReply.slice(accumulatedText.length)); } catch {}
+            }
+
+            setAssistantText(streamingReply); try { console.log("MinimalMic: Chat done; replyLen=", (streamingReply || "").length); } catch {}
             // Ensure concurrent capture during playback for barge-in
             if (vadLoopRef.current && !recording) { try { void startRecordingInternal(true); } catch {} }
           }

@@ -195,7 +195,7 @@ export async function POST(request: Request) {
         } as const;
 
         // Persist transcript only (no audioUrl/objectKey for privacy)
-        persistInteraction({ sessionId, groupId, requestId, text: result.text ?? null, audioUrl: null, objectKey: null }).catch(() => {});
+        persistInteraction({ sessionId, groupId, requestId, text: result.text ?? null, audioUrl: undefined, objectKey: undefined }).catch(() => {});
 
         // Metrics: audio bytes in (multipart path)
         try {
@@ -236,7 +236,7 @@ export async function POST(request: Request) {
       } as const;
 
       // Persist with audio metadata when stored
-      persistInteraction({ sessionId, groupId, requestId, text: result.text ?? null, audioUrl: uploaded.audioUrl ?? null, objectKey: uploaded.objectKey ?? null }).catch(() => {});
+      persistInteraction({ sessionId, groupId, requestId, text: result.text ?? null, audioUrl: uploaded.audioUrl ?? undefined, objectKey: uploaded.objectKey ?? undefined }).catch(() => {});
 
       // Metrics: audio bytes in (multipart path)
       try {
@@ -308,7 +308,7 @@ export async function POST(request: Request) {
     } as const;
 
     // Fire-and-forget persistence of interaction row (user role)
-    persistInteraction({ sessionId, groupId, requestId, text: result.text ?? null, audioUrl: audioUrl ?? null, objectKey: objectKey ?? null }).catch(() => {});
+    persistInteraction({ sessionId, groupId, requestId, text: result.text ?? null, audioUrl: audioUrl ?? undefined, objectKey: objectKey ?? undefined }).catch(() => {});
 
     // Metrics: audio bytes in (best-effort for server-side fetch when objectKey is provided)
     try {

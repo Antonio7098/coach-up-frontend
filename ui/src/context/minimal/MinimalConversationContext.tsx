@@ -14,7 +14,8 @@ export type PromptPreview = {
 } | null;
 
 export type MinimalConversationContextValue = {
-  chatToText: (prompt: string, options?: { userProfile?: any; userGoals?: any[] }) => Promise<string>;
+  chatToText: (prompt: string, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string }) => Promise<string>;
+  chatToTextStreaming: (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string }) => Promise<string>;
   getImmediateHistory: () => Array<{ role: "user" | "assistant"; content: string }>;
   getSummaryMeta: () => { ready: boolean; updatedAt?: number; turnsUntilDue: number; thresholdTurns: number };
   getLastPromptPreview: () => PromptPreview;
@@ -67,7 +68,7 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
   // Deprecated: preview GET is removed; SSE 'prompt' event is source of truth.
   const fetchPromptPreview = useCallback(async (_rid: string) => { return; }, []);
 
-  const chatToText = useCallback(async (prompt: string, options?: { userProfile?: any; userGoals?: any[] }): Promise<string> => {
+  const chatToTextStreaming = useCallback(async (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string }): Promise<string> => {
     if (!prompt || !prompt.trim()) return "";
     // Build minimal history param from the last 2 messages (excluding this prompt)
     const last2 = historyRef.current.slice(-2).map((m) => ({ role: m.role, content: (m.content || "").slice(0, 240) }));
@@ -85,7 +86,7 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
         console.warn("Failed to encode user profile:", e);
       }
     }
-    if (options?.userGoals && Array.isArray(options.userGoals)) {
+    if (options?.userGoals && Array.isArray(options?.userGoals)) {
       try {
         goalsParam = `&userGoals=${encodeURIComponent(toBase64Url(JSON.stringify(options.userGoals)))}`;
       } catch (e) {
@@ -97,18 +98,34 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     lastRidRef.current = rid;
     setPromptPreview(null);
 
-    const startOnce = (): Promise<string | null> => new Promise((resolve, reject) => {
+    const startStreaming = (): Promise<string | null> => new Promise((resolve, reject) => {
       try {
         let es: EventSource | null = null;
         try {
-          const url = `/api/chat?prompt=${encodeURIComponent(prompt)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""}${histParam}${profileParam}${goalsParam}&rid=${encodeURIComponent(rid)}&debug=1`;
+          // Add custom system prompt if provided
+          let systemPromptParam = "";
+          if (options?.customSystemPrompt && options.customSystemPrompt.trim()) {
+            systemPromptParam = `&systemPrompt=${encodeURIComponent(options.customSystemPrompt.trim())}`;
+            
+          }
+
+          const url = `/api/chat?prompt=${encodeURIComponent(prompt)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""}${histParam}${profileParam}${goalsParam}${systemPromptParam}&rid=${encodeURIComponent(rid)}&debug=1`;
+
           es = new EventSource(url, { withCredentials: false });
         } catch {}
         if (!es) { reject(new Error("stream failed")); return; }
         let acc = "";
         es.onmessage = (evt) => {
-          if (evt.data === "[DONE]") { try { es?.close(); } catch {}; resolve(acc); }
-          else { acc += evt.data; }
+          if (evt.data === "[DONE]") {
+            try { es?.close(); } catch {};
+            resolve(acc);
+          } else {
+            acc += evt.data;
+            // Call the chunk callback for streaming TTS
+            if (onChunk && evt.data) {
+              onChunk(evt.data);
+            }
+          }
         };
         es.addEventListener('prompt', (evt: MessageEvent) => {
           try {
@@ -131,15 +148,19 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
         reject(new Error(e?.message || "stream failed"));
       }
     });
-    const first = await startOnce();
+    const first = await startStreaming();
     if (typeof first === "string") return first;
-    const second = await startOnce();
+    const second = await startStreaming();
     if (typeof second === "string") return second;
     throw new Error("stream failed");
   }, [sessionId, summary?.text]);
 
+  const chatToText = useCallback(async (prompt: string, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string }): Promise<string> => {
+    return chatToTextStreaming(prompt, undefined, options);
+  }, [chatToTextStreaming]);
+
   // Push user/assistant messages into minimal history when chatToText resolves
-  const chatToTextWithHistory = useCallback(async (prompt: string, options?: { userProfile?: any; userGoals?: any[] }): Promise<string> => {
+  const chatToTextWithHistory = useCallback(async (prompt: string, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string }): Promise<string> => {
     const reply = await chatToText(prompt, options);
     try {
       historyRef.current.push({ role: "user", content: prompt });
@@ -194,12 +215,13 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
 
   const value = useMemo<MinimalConversationContextValue>(() => ({
     chatToText: chatToTextWithHistory,
+    chatToTextStreaming: (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string }) => chatToTextStreaming(prompt, onChunk, options),
     getImmediateHistory,
     getSummaryMeta,
     getLastPromptPreview: () => promptPreview,
     refreshPromptPreview: async () => {},
     promptPreview,
-  }), [chatToTextWithHistory, getImmediateHistory, getSummaryMeta, promptPreview]);
+  }), [chatToTextWithHistory, chatToTextStreaming, getImmediateHistory, getSummaryMeta, promptPreview]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

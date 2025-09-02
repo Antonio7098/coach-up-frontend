@@ -17,13 +17,21 @@ function App() {
   const [profileLoading, setProfileLoading] = React.useState<boolean>(false);
   const [goalsLoading, setGoalsLoading] = React.useState<boolean>(false);
 
+  // System prompt functionality - added for coach-min debug panel
+  const [customSystemPrompt, setCustomSystemPrompt] = React.useState<string>("");
+  const [isSystemPromptEnabled, setIsSystemPromptEnabled] = React.useState<boolean>(false);
+
 
   return (
     <MinimalAudioProvider>
       <MinimalSessionProvider>
         <MinimalVoiceProvider>
           <MinimalConversationProvider>
-            <MinimalMicProvider userProfile={profile} userGoals={goals}>
+            <MinimalMicProvider
+              userProfile={profile}
+              userGoals={goals}
+              customSystemPrompt={isSystemPromptEnabled && customSystemPrompt.trim() ? customSystemPrompt.trim() : undefined}
+            >
               <Content
                 profile={profile}
                 setProfile={setProfile}
@@ -33,6 +41,10 @@ function App() {
                 setProfileLoading={setProfileLoading}
                 goalsLoading={goalsLoading}
                 setGoalsLoading={setGoalsLoading}
+                customSystemPrompt={customSystemPrompt}
+                setCustomSystemPrompt={setCustomSystemPrompt}
+                isSystemPromptEnabled={isSystemPromptEnabled}
+                setIsSystemPromptEnabled={setIsSystemPromptEnabled}
               />
             </MinimalMicProvider>
           </MinimalConversationProvider>
@@ -50,7 +62,11 @@ function Content({
   profileLoading,
   setProfileLoading,
   goalsLoading,
-  setGoalsLoading
+  setGoalsLoading,
+  customSystemPrompt,
+  setCustomSystemPrompt,
+  isSystemPromptEnabled,
+  setIsSystemPromptEnabled
 }: {
   profile: any;
   setProfile: React.Dispatch<React.SetStateAction<any>>;
@@ -60,6 +76,10 @@ function Content({
   setProfileLoading: React.Dispatch<React.SetStateAction<boolean>>;
   goalsLoading: boolean;
   setGoalsLoading: React.Dispatch<React.SetStateAction<boolean>>;
+  customSystemPrompt: string;
+  setCustomSystemPrompt: (value: string) => void;
+  isSystemPromptEnabled: boolean;
+  setIsSystemPromptEnabled: (value: boolean) => void;
 }) {
   const mic = useMinimalMic();
   const audio = useMinimalAudio();
@@ -882,6 +902,69 @@ function Content({
           ) : (
                     <div className="text-xs text-gray-500">(none)</div>
           )}
+
+          {/* System Prompt Editor Section */}
+          <div className="border-t border-gray-200 mt-4 pt-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-sm font-mono text-blue-600 font-semibold">[SYSTEM_PROMPT_EDITOR]</div>
+              <button
+                type="button"
+                onClick={() => setIsSystemPromptEnabled(!isSystemPromptEnabled)}
+                className={`px-3 py-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-50 font-mono text-xs`}
+              >
+                [{isSystemPromptEnabled ? 'ENABLED' : 'DISABLED'}]
+              </button>
+            </div>
+
+            <div className="text-xs text-gray-600 mb-2 font-mono">
+              {isSystemPromptEnabled ? 'STATUS: CUSTOM PROMPT ACTIVE' : 'STATUS: USING DEFAULT PROMPT'}
+            </div>
+
+            <div className="space-y-2">
+              <textarea
+                value={customSystemPrompt}
+                onChange={(e) => setCustomSystemPrompt(e.target.value)}
+                placeholder="Enter custom system prompt here..."
+                disabled={!isSystemPromptEnabled}
+                className={`w-full p-2 border rounded text-xs font-mono ${isSystemPromptEnabled ? 'bg-white text-gray-800' : 'bg-gray-50 text-gray-400'}`}
+                rows={6}
+              />
+
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const defaultPrompt = "You are a concise, friendly speech coach. Your purpose is to help users improve speaking skills through short, actionable guidance and practice.\n\nBehavioral rules:\n- Greetings and small talk: reply with 1 short friendly sentence, then immediately pivot to the goal.\n- Default response length: at most 2–3 sentences or 5 short bullets.\n- Ask exactly one question to clarify goals or select the next focus area.\n- When providing guidance, prefer practical, immediately applicable tips.\n- Stay conversational, positive, and time-efficient.";
+                    setCustomSystemPrompt(defaultPrompt);
+                  }}
+                  disabled={!isSystemPromptEnabled}
+                  className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  [LOAD_DEFAULT]
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setCustomSystemPrompt("")}
+                  disabled={!isSystemPromptEnabled}
+                  className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  [CLEAR]
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    // Prompt is applied automatically, but this provides confirmation
+                  }}
+                  disabled={!isSystemPromptEnabled}
+                  className="px-3 py-1 text-xs border rounded bg-green-50 border-green-300 text-green-700 hover:bg-green-100 disabled:opacity-50 disabled:cursor-not-allowed font-mono"
+                >
+                  [APPLY]
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
               )}
 
