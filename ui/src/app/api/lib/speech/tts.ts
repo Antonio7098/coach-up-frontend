@@ -160,9 +160,19 @@ const mockTts: TtsProvider = {
 const googleTts: TtsProvider = {
   name: 'google',
   async synthesize(input: TtsInput): Promise<TtsResult> {
-    if (!process.env.GOOGLE_APPLICATION_CREDENTIALS && !process.env.GOOGLE_CLOUD_PROJECT) {
-      throw new ProviderNotConfiguredError('Google Cloud ADC not configured (set GOOGLE_APPLICATION_CREDENTIALS)')
+    if (!process.env.GOOGLE_APPLICATION_CREDENTIALS && !process.env.GOOGLE_CLOUD_PROJECT && !process.env.GOOGLE_CLOUD_CREDENTIALS_JSON) {
+      throw new ProviderNotConfiguredError('Google Cloud ADC not configured (set one of: GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_CREDENTIALS_JSON)')
     }
+
+    let config = {}
+    if (process.env.GOOGLE_CLOUD_CREDENTIALS_JSON) {
+      try {
+        config = { credentials: JSON.parse(process.env.GOOGLE_CLOUD_CREDENTIALS_JSON) }
+      } catch (e) {
+        throw new Error(`Failed to parse GOOGLE_CLOUD_CREDENTIALS_JSON: ${(e as Error).message}`)
+      }
+    }
+
     let { contentType, ext } = pickFormat(input.format)
     // Map to Google AudioEncoding
     type AudioEncoding = 'MP3' | 'LINEAR16' | 'OGG_OPUS'
@@ -184,7 +194,7 @@ const googleTts: TtsProvider = {
     const mod: any = await import('@google-cloud/text-to-speech')
     const TextToSpeechClient = mod.TextToSpeechClient || mod.default?.TextToSpeechClient
     if (!TextToSpeechClient) throw new Error('Google TTS SDK not available')
-    const client = new TextToSpeechClient()
+    const client = new TextToSpeechClient(config)
     const languageCode = process.env.GOOGLE_TTS_LANGUAGE || 'en-US'
     const voiceName = input.voiceId || process.env.GOOGLE_TTS_VOICE || undefined
 
