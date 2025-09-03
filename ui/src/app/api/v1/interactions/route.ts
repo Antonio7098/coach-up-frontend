@@ -22,13 +22,20 @@ interface InteractionsBody {
 export async function GET(request: Request) {
   const headersIn = new Headers(request.headers);
   const requestId = headersIn.get("x-request-id") || safeUUID();
+  const urlMeta = { path: new URL(request.url).pathname, host: headersIn.get("host") };
+  const hasAuthHeader = !!(headersIn.get("authorization") || headersIn.get("Authorization"));
+  const cookieHeader = headersIn.get("cookie") || "";
+  const hasClerkCookie = /(__session|Clerk)/i.test(cookieHeader);
+  try { console.log(JSON.stringify({ level: 'debug', where: 'interactions.GET.entry', requestId, ...urlMeta, hasAuthHeader, hasClerkCookie })); } catch {}
   const authRes = await requireAuth(request);
   if (!authRes.ok) {
+    try { console.log(JSON.stringify({ level: 'warn', where: 'interactions.GET.auth.fail', requestId, ...urlMeta, hasAuthHeader, hasClerkCookie })); } catch {}
     return new Response(JSON.stringify({ error: "Unauthorized" }), {
       status: 401,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
     });
   }
+  try { console.log(JSON.stringify({ level: 'info', where: 'interactions.GET.auth.ok', requestId, ...urlMeta, userId: authRes.userId ? 'present' : 'missing' })); } catch {}
 
   const url = new URL(request.url);
   const sessionId = url.searchParams.get("sessionId") || "";
@@ -119,15 +126,22 @@ export async function POST(request: Request) {
   const requestId = headersIn.get("x-request-id") || safeUUID();
   const trackedSkillId = headersIn.get("x-tracked-skill-id") || undefined;
   const trackedSkillIdHash = trackedSkillId ? sha256Hex(trackedSkillId) : undefined;
+  const urlMeta = { path: new URL(request.url).pathname, host: headersIn.get("host") };
+  const hasAuthHeader = !!(headersIn.get("authorization") || headersIn.get("Authorization"));
+  const cookieHeader = headersIn.get("cookie") || "";
+  const hasClerkCookie = /(__session|Clerk)/i.test(cookieHeader);
+  try { console.log(JSON.stringify({ level: 'debug', where: 'interactions.POST.entry', requestId, ...urlMeta, hasAuthHeader, hasClerkCookie })); } catch {}
 
   // Optional Clerk gating (enabled when CLERK_ENABLED=1)
   const authRes = await requireAuth(request);
   if (!authRes.ok) {
+    try { console.log(JSON.stringify({ level: 'warn', where: 'interactions.POST.auth.fail', requestId, ...urlMeta, hasAuthHeader, hasClerkCookie })); } catch {}
     return new Response(JSON.stringify({ error: "Unauthorized" }), {
       status: 401,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
     });
   }
+  try { console.log(JSON.stringify({ level: 'info', where: 'interactions.POST.auth.ok', requestId, ...urlMeta, userId: authRes.userId ? 'present' : 'missing' })); } catch {}
 
   let json: unknown;
   try {
