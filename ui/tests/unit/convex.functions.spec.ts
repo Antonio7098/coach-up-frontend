@@ -19,11 +19,25 @@ import { describe, it, expect, vi } from 'vitest';
   },
 }), { virtual: true });
 
+// Mock the users helper functions
+(vi as any).mock('../../../convex/users', () => ({
+  getUser: vi.fn(async (ctx: any) => {
+    const identity = await ctx.auth.getUserIdentity();
+    return identity ? { _id: identity.subject, tokenIdentifier: identity.subject } : null;
+  }),
+  getOrCreateUser: vi.fn(async (ctx: any) => {
+    const identity = await ctx.auth.getUserIdentity();
+    return identity ? { _id: identity.subject, tokenIdentifier: identity.subject } : null;
+  }),
+}), { virtual: true });
+
 // Import Convex functions under test
 import { updateSessionState } from '../../../convex/functions/sessions';
 import { appendInteraction } from '../../../convex/functions/interactions';
 import { logEvent, listBySession } from '../../../convex/functions/events';
 import { recordSkillAssessmentV2, getLatestAssessmentSummary, checkFinalizeIdempotency, markFinalizeCompleted } from '../../../convex/functions/assessments';
+import { getUserGoals, createGoal, updateGoal, deleteGoal } from '../../../convex/functions/goals';
+import { getUserProfile, updateUserProfile } from '../../../convex/functions/profile';
 
 describe('Convex functions: write paths and index usage', () => {
   it('sessions.updateSessionState uses by_sessionId unique and inserts when missing', async () => {
@@ -222,4 +236,282 @@ describe('Convex functions: write paths and index usage', () => {
     const res = await (markFinalizeCompleted as any).handler(ctx, { sessionId: 's1', groupId: 'g1' })
     expect(res).toEqual({ ok: true })
   })
+
+  describe('Goals functions: CRUD operations and validation', () => {
+    it('goals.getUserGoals queries by_user index and returns goals', async () => {
+      const usedIndex: string[] = [];
+      const ctx = {
+        db: {
+          query: vi.fn(() => ({
+            withIndex: (name: string, cb: any) => {
+              usedIndex.push(name);
+              const q = { eq: (_f: any, _v: any) => true } as any;
+              cb(q);
+              return {
+                collect: async () => ([
+                  { userId: 'u1', goalId: 'g1', title: 'Test Goal', status: 'active', tags: ['tag1'], createdAt: 1, updatedAt: 1 },
+                  { userId: 'u1', goalId: 'g2', title: 'Another Goal', status: 'completed', tags: [], createdAt: 2, updatedAt: 2 }
+                ])
+              };
+            },
+          })),
+        },
+        auth: { getUserIdentity: async () => ({ subject: 'u1' }) },
+      } as any;
+
+      const res = await (getUserGoals as any).handler(ctx, {});
+      expect(usedIndex).toContain('by_user');
+      expect(Array.isArray(res)).toBe(true);
+      expect(res).toHaveLength(2);
+      expect(res[0].goalId).toBe('g1');
+      expect(res[1].goalId).toBe('g2');
+    });
+
+    it('goals.createGoal validates required fields and inserts with timestamps', async () => {
+      const inserts: any[] = [];
+      const ctx = {
+        db: {
+          insert: vi.fn(async (table: string, doc: any) => { inserts.push({ table, doc }); return 'goal_id'; }),
+        },
+        auth: { getUserIdentity: async () => ({ subject: 'u1' }) },
+      } as any;
+
+      const args = {
+        title: 'Test Goal',
+        description: 'A test goal',
+        status: 'active',
+        targetDateMs: Date.now(),
+        tags: ['tag1', 'tag2']
+      };
+
+      const res = await (createGoal as any).handler(ctx, args);
+      expect(res).toBe('goal_id');
+      expect(inserts).toHaveLength(1);
+      expect(inserts[0].table).toBe('users_goals');
+      expect(inserts[0].doc).toMatchObject({
+        userId: 'u1',
+        goalId: expect.any(String),
+        title: 'Test Goal',
+        description: 'A test goal',
+        status: 'active',
+        tags: ['tag1', 'tag2']
+      });
+      expect(typeof inserts[0].doc.createdAt).toBe('number');
+      expect(typeof inserts[0].doc.updatedAt).toBe('number');
+    });
+
+    it('goals.createGoal validates title length and required fields', async () => {
+      const ctx = {
+        db: { insert: vi.fn(async () => 'id') },
+        auth: { getUserIdentity: async () => ({ subject: 'u1' }) },
+      } as any;
+
+      // Empty title
+      await expect((createGoal as any).handler(ctx, { title: '', status: 'active', tags: [] })).rejects.toThrow('Title is required');
+
+      // Title too long
+      const longTitle = 'a'.repeat(101);
+      await expect((createGoal as any).handler(ctx, { title: longTitle, status: 'active', tags: [] })).rejects.toThrow('Title cannot exceed 100 characters');
+    });
+
+    it('goals.updateGoal validates goal ownership and patches with timestamp', async () => {
+      const patches: any[] = [];
+      const ctx = {
+        db: {
+          query: vi.fn(() => ({
+            withIndex: (_name: string, cb: any) => {
+              const q = {
+                eq: vi.fn().mockReturnThis(),
+                first: vi.fn().mockResolvedValue({ _id: 'goal1', userId: 'u1', title: 'Old Title' })
+              };
+              cb(q);
+              return q;
+            },
+          })),
+          patch: vi.fn(async (id: string, patch: any) => { patches.push({ id, patch }); }),
+        },
+        auth: { getUserIdentity: async () => ({ subject: 'u1' }) },
+      } as any;
+
+      const args = { goalId: 'g1', title: 'Updated Title', status: 'completed' };
+      const res = await (updateGoal as any).handler(ctx, args);
+      expect(res).toBeUndefined();
+      expect(patches).toHaveLength(1);
+      expect(patches[0]).toMatchObject({
+        id: 'goal1',
+        patch: { title: 'Updated Title', status: 'completed', updatedAt: expect.any(Number) }
+      });
+    });
+
+    it('goals.updateGoal throws error for non-existent goal', async () => {
+      const ctx = {
+        db: {
+          query: vi.fn(() => ({
+            withIndex: (_name: string, cb: any) => {
+              const q = {
+                eq: vi.fn().mockReturnThis(),
+                first: vi.fn().mockResolvedValue(null)
+              };
+              cb(q);
+              return q;
+            },
+          })),
+        },
+        auth: { getUserIdentity: async () => ({ subject: 'u1' }) },
+      } as any;
+
+      await expect((updateGoal as any).handler(ctx, { goalId: 'nonexistent' })).rejects.toThrow('Goal not found');
+    });
+
+    it('goals.deleteGoal validates ownership and deletes goal', async () => {
+      const deletes: string[] = [];
+      const ctx = {
+        db: {
+          query: vi.fn(() => ({
+            withIndex: (_name: string, cb: any) => {
+              const q = {
+                eq: vi.fn().mockReturnThis(),
+                first: vi.fn().mockResolvedValue({ _id: 'goal1', userId: 'u1' })
+              };
+              cb(q);
+              return q;
+            },
+          })),
+          delete: vi.fn(async (id: string) => { deletes.push(id); }),
+        },
+        auth: { getUserIdentity: async () => ({ subject: 'u1' }) },
+      } as any;
+
+      const res = await (deleteGoal as any).handler(ctx, { goalId: 'g1' });
+      expect(res).toBeUndefined();
+      expect(deletes).toContain('goal1');
+    });
+  });
+
+  describe('Profile functions: CRUD operations and validation', () => {
+    it('profile.getUserProfile queries by_user index and returns profile', async () => {
+      const usedIndex: string[] = [];
+      const ctx = {
+        db: {
+          query: vi.fn(() => ({
+            withIndex: (name: string, cb: any) => {
+              usedIndex.push(name);
+              const q = { eq: (_f: any, _v: any) => true } as any;
+              cb(q);
+              return {
+                first: async () => ({
+                  userId: 'u1',
+                  displayName: 'Test User',
+                  bio: 'Test bio',
+                  createdAt: 1,
+                  updatedAt: 1
+                })
+              };
+            },
+          })),
+        },
+        auth: { getUserIdentity: async () => ({ subject: 'u1' }) },
+      } as any;
+
+      const res = await (getUserProfile as any).handler(ctx, {});
+      expect(usedIndex).toContain('by_user');
+      expect(res).toMatchObject({
+        userId: 'u1',
+        displayName: 'Test User',
+        bio: 'Test bio'
+      });
+    });
+
+    it('profile.updateUserProfile upserts profile with validation', async () => {
+      const inserts: any[] = [];
+      const patches: any[] = [];
+      const ctx = {
+        db: {
+          query: vi.fn(() => ({
+            withIndex: (_name: string, cb: any) => {
+              const q = { eq: (_f: any, _v: any) => true } as any;
+              cb(q);
+              return { first: async () => null }; // No existing profile
+            },
+          })),
+          insert: vi.fn(async (table: string, doc: any) => { inserts.push({ table, doc }); return 'profile_id'; }),
+          patch: vi.fn(async (id: string, patch: any) => { patches.push({ id, patch }); }),
+        },
+        auth: { getUserIdentity: async () => ({ subject: 'u1' }) },
+      } as any;
+
+      const args = {
+        displayName: 'New User',
+        email: 'test@example.com',
+        bio: 'A test bio',
+        avatarUrl: 'https://example.com/avatar.jpg'
+      };
+
+      const res = await (updateUserProfile as any).handler(ctx, args);
+      expect(res).toBe('profile_id');
+      expect(inserts).toHaveLength(1);
+      expect(inserts[0].table).toBe('users_profile');
+      expect(inserts[0].doc).toMatchObject({
+        userId: 'u1',
+        displayName: 'New User',
+        email: 'test@example.com',
+        bio: 'A test bio'
+      });
+      expect(typeof inserts[0].doc.createdAt).toBe('number');
+      expect(typeof inserts[0].doc.updatedAt).toBe('number');
+    });
+
+    it('profile.updateUserProfile patches existing profile', async () => {
+      const patches: any[] = [];
+      const ctx = {
+        db: {
+          query: vi.fn(() => ({
+            withIndex: (_name: string, cb: any) => {
+              const q = { eq: (_f: any, _v: any) => true } as any;
+              cb(q);
+              return { first: async () => ({ _id: 'profile1', displayName: 'Old Name' }) };
+            },
+          })),
+          patch: vi.fn(async (id: string, patch: any) => { patches.push({ id, patch }); }),
+          insert: vi.fn(async () => 'new_id'),
+        },
+        auth: { getUserIdentity: async () => ({ subject: 'u1' }) },
+      } as any;
+
+      const args = { displayName: 'Updated Name', bio: 'Updated bio' };
+      const res = await (updateUserProfile as any).handler(ctx, args);
+      expect(res).toBe('profile1');
+      expect(patches).toHaveLength(1);
+      expect(patches[0]).toMatchObject({
+        id: 'profile1',
+        patch: { displayName: 'Updated Name', bio: 'Updated bio', updatedAt: expect.any(Number) }
+      });
+    });
+
+    it('profile.updateUserProfile validates input fields', async () => {
+      const ctx = {
+        db: {
+          query: vi.fn(() => ({
+            withIndex: (_name: string, cb: any) => {
+              const q = { eq: (_f: any, _v: any) => true } as any;
+              cb(q);
+              return { first: async () => null };
+            },
+          })),
+          insert: vi.fn(async () => 'id'),
+        },
+        auth: { getUserIdentity: async () => ({ subject: 'u1' }) },
+      } as any;
+
+      // Invalid display name length
+      await expect((updateUserProfile as any).handler(ctx, { displayName: 'A' })).rejects.toThrow('Display name must be at least 2 characters');
+
+      // Invalid email format
+      await expect((updateUserProfile as any).handler(ctx, { email: 'invalid-email' })).rejects.toThrow('Invalid email format');
+
+      // Bio too long
+      const longBio = 'a'.repeat(501);
+      await expect((updateUserProfile as any).handler(ctx, { bio: longBio })).rejects.toThrow('Bio cannot exceed 500 characters');
+    });
+  });
 });

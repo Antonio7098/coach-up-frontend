@@ -806,6 +806,199 @@ Dashboard notes (Grafana)
 - Link from panels to logs by `requestId` for drill-down.
  - Dashboard file: `infra/monitoring/grafana/dashboards/ui-api-speech.json` (UID: `coachup-ui-speech`)
 
+## 16) Goals API Monitoring Notes
+
+- Route: `GET/POST/PATCH/DELETE /api/v1/users/goals`
+- Traffic type: CRUD operations for user goals; authenticated only.
+- Metrics (service: next)
+  - `coachup_ui_api_requests_total{route="/api/v1/users/goals"}` (counter)
+  - `coachup_ui_api_request_errors_total{route="/api/v1/users/goals"}` (counter)
+  - `coachup_ui_api_request_duration_seconds{route="/api/v1/users/goals"}` (histogram)
+  - `coachup_ui_api_rate_limited_total{route="/api/v1/users/goals"}` (counter)
+- Logs (structured JSON)
+  - Include: `requestId`, `route`, `method`, `status`, `latencyMs`, `userId` (hashed), `goalId` (when applicable)
+  - Do not log raw PII. Hash user identifiers.
+- Example log (success GET):
+```json
+{
+  "ts": "2025-09-03T10:11:31.001Z",
+  "level": "info",
+  "service": "next",
+  "env": "production",
+  "requestId": "r-goals-123",
+  "route": "/api/v1/users/goals",
+  "method": "GET",
+  "status": 200,
+  "latencyMs": 42,
+  "userIdHash": "u:7e8a…",
+  "goalsReturned": 3
+}
+```
+- Example log (success POST):
+```json
+{
+  "ts": "2025-09-03T10:12:15.002Z",
+  "level": "info",
+  "service": "next",
+  "env": "production",
+  "requestId": "r-goals-124",
+  "route": "/api/v1/users/goals",
+  "method": "POST",
+  "status": 200,
+  "latencyMs": 65,
+  "userIdHash": "u:7e8a…",
+  "goalId": "g-new-456",
+  "goalTitle": "Improve public speaking"
+}
+```
+- Error example (Convex outage):
+```json
+{
+  "ts": "2025-09-03T10:13:02.100Z",
+  "level": "error",
+  "service": "next",
+  "env": "production",
+  "requestId": "r-goals-125",
+  "route": "/api/v1/users/goals",
+  "method": "GET",
+  "status": 502,
+  "latencyMs": 18,
+  "userIdHash": "u:7e8a…",
+  "error": { "type": "convex_query_failed", "message": "Convex query failed" }
+}
+```
+
+## 17) Profile API Monitoring Notes
+
+- Route: `GET/PUT /api/v1/users/profile`
+- Traffic type: CRUD operations for user profiles; authenticated only.
+- Metrics (service: next)
+  - `coachup_ui_api_requests_total{route="/api/v1/users/profile"}` (counter)
+  - `coachup_ui_api_request_errors_total{route="/api/v1/users/profile"}` (counter)
+  - `coachup_ui_api_request_duration_seconds{route="/api/v1/users/profile"}` (histogram)
+  - `coachup_ui_api_rate_limited_total{route="/api/v1/users/profile"}` (counter)
+- Logs (structured JSON)
+  - Include: `requestId`, `route`, `method`, `status`, `latencyMs`, `userId` (hashed), `profileFound` (for GET)
+  - Do not log raw PII. Hash user identifiers and redact sensitive profile data.
+- Example log (success GET):
+```json
+{
+  "ts": "2025-09-03T10:14:22.001Z",
+  "level": "info",
+  "service": "next",
+  "env": "production",
+  "requestId": "r-profile-123",
+  "route": "/api/v1/users/profile",
+  "method": "GET",
+  "status": 200,
+  "latencyMs": 38,
+  "userIdHash": "u:7e8a…",
+  "profileFound": true
+}
+```
+- Example log (success PUT):
+```json
+{
+  "ts": "2025-09-03T10:15:10.002Z",
+  "level": "info",
+  "service": "next",
+  "env": "production",
+  "requestId": "r-profile-124",
+  "route": "/api/v1/users/profile",
+  "method": "PUT",
+  "status": 200,
+  "latencyMs": 72,
+  "userIdHash": "u:7e8a…",
+  "created": false,
+  "bioLength": 150
+}
+```
+- Error example (validation failure):
+```json
+{
+  "ts": "2025-09-03T10:16:05.100Z",
+  "level": "warn",
+  "service": "next",
+  "env": "production",
+  "requestId": "r-profile-125",
+  "route": "/api/v1/users/profile",
+  "method": "PUT",
+  "status": 400,
+  "latencyMs": 12,
+  "userIdHash": "u:7e8a…",
+  "error": { "type": "validation_error", "message": "Bio cannot exceed 500 characters" }
+}
+```
+
+## 18) Goals/Profile Alerting Rules (Prometheus)
+
+Tune thresholds per environment. Monitor CRUD operations for goals and profile functionality.
+
+```yaml
+groups:
+  - name: coachup-next-goals-profile
+    rules:
+      # 1) Goals API error rate (5m window)
+      - alert: CoachUpGoalsAPIErrorRateHigh
+        expr: |
+          rate(coachup_ui_api_request_errors_total{route="/api/v1/users/goals"}[5m])
+            /
+          clamp_min(rate(coachup_ui_api_requests_total{route="/api/v1/users/goals"}[5m]), 1e-9) > 0.05
+        for: 10m
+        labels:
+          severity: warn
+          service: next
+        annotations:
+          summary: "Goals API error rate > 5%"
+          description: "Goals CRUD operations experiencing elevated errors. Check Convex connectivity."
+
+      # 2) Profile API error rate (5m window)
+      - alert: CoachUpProfileAPIErrorRateHigh
+        expr: |
+          rate(coachup_ui_api_request_errors_total{route="/api/v1/users/profile"}[5m])
+            /
+          clamp_min(rate(coachup_ui_api_requests_total{route="/api/v1/users/profile"}[5m]), 1e-9) > 0.05
+        for: 10m
+        labels:
+          severity: warn
+          service: next
+        annotations:
+          summary: "Profile API error rate > 5%"
+          description: "Profile CRUD operations experiencing elevated errors. Check Convex connectivity."
+
+      # 3) Goals/Profile API p95 latency elevated
+      - alert: CoachUpGoalsProfileAPILatencyP95High
+        expr: >
+          histogram_quantile(
+            0.95,
+            sum by (le, route) (rate(coachup_ui_api_request_duration_seconds_bucket{route=~"/api/v1/users/(goals|profile)"}[5m]))
+          ) > 1000
+        for: 15m
+        labels:
+          severity: warn
+          service: next
+        annotations:
+          summary: "Goals/Profile API p95 latency > 1s"
+          description: "CRUD operations are slow. Investigate Convex query performance."
+
+      # 4) Rate limiting triggered
+      - alert: CoachUpGoalsProfileRateLimiting
+        expr: increase(coachup_ui_api_rate_limited_total{route=~"/api/v1/users/(goals|profile)"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: info
+          service: next
+        annotations:
+          summary: "Goals/Profile API rate limiting triggered"
+          description: "Client hitting rate limits. May indicate high traffic or client issues."
+```
+
+Dashboard notes (Grafana)
+- Panels per route: request rate, error rate, p95 latency, rate limiting events.
+- User engagement metrics: goals created per user, profile update frequency.
+- Link from panels to logs by `requestId` and `userIdHash` for drill-down.
+- Dashboard file: `infra/monitoring/grafana/dashboards/ui-api-goals-profile.json` (UID: `coachup-ui-goals-profile`)
+
 ## 15) STT/TTS Troubleshooting Runbook
 
 Symptoms and checks
@@ -826,6 +1019,95 @@ Symptoms and checks
   - 401: key invalid/expired; rotate and redeploy.
   - 429: rate limit; backoff and consider lower TPS or model changes.
   - 5xx: transient; enable retries with jitter; monitor provider status.
-- Logging hygiene
-  - Redact raw audio/text; log sizes/counts and hashed identifiers only.
-  - Always include `requestId` to correlate across services and providers.
+  - Logging hygiene
+    - Redact raw audio/text; log sizes/counts and hashed identifiers only.
+    - Always include `requestId` to correlate across services and providers.
+
+## 16) Session Summary (SPR-008) Monitoring
+
+Monitor the decoupled session summary endpoint performance and reliability.
+
+### Metrics to Collect (Prometheus)
+- **Latency & Performance**: `coachup_ui_summary_generate_latency_ms` (histogram); `coachup_ui_summaries_triggered_total{reason}` (counter)
+- **Cadence & Locks**: `coachup_ui_summary_locks_total{acquired|contended}` (gauge); `coachup_ui_summary_age_ms` (gauge)
+- **Token Usage**: Custom metric for prompt tokens in summaries/chats; budget utilization
+- **Debug/Integration**: `coachup_ui_prompt_debug_requests_total` (counter); `coachup_ui_server_fetch_fallbacks_total` (counter)
+
+### Grafana Dashboard
+- **Dashboard File**: `infra/monitoring/grafana/dashboards/ui-api-session-summary.json`
+- **Dashboard UID**: `coachup-ui-session-summary`
+- **Key Panels**:
+  - Summary generation latency (p50/p95)
+  - Trigger reasons (manual/auto)
+  - Summary age distribution
+  - Lock status and contention
+  - Debug requests count
+  - Server fetch fallbacks by reason
+
+### Alerting Rules (Prometheus)
+
+```yaml
+groups:
+  - name: coachup-session-summary
+    rules:
+      # 1) Summary generation latency > 2.5s (SPR-008 target)
+      - alert: CoachUpSummaryGenerationLatencyHigh
+        expr: histogram_quantile(0.95, sum(rate(coachup_ui_summary_generate_latency_ms_bucket{route="/api/v1/session-summary", method="POST"}[5m])) by (le, route, method, status, mode)) > 2500
+        for: 5m
+        labels:
+          severity: warn
+          service: next
+          feature: session-summary
+        annotations:
+          summary: "Session summary generation p95 latency > 2.5s"
+          description: "Summary generation is slower than target. Check AI API performance and token budgeting."
+
+      # 2) High lock contention
+      - alert: CoachUpSummaryLockContentionHigh
+        expr: rate(coachup_ui_summary_locks_total{state="contended"}[5m]) / clamp_min(rate(coachup_ui_summary_locks_total{state="acquired"}[5m]), 1e-9) > 0.2
+        for: 5m
+        labels:
+          severity: warn
+          service: next
+          feature: session-summary
+        annotations:
+          summary: "High session summary lock contention > 20%"
+          description: "Concurrent summary generation requests are being blocked. Consider adjusting lock timeouts."
+
+      # 3) Debug mode enabled in production
+      - alert: CoachUpSummaryDebugModeEnabled
+        expr: rate(coachup_ui_prompt_debug_requests_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: info
+          service: next
+          feature: session-summary
+        annotations:
+          summary: "Prompt debug mode enabled"
+          description: "Debug headers are being sent. Ensure this is intentional and not in production."
+
+      # 4) High server fetch fallback rate
+      - alert: CoachUpSummaryServerFetchFallbacksHigh
+        expr: rate(coachup_ui_server_fetch_fallbacks_total[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warn
+          service: next
+          feature: session-summary
+        annotations:
+          summary: "High server fetch fallback rate > 10%"
+          description: "Server-side interaction fetching is failing. Check Convex connectivity and query performance."
+```
+
+### SPR-008 SLOs
+- **Latency**: p95 summary generation < 2.5s
+- **Availability**: 99% uptime for endpoints
+- **Error Rate**: < 5% error rate for summary generation
+- **Lock Contention**: < 20% lock contention ratio
+
+### Implementation Status
+- ✅ **Metrics Added**: All SPR-008 specific metrics implemented in `ui/src/app/api/lib/metrics.ts`
+- ✅ **Instrumentation**: Metrics added to session summary endpoints
+- ✅ **Dashboard Created**: Grafana dashboard JSON file created
+- ✅ **Alerts Configured**: Prometheus alerting rules documented
+- ✅ **Documentation**: Monitoring guide updated with SPR-008 section

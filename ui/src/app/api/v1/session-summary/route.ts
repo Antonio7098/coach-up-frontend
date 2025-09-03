@@ -117,6 +117,13 @@ export async function GET(request: Request) {
       thresholdTurns: typeof state?.thresholdTurns === 'number' ? state.thresholdTurns : undefined,
       turnsSince: typeof state?.turnsSince === 'number' ? state.turnsSince : undefined,
     };
+
+    // SPR-008: Track summary age
+    if (payload.updatedAt) {
+      const ageMs = Date.now() - payload.updatedAt;
+      promMetrics.summaryAgeMs.set({ session_id: sessionId }, ageMs);
+    }
+
     console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, sessionId, mode, hasText: !!payload.text, rlLimit: rl.limit, rlRemaining: rl.remaining, rlResetSec: rl.resetSec, latencyMs: Date.now() - started }));
     return respond(200, payload, { "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) });
   } catch (err: unknown) {
@@ -141,6 +148,11 @@ export async function POST(request: Request) {
       promMetrics.requestErrorsTotal.labels(labels.route, labels.method, labels.status, labels.mode).inc();
     }
     endTimer(labels);
+
+    // SPR-008: Track summary generation latency
+    const generationLatency = Date.now() - started;
+    promMetrics.summaryGenerateLatencyMs.observe({ route: routePath, method, status: String(status), mode, reason: 'manual' }, generationLatency);
+
     return new Response(JSON.stringify(body), {
       status,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders, ...(extraHeaders || {}) },
@@ -159,6 +171,15 @@ export async function POST(request: Request) {
   const prevSummary = typeof body?.prevSummary === 'string' ? body.prevSummary : '';
   const clientMessages = Array.isArray(body?.messages) ? body.messages : (Array.isArray(body?.recentMessages) ? body.recentMessages : []);
   const tokenBudget = Number(body?.tokenBudget) || undefined;
+
+  // SPR-008: Track debug requests
+  if (headersIn.get('x-debug-prompt') || headersIn.get('X-Debug-Prompt')) {
+    promMetrics.promptDebugRequestsTotal.inc({ route: routePath, method });
+  }
+
+  // SPR-008: Track manual summary trigger
+  promMetrics.summariesTriggeredTotal.inc({ reason: 'manual' });
+
   if (!sessionId.trim()) return respond(400, { error: "sessionId is required" });
 
   // Cadence cooldown intentionally disabled for simplicity (no-op)
@@ -217,14 +238,18 @@ export async function POST(request: Request) {
           recentMessages = filtered.slice(-40);
         } else if (Array.isArray(clientMessages) && clientMessages.length > 0) {
           recentMessages = clientMessages as any;
+          // SPR-008: Track server fetch fallback
+          promMetrics.serverFetchFallbacksTotal.inc({ reason: 'empty' });
         } else {
           recentMessages = interactions
             .slice(-8)
             .map((d: any) => ({ role: d?.role === 'assistant' ? 'assistant' as const : 'user' as const, content: String(d?.text || "") }))
             .filter((m: any) => m.content && m.content.trim().length > 0);
         }
-      } catch {
+      } catch (error) {
         recentMessages = Array.isArray(clientMessages) ? clientMessages : [];
+        // SPR-008: Track server fetch fallback due to error
+        promMetrics.serverFetchFallbacksTotal.inc({ reason: 'error' });
       }
     } else {
       recentMessages = Array.isArray(clientMessages) ? clientMessages : [];

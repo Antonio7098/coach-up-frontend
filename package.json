@@ -3,6 +3,6 @@
     "@playwright/test": "^1.54.2"
   },
   "dependencies": {
-    "convex": "^1.25.4"
+    "convex": "^1.26.2"
   }
 }

@@ -275,10 +275,6 @@ function Content({
   const meta = convo.getSummaryMeta();
   // Remove UI auto cadence effect
   React.useEffect(() => {
-    // Auto-start VAD loop on mount
-    if (!mic.vadLoop) {
-      try { mic.toggleVadLoop(); } catch {}
-    }
     // Prime server panels on mount
     void refreshServerTranscript();
     void refreshSessionState();

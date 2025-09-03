@@ -154,9 +154,76 @@ function createMetrics() {
     registers: [registry],
   });
 
+  // SPR-008: Session Summary Metrics
+  const summaryGenerateLatencyMs = new client.Histogram({
+    name: "coachup_ui_summary_generate_latency_ms",
+    help: "Latency for session summary generation in milliseconds",
+    labelNames: ["route", "method", "status", "mode", "reason"] as unknown as string[],
+    buckets: commonMsBuckets,
+    registers: [registry],
+  });
+
+  const summariesTriggeredTotal = new client.Counter({
+    name: "coachup_ui_summaries_triggered_total",
+    help: "Total number of session summary generations triggered",
+    labelNames: ["reason"] as unknown as string[], // reason: "manual", "auto_cadence", "auto_time"
+    registers: [registry],
+  });
+
+  const summaryLocksTotal = new client.Gauge({
+    name: "coachup_ui_summary_locks_total",
+    help: "Current number of summary generation locks",
+    labelNames: ["state"] as unknown as string[], // state: "acquired", "contended"
+    registers: [registry],
+  });
+
+  const summaryAgeMs = new client.Gauge({
+    name: "coachup_ui_summary_age_ms",
+    help: "Age of the most recent session summary in milliseconds",
+    labelNames: ["session_id"] as unknown as string[],
+    registers: [registry],
+  });
+
+  const promptDebugRequestsTotal = new client.Counter({
+    name: "coachup_ui_prompt_debug_requests_total",
+    help: "Total number of requests with prompt debug enabled",
+    labelNames: ["route", "method"] as unknown as string[],
+    registers: [registry],
+  });
+
+  const serverFetchFallbacksTotal = new client.Counter({
+    name: "coachup_ui_server_fetch_fallbacks_total",
+    help: "Total number of server-fetch fallback usages",
+    labelNames: ["reason"] as unknown as string[], // reason: "timeout", "error", "empty"
+    registers: [registry],
+  });
+
   return {
     registry,
-    metrics: { requestsTotal, requestErrorsTotal, rateLimitedTotal, requestDurationSeconds, audioBytesIn, audioBytesOut, storageBytesUploaded, storagePresignBytesPlanned, sttLatencyMs, ttsLatencyMs, chatFirstTokenMs, clientDetectMs, voiceEventsTotal, voiceTtsPlaybackMs, chatDisconnectsTotal },
+    metrics: {
+      requestsTotal,
+      requestErrorsTotal,
+      rateLimitedTotal,
+      requestDurationSeconds,
+      audioBytesIn,
+      audioBytesOut,
+      storageBytesUploaded,
+      storagePresignBytesPlanned,
+      sttLatencyMs,
+      ttsLatencyMs,
+      chatFirstTokenMs,
+      clientDetectMs,
+      voiceEventsTotal,
+      voiceTtsPlaybackMs,
+      chatDisconnectsTotal,
+      // SPR-008 metrics
+      summaryGenerateLatencyMs,
+      summariesTriggeredTotal,
+      summaryLocksTotal,
+      summaryAgeMs,
+      promptDebugRequestsTotal,
+      serverFetchFallbacksTotal,
+    },
   } as const;
 }
 

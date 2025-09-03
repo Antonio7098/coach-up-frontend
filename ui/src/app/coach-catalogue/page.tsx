@@ -1,0 +1,1631 @@
+"use client";
+
+import { Fragment, useEffect, useLayoutEffect, useMemo, useState, useRef } from "react";
+import { createPortal } from "react-dom";
+import { useRouter, usePathname } from "next/navigation";
+import { useChat } from "../../context/ChatContext";
+import { useAudio } from "../../context/AudioContext";
+import { useVoice } from "../../context/VoiceContext";
+import { useMic } from "../../context/MicContext";
+import { useConversation } from "../../context/ConversationContext";
+import AudioUnlockBanner from "../../components/AudioUnlockBanner";
+import { useMicUI } from "../../context/MicUIContext";
+import SkillChart from "../../components/SkillChart";
+
+type Skill = {
+  id: string;
+  title: string;
+  category?: string;
+  description?: string;
+};
+
+type TrackedSkill = {
+  userId: string;
+  skillId: string;
+  currentLevel: number; // 0..10
+  order: number; // 1..2
+  createdAt: number;
+  updatedAt: number;
+  skill?: Skill | null;
+};
+
+// Recent assessments (mock) — roughly aligned with `convex/schema.ts` assessments table
+type AssessmentScore = {
+  category: string; // e.g., "clarity", "conciseness"
+  level: number; // 0..10 derived from provider score (0..1)
+  feedback?: string[]; // optional feedback items for expand view
+};
+
+type AssessmentLogItem = {
+  id: string;
+  title: string; // scenario / group label
+  createdAt: number;
+  scores: AssessmentScore[];
+};
+
+// Small helper for relative timestamps
+function timeAgo(ts: number): string {
+  try {
+    const ms = Date.now() - ts;
+    const s = Math.max(0, Math.floor(ms / 1000));
+    if (s < 60) return `${s}s ago`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    const d = Math.floor(h / 24);
+    return `${d}d ago`;
+  } catch {
+    return "";
+  }
+}
+
+// Skeleton loader component
+const SkeletonLoader = ({ className = "" }: { className?: string }) => (
+  <div className={`animate-pulse cu-accent-soft-bg rounded ${className}`} />
+);
+
+// Upward-trending mock data
+function genUpwardTrend(n = 8, start = 10, stepMin = 4, stepMax = 12): number[] {
+  const out: number[] = [];
+  let cur = start;
+  for (let i = 0; i < n; i++) {
+    if (i === 0) out.push(cur);
+    else {
+      cur += stepMin + Math.floor(Math.random() * (stepMax - stepMin + 1));
+      out.push(cur);
+    }
+  }
+  return out;
+}
+
+// Dashboard variation types
+type DashboardVariant = 'original' | 'neumorphism' | 'minimalist' | 'glassmorphism' | 'bold' | 'material' | 'sharp' | 'elevated' | 'compact' | 'soft' | 'terminal' | 'brutalist';
+
+export default function CoachCataloguePage() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const { sessionId } = useChat();
+  const audio = useAudio();
+  const voice = useVoice();
+  const mic = useMic();
+  const convo = useConversation();
+  const { setInCoach, showDashboard, setShowDashboard, setHandlers } = useMicUI();
+  const [dashboardMounted, setDashboardMounted] = useState(false);
+  const [tracked, setTracked] = useState<TrackedSkill[]>([]);
+  const [skillHistory, setSkillHistory] = useState<Record<string, Array<{ level: number; timestamp: number }>>>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [recent, setRecent] = useState<AssessmentLogItem[]>([]);
+  const [dashAnim, setDashAnim] = useState(false);
+  const dashUnmountTimer = useRef<number | null>(null);
+  const dashContainerRef = useRef<HTMLDivElement | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  // Expanded state for assessment chip details in chat mode
+  const [chipOpen, setChipOpen] = useState<Record<string, boolean>>({});
+  // Debug chat input
+  const [debugPrompt, setDebugPrompt] = useState("");
+  const [leaving, setLeaving] = useState(false);
+  const [leavingDir, setLeavingDir] = useState<"left" | "right">("left");
+  const [enterDir, setEnterDir] = useState<"left" | "right" | null>(null);
+  // Feature flag: disable cross-page transitions for performance
+  const ENABLE_ROUTE_TRANSITIONS = false;
+  // Feature flag: enable/disable voice mode and mic interactions on Coach page
+  const ENABLE_VOICE = (() => {
+    try {
+      const v = String(process.env.NEXT_PUBLIC_ENABLE_VOICE ?? "0").toLowerCase();
+      return v === "1" || v === "true" || v === "yes" || v === "on";
+    } catch { return false; }
+  })();
+  // Feature flag: model selector is disabled to avoid unintended model overrides
+  const ENABLE_MODEL_SELECTOR = false;
+  // When returning from a subpage (skills/analytics), skip the initial dashboard entrance animation
+  const [skipNextDashboardAnim, setSkipNextDashboardAnim] = useState(false);
+
+  // Debug panel & logs
+  const [debugOpen, setDebugOpen] = useState(false);
+  const [tuningOpen, setTuningOpen] = useState(false);
+  const [logs, setLogs] = useState<string[]>([]);
+  // Mount guard for portals
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); return () => setMounted(false); }, []);
+  const log = (msg: string) => {
+    try {
+      const ts = new Date().toLocaleTimeString();
+      setLogs((prev) => [...prev.slice(-99), `[${ts}] ${msg}`]);
+    } catch {
+      // noop
+    }
+  };
+
+  // Unified configuration modal state
+  const [showConfig, setShowConfig] = useState(false);
+  const [selectedModel, setSelectedModel] = useState<string>("");
+  const [configTab, setConfigTab] = useState<"logs" | "voice" | "model">("logs");
+  const MODEL_OPTIONS: Array<{ value: string; label: string }> = [
+    { value: "google/gemini-2.5-flash-lite", label: "google/gemini-2.5-flash-lite" },
+    { value: "openai/gpt-5-mini", label: "openai/gpt-5-mini" },
+    { value: "google/gemini-2.5-flash", label: "google/gemini-2.5-flash" },
+    { value: "anthropic/claude-3.5-haiku", label: "anthropic/claude-3.5-haiku" },
+    { value: "openai/chatgpt-4o-latest", label: "openai/chatgpt-4o-latest" },
+    { value: "openai/gpt-4o-mini", label: "openai/gpt-4o-mini" },
+  ];
+  useEffect(() => {
+    try {
+      const m = localStorage.getItem("chat:model");
+      const allowed = new Set(MODEL_OPTIONS.map((o) => o.value));
+      if (m && allowed.has(m)) setSelectedModel(m);
+      else setSelectedModel(MODEL_OPTIONS[0]?.value || "");
+    } catch {}
+  }, []);
+
+  // Catalogue specific state
+  const [currentVariant, setCurrentVariant] = useState<DashboardVariant>('original');
+  const [showVariantSelector, setShowVariantSelector] = useState(false);
+  const [isTransitioning, setIsTransitioning] = useState(false);
+
+  const variants: Array<{ id: DashboardVariant; name: string; description: string }> = [
+    { id: 'original', name: 'Original', description: 'Classic card design with subtle shadows' },
+    { id: 'neumorphism', name: 'Soft Neumorphism', description: 'Tactile interface with extruded elements' },
+    { id: 'minimalist', name: 'Minimalist & Typographic', description: 'Clean hierarchy through typography' },
+    { id: 'glassmorphism', name: 'Glassmorphism & Glow', description: 'Frosted glass with soft glow effects' },
+    { id: 'bold', name: 'Bold & Vibrant', description: 'Energetic design with dynamic interactions' },
+    { id: 'material', name: 'Material Design 3', description: 'Google design system with tonal elevation' },
+    { id: 'sharp', name: 'Sharp', description: 'Sharp edges and bold typography' },
+    { id: 'elevated', name: 'Elevated', description: 'Enhanced depth with layered shadows' },
+    { id: 'compact', name: 'Compact', description: 'Dense layout with tighter spacing' },
+    { id: 'soft', name: 'Soft', description: 'Rounded corners and gentle curves' },
+    { id: 'terminal', name: 'Terminal', description: 'Monospace terminal aesthetic' },
+    { id: 'brutalist', name: 'Brutalist', description: 'Raw concrete-inspired design' },
+  ];
+
+  // Carousel navigation functions
+  const nextVariant = () => {
+    if (isTransitioning) return;
+    const currentIndex = variants.findIndex(v => v.id === currentVariant);
+    const nextIndex = (currentIndex + 1) % variants.length;
+    changeVariant(variants[nextIndex].id);
+  };
+
+  const prevVariant = () => {
+    if (isTransitioning) return;
+    const currentIndex = variants.findIndex(v => v.id === currentVariant);
+    const prevIndex = currentIndex === 0 ? variants.length - 1 : currentIndex - 1;
+    changeVariant(variants[prevIndex].id);
+  };
+
+  const changeVariant = (newVariant: DashboardVariant) => {
+    if (isTransitioning || newVariant === currentVariant) return;
+
+    setIsTransitioning(true);
+
+    // Add a slight delay for smooth transition
+    setTimeout(() => {
+      setCurrentVariant(newVariant);
+      setTimeout(() => setIsTransitioning(false), 300);
+    }, 150);
+  };
+
+  // Keyboard navigation
+  useEffect(() => {
+    const handleKeyPress = (e: KeyboardEvent) => {
+      if (showVariantSelector) return; // Don't interfere with modal
+
+      switch (e.key) {
+        case 'ArrowLeft':
+          e.preventDefault();
+          prevVariant();
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          nextVariant();
+          break;
+        case ' ':
+        case 'Enter':
+          e.preventDefault();
+          setShowVariantSelector(true);
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, [showVariantSelector]);
+
+  // Mark that we are on the coach page so GlobalMicButton switches to coach UI
+  useEffect(() => {
+    setInCoach(true);
+    return () => setInCoach(false);
+  }, [setInCoach]);
+
+  // Wire mic interactions into the global mic via MicUIContext handlers
+  useEffect(() => {
+    if (ENABLE_VOICE) {
+      setHandlers({
+        onTap: () => {
+          if (showDashboard) {
+            setShowDashboard(false);
+          } else {
+            // Immediate controls using MicContext
+            // - If recording: stop the recorder (sets stopReason='user' to skip STT)
+            // - Else if assistant is speaking/streaming (busy !== 'idle'): toggle voice loop to cancel TTS/chat
+            // - Else: enable loop and start recording
+            if (mic.recording) {
+              // Important: also disable the voice loop so onstop does not auto-restart
+              try { mic.setVoiceLoop(false); } catch {}
+              try { mic.stopRecording(); } catch {}
+            } else if (mic.busy !== 'idle') {
+              // If assistant is speaking/streaming, only toggle to cancel when loop is currently on
+              if (mic.voiceLoop) {
+                try { mic.toggleVoiceLoop(); } catch {}
+              }
+            } else {
+              try { mic.setVoiceLoop(true); } catch {}
+              try { void mic.startRecording(); } catch {}
+            }
+          }
+        },
+        onLongPress: () => {
+          if (showDashboard) {
+            try { mic.setVoiceLoop(false); } catch {}
+            try { mic.stopRecording(); } catch {}
+          }
+        },
+      });
+    } else {
+      // Voice disabled: only allow toggling the dashboard; no mic interactions
+      setHandlers({
+        onTap: () => setShowDashboard(!showDashboard),
+        onLongPress: () => {},
+      });
+    }
+  }, [ENABLE_VOICE, mic, setHandlers, setShowDashboard, showDashboard]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function run() {
+      try {
+        const res = await fetch("/api/v1/skills/tracked", { headers: { accept: "application/json" } });
+        if (!res.ok) throw new Error(`Failed to load tracked skills (${res.status})`);
+        const data: any = await res.json();
+        const list: TrackedSkill[] = Array.isArray(data)
+          ? data
+          : Array.isArray(data?.tracked)
+          ? data.tracked
+          : [];
+        if (!cancelled) {
+          setTracked(list);
+          log(`skills: loaded ${list.length}`);
+        }
+
+        // Fetch level history for deriving latest levels (tracked and untracked)
+        try {
+          const historyRes = await fetch("/api/v1/skills/level-history", { headers: { accept: "application/json" } });
+          if (historyRes.ok) {
+            const hData: any = await historyRes.json();
+            if (!cancelled) setSkillHistory(hData?.history || {});
+          }
+        } catch {}
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e ?? "Unknown error");
+        if (!cancelled) setError(msg);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+
+      // Mock recent assessments (replace with real fetch when backend is wired)
+      // Based on schema: assessments by group/scenario with per-category scores
+      const now = Date.now();
+      const mock: AssessmentLogItem[] = [
+        {
+          id: "grp_1",
+          title: "Sales Scenario",
+          createdAt: now - 1000 * 60 * 12,
+          scores: [
+            { category: "clarity", level: 8, feedback: ["Clear structure throughout", "Good use of summaries"] },
+            { category: "conciseness", level: 5, feedback: ["Some repetition detected", "Tighten examples"] },
+          ],
+        },
+        {
+          id: "grp_2",
+          title: "Practicing Pencil Pitch",
+          createdAt: now - 1000 * 60 * 45,
+          scores: [
+            { category: "clarity", level: 7, feedback: ["Good signposting of key points"] },
+            { category: "conciseness", level: 6, feedback: ["Trim filler phrases like 'basically'"] },
+          ],
+        },
+      ];
+      if (!cancelled) setRecent(mock);
+    }
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Dev/HMR safety: Fast Refresh can preserve state; ensure we don't stay off-screen if `leaving` was true
+  useEffect(() => {
+    if (leaving) {
+      log("nav: reset leaving=false on mount (HMR safety)");
+      setLeaving(false);
+    }
+    // Always ensure enterDir settles
+    const id = requestAnimationFrame(() => setEnterDir(null));
+    return () => cancelAnimationFrame(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Back/forward cache and history navigation safety: when the page is restored or user navigates back,
+  // make sure we reset any off-screen transforms so content (and mic portal) is visible.
+  useEffect(() => {
+    const resetPosition = () => {
+      try {
+        const el = rootRef.current;
+        const rect = el ? el.getBoundingClientRect() : null;
+        const comp = el ? window.getComputedStyle(el).transform : "";
+        const info = { leaving, enterDir, rect, comp, vw: window.innerWidth, vh: window.innerHeight, dpr: window.devicePixelRatio, vis: document.visibilityState };
+      } catch {}
+      try {
+        if (leaving) log("nav: pageshow/popstate -> reset leaving=false");
+      } catch {}
+      setLeaving(false);
+      setEnterDir(null);
+      // Hard DOM-level reset in case React state isn't applied yet
+      try {
+        const el = rootRef.current;
+        if (el) {
+          el.style.transition = "none";
+          el.style.transform = "translateX(0)";
+          requestAnimationFrame(() => {
+            // allow future transitions
+            if (el) el.style.transition = "";
+          });
+        }
+      } catch {}
+    };
+    const onPageShow = () => { resetPosition(); };
+    const onPopState = () => { resetPosition(); };
+    const onVisibility = () => { if (document.visibilityState === "visible") resetPosition(); };
+    const onFocus = () => { resetPosition(); };
+    window.addEventListener("pageshow", onPageShow);
+    window.addEventListener("popstate", onPopState);
+    window.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      window.removeEventListener("pageshow", onPageShow);
+      window.removeEventListener("popstate", onPopState);
+      window.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onFocus);
+    };
+    // We intentionally do not include deps: we want a single stable listener for the component lifetime
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Auto-reset leaving after a short window in case navigation didn't complete (e.g., during HMR)
+  useEffect(() => {
+    if (!leaving) return;
+    log("nav: leaving=true -> auto-reset timer started");
+    const t = window.setTimeout(() => {
+      log("nav: auto-reset leaving=false (timeout)");
+      setLeaving(false);
+    }, 1600);
+    return () => window.clearTimeout(t);
+  }, [leaving]);
+
+  // Proactively prefetch Skills route to avoid RSC fetch hiccups during animated navigation
+  useEffect(() => {
+    try {
+      router.prefetch("/skills");
+    } catch {}
+    try {
+      router.prefetch("/coach/analytics");
+    } catch {}
+    try {
+      router.prefetch("/settings");
+    } catch {}
+  }, [router]);
+
+  // Hydration-safe entry transition: read navDir on mount and animate new content in
+  useLayoutEffect(() => {
+    if (!ENABLE_ROUTE_TRANSITIONS) return;
+    try {
+      const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const d = window.sessionStorage.getItem("navDir");
+      window.sessionStorage.removeItem("navDir");
+      if (!reduce && (d === "back" || d === "forward")) {
+        setEnterDir(d === "forward" ? "right" : "left");
+        requestAnimationFrame(() => {});
+      }
+    } catch {}
+  }, [ENABLE_ROUTE_TRANSITIONS]);
+
+  // Chat session id is provided by ChatProvider
+
+  // (Media support detection handled by MicProvider; consumed via AudioContext)
+
+  // (Voice helpers moved to MicProvider)
+
+  // (Mic button interactions now provided via MicUIContext -> GlobalMicButton)
+
+  // (No viewport tracking needed; use CSS vh for off-screen state)
+
+  // Mount/unmount with animation. On open: mount then animate in. On close: animate out then unmount.
+  useLayoutEffect(() => {
+    const EXIT_MS = 1600; // longest child duration + delays buffer
+    if (showDashboard) {
+      // Cancel pending unmount if any
+      if (dashUnmountTimer.current) {
+        window.clearTimeout(dashUnmountTimer.current);
+        dashUnmountTimer.current = null;
+      }
+      setDashboardMounted(true);
+      if (skipNextDashboardAnim) {
+        // Show immediately without entrance animation
+        setDashAnim(true);
+        setSkipNextDashboardAnim(false);
+      } else {
+        setDashAnim(false);
+        // Two RAFs + forced reflow to ensure initial styles are applied before transitioning
+        requestAnimationFrame(() => {
+          // force layout
+          void dashContainerRef.current?.getBoundingClientRect();
+          requestAnimationFrame(() => setDashAnim(true));
+        });
+      }
+    } else {
+      setDashAnim(false); // triggers slide-up
+      // Unmount after exit animation completes
+      if (dashUnmountTimer.current) window.clearTimeout(dashUnmountTimer.current);
+      dashUnmountTimer.current = window.setTimeout(() => {
+        setDashboardMounted(false);
+        dashUnmountTimer.current = null;
+      }, EXIT_MS);
+    }
+  }, [showDashboard, skipNextDashboardAnim]);
+
+  // Forward navigation with animated exit (left)
+  function navigateForward(url: string) {
+    // If route transitions are disabled, navigate immediately without animating
+    if (!ENABLE_ROUTE_TRANSITIONS) {
+      try { window.sessionStorage.setItem("resumeDashboardNoAnim", "1"); } catch {}
+      try { router.push(url); } catch {}
+      return;
+    }
+    // Otherwise, run the animated exit and hide dashboard during the transition
+    setShowDashboard(false);
+    try { window.sessionStorage.setItem("navDir", "forward"); } catch {}
+    try { window.sessionStorage.setItem("resumeDashboardNoAnim", "1"); } catch {}
+    try { router.prefetch(url); } catch {}
+    setLeavingDir("left");
+    setLeaving(true);
+    setTimeout(() => router.push(url), 250);
+  }
+
+  // If we navigated back to /coach, resume on dashboard without animating
+  useEffect(() => {
+    if (pathname === '/coach-catalogue') {
+      try {
+        const resume = window.sessionStorage.getItem("resumeDashboardNoAnim");
+        if (resume) {
+          window.sessionStorage.removeItem("resumeDashboardNoAnim");
+          setSkipNextDashboardAnim(true);
+          setShowDashboard(true);
+          setDashboardMounted(true);
+          setDashAnim(true);
+        }
+      } catch {}
+    }
+  }, [pathname, setShowDashboard]);
+
+  // Auto-start mic when entering chat mode with voice loop active (use global mic)
+  useEffect(() => {
+    if (
+      ENABLE_VOICE &&
+      !showDashboard &&
+      mic.mediaSupported &&
+      mic.voiceLoop &&
+      voice.busy === "idle"
+    ) {
+      log("auto: voice loop active -> start mic (mic provider)");
+      void mic.startRecording();
+    }
+  }, [ENABLE_VOICE, showDashboard, mic.mediaSupported, mic.voiceLoop, voice.busy, mic]);
+
+  // Component-level cleanup on unmount: MicProvider owns mic lifecycle
+
+  // Compute latest level from history per skillId
+  const latestLevelBySkillId = useMemo(() => {
+    const out: Record<string, number> = {};
+    try {
+      for (const [skillId, hist] of Object.entries(skillHistory || {})) {
+        if (Array.isArray(hist) && hist.length) {
+          // pick the entry with max timestamp (history may or may not be sorted)
+          const latest = hist.reduce((a, b) => (a.timestamp >= b.timestamp ? a : b));
+          out[skillId] = Number.isFinite(Number(latest.level)) ? Math.max(0, Math.min(10, Number(latest.level))) : 0;
+        }
+      }
+    } catch {}
+    return out;
+  }, [skillHistory]);
+
+  const overallLevel = useMemo(() => {
+    if (!tracked.length) return 0;
+    const levels = tracked.map((t) => {
+      const fromHist = latestLevelBySkillId[t.skillId];
+      return Number.isFinite(fromHist) ? fromHist : (Number(t.currentLevel) || 0);
+    });
+    const sum = levels.reduce((acc, n) => acc + n, 0);
+    return Math.round((sum / levels.length) * 10) / 10; // average to 1 decimal
+  }, [tracked, latestLevelBySkillId]);
+
+  const levelStats = useMemo(() => {
+    const currentLevelInt = Math.floor(overallLevel);
+    const nextLevelInt = currentLevelInt + 1;
+    const frac = Math.max(0, Math.min(1, overallLevel - currentLevelInt));
+    const progressPercent = Math.round(frac * 100);
+    const pointsTotal = 20;
+    const pointsEarned = Math.round(frac * pointsTotal);
+    return { currentLevelInt, nextLevelInt, progressPercent, pointsEarned, pointsTotal };
+  }, [overallLevel]);
+
+  const analyticsPoints = useMemo(() => genUpwardTrend(12, 80, 3, 10), []);
+
+  // Get variant-specific styling classes
+  const getVariantStyles = (variant: DashboardVariant, elementType: 'card' | 'hero' | 'section' | 'skillCard') => {
+    const styles = {
+      original: {
+        card: 'rounded-2xl border-2 cu-border cu-surface shadow-sm',
+        hero: 'rounded-3xl border-2 cu-border cu-surface shadow-sm',
+        section: 'rounded-2xl border-2 cu-border cu-surface p-4 shadow-sm',
+        skillCard: 'group relative overflow-hidden border-2 cu-border rounded-2xl cu-surface shadow-sm transition-all hover:shadow-md'
+      },
+      neumorphism: {
+        card: 'bg-gradient-to-br from-gray-50 to-gray-100 text-gray-800 rounded-3xl p-6 shadow-[inset_-4px_-4px_8px_rgba(255,255,255,0.8),inset_4px_4px_8px_rgba(209,213,219,0.6)] border border-gray-200/50',
+        hero: 'bg-gradient-to-br from-gray-50 to-gray-100 text-gray-800 rounded-[2rem] p-8 shadow-[inset_-6px_-6px_12px_rgba(255,255,255,0.8),inset_6px_6px_12px_rgba(209,213,219,0.6)] border border-gray-200/50',
+        section: 'bg-gradient-to-br from-gray-50 to-gray-100 text-gray-800 rounded-3xl p-6 shadow-[inset_-4px_-4px_8px_rgba(255,255,255,0.8),inset_4px_4px_8px_rgba(209,213,219,0.6)] border border-gray-200/50',
+        skillCard: 'group relative overflow-hidden bg-gradient-to-br from-gray-50 to-gray-100 text-gray-800 rounded-3xl p-6 shadow-[inset_-4px_-4px_8px_rgba(255,255,255,0.8),inset_4px_4px_8px_rgba(209,213,219,0.6)] border border-gray-200/50 transition-all duration-300 hover:shadow-[inset_-2px_-2px_4px_rgba(255,255,255,0.9),inset_2px_2px_4px_rgba(209,213,219,0.4)] hover:scale-[1.02] hover:bg-gradient-to-br hover:from-gray-100 hover:to-gray-150'
+      },
+      minimalist: {
+        card: 'bg-white text-black border-0 p-8 font-["Inter"] shadow-none',
+        hero: 'bg-white text-black border-0 p-12 font-["Inter"] shadow-none',
+        section: 'bg-white text-black border-0 p-8 font-["Inter"] shadow-none',
+        skillCard: 'group relative overflow-hidden bg-white text-black border-0 p-8 font-["Inter"] shadow-none transition-all duration-200 hover:bg-gray-50/50 hover:border-l-4 hover:border-l-gray-900'
+      },
+      glassmorphism: {
+        card: 'bg-white/10 backdrop-blur-xl border border-white/20 rounded-3xl p-6 shadow-2xl shadow-white/10',
+        hero: 'bg-white/15 backdrop-blur-2xl border border-white/25 rounded-[2rem] p-8 shadow-2xl shadow-white/15',
+        section: 'bg-white/10 backdrop-blur-xl border border-white/20 rounded-3xl p-6 shadow-2xl shadow-white/10',
+        skillCard: 'group relative overflow-hidden bg-white/10 backdrop-blur-xl border border-white/20 rounded-3xl p-6 shadow-2xl shadow-white/10 transition-all duration-300 hover:bg-white/20 hover:shadow-white/20 hover:scale-[1.02] hover:border-white/30'
+      },
+      bold: {
+        card: 'bg-gradient-to-br from-white to-gray-50 text-black rounded-2xl border-4 border-pink-500 p-6 shadow-2xl shadow-pink-500/25 font-["Montserrat"] font-bold',
+        hero: 'bg-gradient-to-br from-white to-gray-50 text-black rounded-3xl border-4 border-pink-500 p-8 shadow-2xl shadow-pink-500/25 font-["Montserrat"] font-bold',
+        section: 'bg-gradient-to-br from-white to-gray-50 text-black rounded-2xl border-4 border-pink-500 p-6 shadow-2xl shadow-pink-500/25 font-["Montserrat"] font-bold',
+        skillCard: 'group relative overflow-hidden bg-gradient-to-br from-white to-gray-50 text-black rounded-2xl border-4 border-pink-500 p-6 shadow-2xl shadow-pink-500/25 font-["Montserrat"] font-bold transition-all duration-300 hover:shadow-pink-500/40 hover:scale-105 hover:border-pink-600 hover:shadow-3xl'
+      },
+      material: {
+        card: 'bg-white text-gray-900 rounded-3xl border-0 p-6 shadow-sm shadow-gray-200/50 font-["Roboto_Flex"]',
+        hero: 'bg-gradient-to-br from-blue-50 to-indigo-50 text-gray-900 rounded-3xl border-0 p-8 shadow-sm shadow-blue-200/50 font-["Roboto_Flex"]',
+        section: 'bg-white text-gray-900 rounded-3xl border-0 p-6 shadow-sm shadow-gray-200/50 font-["Roboto_Flex"]',
+        skillCard: 'group relative overflow-hidden bg-white text-gray-900 rounded-3xl border-0 p-6 shadow-sm shadow-gray-200/50 font-["Roboto_Flex"] transition-all duration-200 hover:shadow-md hover:shadow-gray-300/60 hover:bg-gray-50/50 hover:scale-[1.01]'
+      },
+      sharp: {
+        card: 'border-4 border-black cu-surface shadow-lg',
+        hero: 'border-4 border-black cu-surface shadow-lg',
+        section: 'border-4 border-black cu-surface p-4 shadow-lg',
+        skillCard: 'group relative overflow-hidden border-4 border-black rounded-none cu-surface shadow-lg transition-all hover:shadow-xl'
+      },
+      elevated: {
+        card: 'rounded-2xl border-2 cu-border cu-surface shadow-2xl',
+        hero: 'rounded-3xl border-2 cu-border cu-surface shadow-2xl',
+        section: 'rounded-2xl border-2 cu-border cu-surface p-4 shadow-2xl',
+        skillCard: 'group relative overflow-hidden border-2 cu-border rounded-2xl cu-surface shadow-2xl transition-all hover:shadow-3xl'
+      },
+      compact: {
+        card: 'rounded-xl border cu-border cu-surface shadow-sm',
+        hero: 'rounded-2xl border cu-border cu-surface shadow-sm',
+        section: 'rounded-xl border cu-border cu-surface p-3 shadow-sm',
+        skillCard: 'group relative overflow-hidden border cu-border rounded-xl cu-surface shadow-sm transition-all hover:shadow-md'
+      },
+      soft: {
+        card: 'rounded-3xl border cu-border cu-surface shadow-sm',
+        hero: 'rounded-full border cu-border cu-surface shadow-sm',
+        section: 'rounded-3xl border cu-border cu-surface p-4 shadow-sm',
+        skillCard: 'group relative overflow-hidden border cu-border rounded-3xl cu-surface shadow-sm transition-all hover:shadow-md'
+      },
+      terminal: {
+        card: 'bg-black text-green-400 font-mono border border-green-400 p-2',
+        hero: 'bg-black text-green-400 font-mono border border-green-400 p-4',
+        section: 'bg-black text-green-400 font-mono border border-green-400 p-3',
+        skillCard: 'group relative overflow-hidden bg-black text-green-400 font-mono border border-green-400 p-3 transition-all hover:bg-green-400 hover:text-black'
+      },
+      brutalist: {
+        card: 'bg-gray-800 text-white border-4 border-white p-4 font-bold',
+        hero: 'bg-gray-800 text-white border-6 border-white p-6 font-bold',
+        section: 'bg-gray-800 text-white border-4 border-white p-4 font-bold',
+        skillCard: 'group relative overflow-hidden bg-gray-800 text-white border-4 border-white p-4 font-bold transition-all hover:bg-white hover:text-gray-800'
+      }
+    };
+
+    return styles[variant][elementType];
+  };
+
+  // Get variant-specific background and typography
+  const getVariantBaseStyles = (variant: DashboardVariant) => {
+    const baseStyles = {
+      original: "bg-background text-foreground font-sans",
+      neumorphism: "bg-gradient-to-br from-gray-200 via-gray-100 to-gray-200 text-gray-800 font-['Nunito']", // Soft Neumorphism
+      minimalist: "bg-gradient-to-br from-gray-50 to-white text-black font-['Inter']", // Minimalist & Typographic
+      glassmorphism: "bg-gradient-to-br from-cyan-200 via-blue-300 to-purple-400 text-gray-800 font-['SF_Pro_Display']", // Glassmorphism & Glow
+      bold: "bg-gradient-to-br from-pink-50 via-orange-50 to-yellow-50 text-gray-800 font-['Montserrat']", // Bold & Vibrant
+      material: "bg-gradient-to-br from-white via-blue-50/30 to-indigo-50/30 text-gray-800 font-['Roboto_Flex']", // Material Design 3
+      sharp: "bg-white text-black font-bold",
+      elevated: "bg-background text-foreground font-sans",
+      compact: "bg-background text-foreground font-sans text-sm",
+      soft: "bg-background text-foreground font-normal",
+      terminal: "bg-black text-green-400 font-mono",
+      brutalist: "bg-gray-800 text-white font-bold",
+    };
+    return baseStyles[variant];
+  };
+
+  // Render different dashboard variations
+  const renderDashboardVariant = (variant: DashboardVariant) => {
+    const baseClasses = "min-h-screen relative overflow-x-hidden transition-all duration-500 ease-in-out";
+    const variantBaseStyles = getVariantBaseStyles(variant);
+
+    return (
+      <div className={`${baseClasses} ${variantBaseStyles} ${isTransitioning ? 'opacity-75 scale-95' : 'opacity-100 scale-100'}`}>
+        {/* Autoplay unlock banner only during chat mode */}
+        {ENABLE_VOICE && !showDashboard && <AudioUnlockBanner />}
+
+        {/* Ambient background accents (dashboard only) */}
+        {dashboardMounted && variant !== 'terminal' && variant !== 'brutalist' && (
+          <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+            {variant === 'glassmorphism' ? (
+              <>
+                <div className="absolute -top-40 -left-32 h-80 w-80 rounded-full blur-3xl opacity-30 bg-white/40 animate-pulse" />
+                <div className="absolute -bottom-32 -right-20 h-72 w-72 rounded-full blur-3xl opacity-25 bg-white/30 animate-pulse" style={{ animationDelay: '1s' }} />
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-64 w-64 rounded-full blur-2xl opacity-35 bg-gradient-to-r from-pink-400 to-purple-600 animate-pulse" style={{ animationDelay: '2s' }} />
+                <div className="absolute top-1/4 right-1/4 h-48 w-48 rounded-full blur-2xl opacity-20 bg-gradient-to-r from-cyan-400 to-blue-500 animate-pulse" style={{ animationDelay: '0.5s' }} />
+              </>
+            ) : variant === 'neumorphism' ? (
+              <>
+                <div className="absolute -top-40 -left-32 h-80 w-80 rounded-full blur-3xl opacity-15 bg-gray-300/60" />
+                <div className="absolute -bottom-32 -right-20 h-72 w-72 rounded-full blur-3xl opacity-10 bg-gray-400/60" />
+                <div className="absolute top-1/3 right-1/3 h-56 w-56 rounded-full blur-2xl opacity-8 bg-gray-200/80" />
+              </>
+            ) : variant === 'bold' ? (
+              <>
+                <div className="absolute -top-40 -left-32 h-80 w-80 rounded-full blur-3xl opacity-40 bg-gradient-to-r from-pink-400 to-orange-400 animate-pulse" />
+                <div className="absolute -bottom-32 -right-20 h-72 w-72 rounded-full blur-3xl opacity-30 bg-gradient-to-r from-blue-400 to-cyan-400 animate-pulse" style={{ animationDelay: '1.5s' }} />
+                <div className="absolute top-1/2 right-1/4 h-64 w-64 rounded-full blur-2xl opacity-25 bg-gradient-to-r from-yellow-400 to-pink-500 animate-pulse" style={{ animationDelay: '0.8s' }} />
+              </>
+            ) : variant === 'material' ? (
+              <>
+                <div className="absolute -top-40 -left-32 h-80 w-80 rounded-full blur-3xl opacity-20 bg-blue-200/80" />
+                <div className="absolute -bottom-32 -right-20 h-72 w-72 rounded-full blur-3xl opacity-15 bg-blue-300/80" />
+                <div className="absolute top-1/4 left-1/4 h-56 w-56 rounded-full blur-2xl opacity-12 bg-indigo-200/90" />
+              </>
+            ) : variant === 'minimalist' ? (
+              <>
+                <div className="absolute -top-40 -left-32 h-80 w-80 rounded-full blur-3xl opacity-5 bg-gray-200/50" />
+                <div className="absolute -bottom-32 -right-20 h-72 w-72 rounded-full blur-3xl opacity-3 bg-gray-300/50" />
+              </>
+            ) : (
+              <>
+                <div className="absolute -top-40 -left-32 h-80 w-80 rounded-full blur-3xl opacity-30 cu-accent-soft-bg" />
+                <div className="absolute -bottom-32 -right-20 h-72 w-72 rounded-full blur-3xl opacity-20 cu-accent-soft-bg" />
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Navigation controls */}
+        <div className="fixed top-4 left-4 flex items-center gap-2 z-40">
+          <button
+            onClick={prevVariant}
+            disabled={isTransitioning}
+            className={`p-3 transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+              variant === 'terminal' ? 'bg-green-400 text-black border border-green-400' :
+              variant === 'brutalist' ? 'bg-white text-gray-800 border-4 border-white' :
+              variant === 'glassmorphism' ? 'bg-white/20 backdrop-blur-md border border-white/30 text-white' :
+              variant === 'neomorphism' ? 'bg-gray-100 text-gray-800 shadow-[inset_-2px_-2px_4px_rgba(255,255,255,0.7),inset_2px_2px_4px_rgba(209,213,219,0.7)]' :
+              variant === 'bold' ? 'bg-gradient-to-r from-pink-500 to-orange-500 text-white shadow-lg hover:shadow-xl' :
+              variant === 'material' ? 'bg-blue-600 text-white shadow-sm hover:shadow-md' :
+              'bg-blue-500 text-white shadow-lg hover:bg-blue-600'
+            } ${variant === 'terminal' || variant === 'brutalist' || variant === 'grid' ? '' : 'rounded-full'}`}
+            aria-label="Previous variant"
+          >
+            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M15 18l-6-6 6-6"/>
+            </svg>
+          </button>
+
+          <button
+            onClick={() => setShowVariantSelector(!showVariantSelector)}
+            className={`p-3 transition-colors ${
+              variant === 'terminal' ? 'bg-green-400 text-black border border-green-400' :
+              variant === 'brutalist' ? 'bg-white text-gray-800 border-4 border-white' :
+              variant === 'glassmorphism' ? 'bg-white/20 backdrop-blur-md border border-white/30 text-white' :
+              variant === 'neomorphism' ? 'bg-gray-100 text-gray-800 shadow-[inset_-2px_-2px_4px_rgba(255,255,255,0.7),inset_2px_2px_4px_rgba(209,213,219,0.7)]' :
+              variant === 'bold' ? 'bg-gradient-to-r from-pink-500 to-orange-500 text-white shadow-lg hover:shadow-xl' :
+              variant === 'material' ? 'bg-blue-600 text-white shadow-sm hover:shadow-md' :
+              'bg-blue-500 text-white shadow-lg hover:bg-blue-600'
+            } ${variant === 'terminal' || variant === 'brutalist' || variant === 'grid' ? '' : 'rounded-full'}`}
+            aria-label="Select dashboard variant"
+          >
+            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+            </svg>
+          </button>
+
+          <button
+            onClick={nextVariant}
+            disabled={isTransitioning}
+            className={`p-3 transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+              variant === 'terminal' ? 'bg-green-400 text-black border border-green-400' :
+              variant === 'brutalist' ? 'bg-white text-gray-800 border-4 border-white' :
+              variant === 'glassmorphism' ? 'bg-white/20 backdrop-blur-md border border-white/30 text-white' :
+              variant === 'neomorphism' ? 'bg-gray-100 text-gray-800 shadow-[inset_-2px_-2px_4px_rgba(255,255,255,0.7),inset_2px_2px_4px_rgba(209,213,219,0.7)]' :
+              variant === 'bold' ? 'bg-gradient-to-r from-pink-500 to-orange-500 text-white shadow-lg hover:shadow-xl' :
+              variant === 'material' ? 'bg-blue-600 text-white shadow-sm hover:shadow-md' :
+              'bg-blue-500 text-white shadow-lg hover:bg-blue-600'
+            } ${variant === 'terminal' || variant === 'brutalist' || variant === 'grid' ? '' : 'rounded-full'}`}
+            aria-label="Next variant"
+          >
+            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M9 18l6-6-6-6"/>
+            </svg>
+          </button>
+        </div>
+
+        {/* Current variant indicator */}
+        <div         className={`fixed top-20 left-4 px-3 py-2 z-40 ${
+          variant === 'terminal' ? 'bg-green-400 text-black border border-green-400' :
+          variant === 'brutalist' ? 'bg-white text-gray-800 border-4 border-white' :
+          variant === 'glassmorphism' ? 'bg-white/20 backdrop-blur-md border border-white/30 text-white' :
+          variant === 'neumorphism' ? 'bg-gray-100 text-gray-800 shadow-[inset_-2px_-2px_4px_rgba(255,255,255,0.7),inset_2px_2px_4px_rgba(209,213,219,0.7)]' :
+          variant === 'bold' ? 'bg-gradient-to-r from-pink-500 to-orange-500 text-white shadow-lg' :
+          variant === 'material' ? 'bg-blue-100 text-blue-800 rounded-2xl shadow-sm' :
+          'bg-black bg-opacity-75 text-white rounded-lg shadow-lg'
+        }`}>
+          <div className="text-sm font-semibold">{variants.find(v => v.id === currentVariant)?.name}</div>
+          <div className="text-xs opacity-75">{variants.findIndex(v => v.id === currentVariant) + 1} / {variants.length}</div>
+        </div>
+
+        {/* Back to coach button */}
+        <button
+          onClick={() => router.push('/coach')}
+          className={`fixed top-4 right-20 p-3 transition-colors z-40 ${
+            variant === 'terminal' ? 'bg-green-400 text-black border border-green-400' :
+            variant === 'brutalist' ? 'bg-white text-gray-800 border-4 border-white' :
+            variant === 'glassmorphism' ? 'bg-white/20 backdrop-blur-md border border-white/30 text-white' :
+            variant === 'neomorphism' ? 'bg-gray-100 text-gray-800 shadow-[inset_-2px_-2px_4px_rgba(255,255,255,0.7),inset_2px_2px_4px_rgba(209,213,219,0.7)]' :
+            variant === 'bold' ? 'bg-gradient-to-r from-pink-500 to-orange-500 text-white shadow-lg hover:shadow-xl' :
+            variant === 'material' ? 'bg-blue-600 text-white shadow-sm hover:shadow-md' :
+            'bg-gray-500 text-white shadow-lg hover:bg-gray-600 rounded-full'
+          }`}
+          aria-label="Back to main coach page"
+        >
+          <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l-7-7-7 7m14 0v10a1 1 0 01-1 1h-3"/>
+          </svg>
+        </button>
+
+        {/* Settings button in top right (dashboard only) */}
+        {showDashboard && (
+          <button
+            aria-label="Open settings"
+            className="fixed top-4 right-4 p-3 rounded-full text-foreground cu-surface border cu-border-surface cu-hover-accent-soft-bg active:scale-95 transition-all duration-200 shadow-sm z-40"
+            onMouseEnter={() => { try { router.prefetch('/settings'); } catch {} }}
+            onFocus={() => { try { router.prefetch('/settings'); } catch {} }}
+            onClick={() => navigateForward('/settings')}
+          >
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 24 24"
+              className="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.33 1.82v.08a2 2 0 1 1-4 0v-.08A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1-.6 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1.82-.33h-.08a2 2 0 1 1 0-4h.08A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1.82-.33l-.06.06a2 2 0 1 1 2.83-2.83l.06-.06A1.65 1.65 0 0 0 9 4.6c.18-.69.76-1.2 1.47-1.32h.06a2 2 0 1 1 4 0h.06c.71.12 1.29.63 1.47 1.32a1.65 1.65 0 0 0 1 .6 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06c-.48.48-.62 1.2-.33 1.82.22.43.6.76 1.06.9h.08a2 2 0 1 1 0 4h-.08c-.46.14-.84.47-1.06.9Z" />
+            </svg>
+          </button>
+        )}
+
+        {/* Dashboard button in top left */}
+        {!showDashboard && (
+          <button
+            aria-label="Open dashboard"
+            className="fixed top-4 left-16 p-3 rounded-full text-foreground cu-surface border cu-border-surface cu-hover-accent-soft-bg active:scale-95 transition-all duration-200 shadow-sm z-40"
+            onClick={() => setShowDashboard(true)}
+          >
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 24 24"
+              className="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M3 11.5L12 4l9 7.5" />
+              <path d="M5 10.5V20h14v-9.5" />
+            </svg>
+          </button>
+        )}
+
+        {/* Variant selector overlay */}
+        {showVariantSelector && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-lg p-6 max-w-md w-full">
+              <h2 className="text-lg font-semibold mb-4">Choose Dashboard Style</h2>
+              <div className="space-y-2">
+                {variants.map((v) => (
+                  <button
+                    key={v.id}
+                    onClick={() => {
+                      changeVariant(v.id);
+                      setShowVariantSelector(false);
+                    }}
+                    disabled={isTransitioning}
+                    className={`w-full p-3 rounded-lg border text-left transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                      currentVariant === v.id
+                        ? 'bg-blue-100 border-blue-300'
+                        : 'bg-gray-50 border-gray-200 hover:bg-gray-100'
+                    }`}
+                  >
+                    <div className="font-medium">{v.name}</div>
+                    <div className="text-sm text-gray-600">{v.description}</div>
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={() => setShowVariantSelector(false)}
+                className="mt-4 w-full p-2 bg-gray-200 rounded-lg hover:bg-gray-300 transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Overall Level and Skills - remain mounted during exit for animation */}
+        {dashboardMounted && (
+          <header className="px-4 pt-10 pb-64">
+            <div className="max-w-md mx-auto">
+              {/* Hero header */}
+              <div
+                className={["transform-gpu will-change-transform transition-all duration-[450ms] ease-out", dashAnim ? "opacity-100" : "opacity-0"].join(" ")}
+                style={{ transform: dashAnim ? "translateY(0)" : "translateY(-120vh)" }}
+              >
+                <div className={`relative overflow-hidden ${getVariantStyles(variant, 'hero')}`}>
+                  <div className="absolute inset-0 opacity-40 pointer-events-none" aria-hidden="true" style={{
+                    background:
+                      "radial-gradient(800px 280px at 5% -10%, rgba(99,102,241,0.35), transparent 60%), " +
+                      "radial-gradient(700px 280px at 105% 110%, rgba(16,185,129,0.25), transparent 60%)"
+                  }} />
+                  <div className="absolute inset-0 backdrop-blur-[2px] opacity-[0.35] pointer-events-none" aria-hidden="true" />
+                  <div className="relative p-5">
+                    <div className={`text-xs font-semibold uppercase tracking-wide ${
+                      variant === 'terminal' ? 'text-green-300' :
+                      variant === 'minimalist' ? 'text-gray-600 font-light' :
+                      variant === 'brutalist' ? 'text-gray-300' :
+                      variant === 'glassmorphism' ? 'text-white/90 font-medium' :
+                      variant === 'neumorphism' ? 'text-gray-500 font-medium' :
+                      variant === 'bold' ? 'text-pink-600 font-bold' :
+                      variant === 'material' ? 'text-blue-600 font-medium' :
+                      'cu-muted'
+                    }`}>Coach</div>
+                    <h1 className={`mt-1 text-2xl font-semibold tracking-tight ${
+                      variant === 'terminal' ? 'text-green-400' :
+                      variant === 'minimalist' ? 'text-black font-bold' :
+                      variant === 'brutalist' ? 'text-white' :
+                      variant === 'glassmorphism' ? 'text-white font-bold' :
+                      variant === 'neumorphism' ? 'text-gray-800 font-bold' :
+                      variant === 'bold' ? 'text-pink-600 font-black' :
+                      variant === 'material' ? 'text-blue-800 font-bold' :
+                      'text-foreground'
+                    }`}>Welcome back</h1>
+                    <p className={`mt-1 text-sm ${
+                      variant === 'terminal' ? 'text-green-300' :
+                      variant === 'minimalist' ? 'text-gray-600 font-light' :
+                      variant === 'brutalist' ? 'text-gray-300' :
+                      variant === 'glassmorphism' ? 'text-white/90 font-medium' :
+                      variant === 'neumorphism' ? 'text-gray-500 font-medium' :
+                      variant === 'bold' ? 'text-pink-600 font-bold' :
+                      variant === 'material' ? 'text-blue-600 font-medium' :
+                      'cu-muted'
+                    }`}>Track your progress and practice with focused guidance.</p>
+
+                    {/* Moved Level progress and Focus into hero */}
+                    <div className="mt-4">
+                      <div className="grid grid-cols-3 items-end">
+                        <div className={`text-xs font-semibold uppercase tracking-wide ${
+                          variant === 'terminal' ? 'text-green-300' :
+                          variant === 'newspaper' ? 'text-gray-600' :
+                          variant === 'brutalist' ? 'text-gray-300' :
+                          variant === 'glassmorphism' ? 'text-white/80' :
+                          variant === 'neomorphism' ? 'text-gray-500' :
+                          variant === 'grid' ? 'text-gray-600' :
+                          'cu-muted'
+                        }`}>Level</div>
+                        <div className="justify-self-center relative inline-block leading-none">
+                          <span className={`text-5xl md:text-6xl font-extrabold tracking-tight ${
+                            variant === 'terminal' ? 'text-green-400' :
+                            variant === 'minimalist' ? 'text-black font-black' :
+                            variant === 'brutalist' ? 'text-white' :
+                            variant === 'glassmorphism' ? 'text-white font-black' :
+                            variant === 'neumorphism' ? 'text-gray-800 font-black' :
+                            variant === 'bold' ? 'text-pink-600 font-black' :
+                            variant === 'material' ? 'text-blue-800 font-black' :
+                            'text-black'
+                          }`}>3</span>
+                          {/* Enhanced glow behind the number */}
+                          <span aria-hidden className={`pointer-events-none absolute -inset-x-4 -bottom-1 h-3 blur-md rounded-full ${
+                            variant === 'glassmorphism' ? 'opacity-60' :
+                            variant === 'bold' ? 'opacity-50' :
+                            variant === 'neumorphism' ? 'opacity-30' :
+                            variant === 'material' ? 'opacity-40' :
+                            'opacity-40'
+                          }`} style={{ 
+                            background: variant === 'glassmorphism' ? "radial-gradient(closest-side, rgba(255,255,255,0.6), rgba(147,197,253,0.4))" :
+                            variant === 'bold' ? "radial-gradient(closest-side, rgba(236,72,153,0.5), rgba(251,146,60,0.4))" :
+                            variant === 'neumorphism' ? "radial-gradient(closest-side, rgba(156,163,175,0.4), rgba(209,213,219,0.3))" :
+                            variant === 'material' ? "radial-gradient(closest-side, rgba(59,130,246,0.4), rgba(99,102,241,0.3))" :
+                            "radial-gradient(closest-side, rgba(99,102,241,0.35), rgba(16,185,129,0.35))"
+                          }} />
+                        </div>
+                        <div />
+                      </div>
+                      <div className={`mt-2 relative h-5 rounded-full overflow-hidden ${
+                        variant === 'glassmorphism' ? 'bg-white/20' :
+                        variant === 'bold' ? 'bg-pink-200' :
+                        variant === 'neumorphism' ? 'bg-gray-300' :
+                        variant === 'material' ? 'bg-blue-200' :
+                        variant === 'minimalist' ? 'bg-gray-200' :
+                        'cu-accent-soft-bg'
+                      }`}>
+                        <div className={`absolute inset-0 pointer-events-none ${
+                          variant === 'glassmorphism' ? 'bg-gradient-to-r from-white/30 to-white/10' :
+                          variant === 'bold' ? 'bg-gradient-to-r from-pink-300/50 to-pink-200/30' :
+                          variant === 'neumorphism' ? 'bg-gradient-to-r from-gray-400/30 to-gray-300/20' :
+                          variant === 'material' ? 'bg-gradient-to-r from-blue-300/30 to-blue-200/20' :
+                          variant === 'minimalist' ? 'bg-gradient-to-r from-gray-300/20 to-gray-200/10' :
+                          'bg-gradient-to-r from-white/12 to-white/0'
+                        }`} aria-hidden />
+                        <div className={`h-full transition-all duration-1000 ${
+                          variant === 'glassmorphism' ? 'bg-gradient-to-r from-white/60 to-blue-400/80' :
+                          variant === 'bold' ? 'bg-gradient-to-r from-pink-500 to-orange-500' :
+                          variant === 'neumorphism' ? 'bg-gradient-to-r from-gray-600 to-gray-500' :
+                          variant === 'material' ? 'bg-gradient-to-r from-blue-600 to-indigo-600' :
+                          variant === 'minimalist' ? 'bg-gradient-to-r from-gray-800 to-gray-700' :
+                          'bg-gradient-to-r from-indigo-500 to-emerald-500'
+                        }`} style={{ width: "35%" }} />
+                        <div className={`absolute inset-0 grid place-items-center text-[11px] font-medium ${
+                          variant === 'glassmorphism' ? 'text-white' :
+                          variant === 'bold' ? 'text-white' :
+                          variant === 'neumorphism' ? 'text-white' :
+                          variant === 'material' ? 'text-white' :
+                          variant === 'minimalist' ? 'text-white' :
+                          'text-foreground'
+                        }`}>
+                          7/20
+                        </div>
+                      </div>
+                      <div className="mt-3">
+                        <div className="flex items-center justify-between">
+                          <div className="text-xs tracking-wide font-semibold cu-muted">Focus</div>
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <span className="inline-flex items-center gap-2 text-xs px-2.5 py-1 rounded-full border cu-border-surface cu-surface shadow-sm hover:shadow-md transition-all hover:-translate-y-[0.5px]">
+                            <svg aria-hidden viewBox="0 0 24 24" className="w-3.5 h-3.5 cu-success-text" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+                            Reduce filler words like "um"
+                          </span>
+                          <span className="inline-flex items-center gap-2 text-xs px-2.5 py-1 rounded-full border cu-border-surface cu-surface shadow-sm hover:shadow-md transition-all hover:-translate-y-[0.5px]">
+                            <svg aria-hidden viewBox="0 0 24 24" className="w-3.5 h-3.5 cu-success-text" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+                            Prefer clear, simple phrasing
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Analytics */}
+              <section
+                aria-labelledby="analytics-label"
+                className="mt-6 transform-gpu will-change-transform transition-all duration-[600ms] ease-out"
+                style={{ opacity: dashAnim ? 1 : 0, transform: dashAnim ? "translateY(0)" : "translateY(-120vh)" }}
+                onMouseEnter={() => { try { router.prefetch("/coach/analytics"); } catch {} }}
+                onFocus={() => { try { router.prefetch("/coach/analytics"); } catch {} }}
+                role="button"
+                tabIndex={0}
+                aria-label="Open analytics"
+                onClick={() => navigateForward('/coach/analytics')}
+              >
+                <h2 id="analytics-label" className="sr-only">Analytics</h2>
+                <div className={`${getVariantStyles(variant, 'section')} group`}>
+                  {/* Header */}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-sm font-semibold uppercase tracking-wide">ANALYTICS</div>
+                    <div className="flex items-center gap-1">
+                      <span className="text-[11px] px-2 py-0.5 rounded-full border cu-border-surface cu-surface cu-muted">7d</span>
+                      <span className="text-[11px] px-2 py-0.5 rounded-full border cu-border-surface cu-surface cu-muted">30d</span>
+                      <span className="text-[11px] px-2 py-0.5 rounded-full border cu-border-surface cu-surface text-foreground">All</span>
+                    </div>
+                  </div>
+
+                  {/* Mini-stats */}
+                  <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                    <div className={`rounded-lg border cu-border-surface cu-surface p-2 text-center ${variant === 'sharp' ? 'border-2 border-black' : variant === 'elevated' ? 'shadow-lg' : variant === 'soft' ? 'rounded-xl' : variant === 'minimal' ? 'border-0' : ''}`}>
+                      <div className="cu-muted">Total</div>
+                      <div className="font-semibold text-foreground">{analyticsPoints.reduce((a,b)=>a+b,0)}</div>
+                    </div>
+                    <div className={`rounded-lg border cu-border-surface cu-surface p-2 text-center ${variant === 'sharp' ? 'border-2 border-black' : variant === 'elevated' ? 'shadow-lg' : variant === 'soft' ? 'rounded-xl' : variant === 'minimal' ? 'border-0' : ''}`}>
+                      <div className="cu-muted">Avg</div>
+                      <div className="font-semibold text-foreground">{Math.round(analyticsPoints.reduce((a,b)=>a+b,0)/analyticsPoints.length)}</div>
+                    </div>
+                    <div className={`rounded-lg border cu-border-surface cu-surface p-2 text-center ${variant === 'sharp' ? 'border-2 border-black' : variant === 'elevated' ? 'shadow-lg' : variant === 'soft' ? 'rounded-xl' : variant === 'minimal' ? 'border-0' : ''}`}>
+                      <div className="cu-muted">Trend</div>
+                      <div className="inline-flex items-center justify-center gap-1 font-semibold text-foreground">
+                        <svg aria-hidden viewBox="0 0 24 24" className="w-3.5 h-3.5 cu-success-text" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12l6-6 5 5 7-7"/></svg>
+                        Up
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Chart */}
+                  <div className="mt-3">
+                    <SkillChart data={analyticsPoints} className="w-full" height={80} />
+                  </div>
+
+                  {/* Footer hint */}
+                  <div className="mt-2 flex items-center justify-between">
+                    <div className="text-[11px] cu-muted flex items-center gap-2">
+                      <span className="inline-block h-2 w-2 rounded-full" style={{ background: "linear-gradient(90deg, rgba(99,102,241,1), rgba(16,185,129,1))" }} />
+                      Points earned
+                    </div>
+                    <div className="opacity-0 group-hover:opacity-100 transition-opacity text-xs cu-muted">View details →</div>
+                  </div>
+                </div>
+              </section>
+
+              {/* Tracked skills */}
+              <section
+                aria-labelledby="skills-label"
+                className="mt-6 mb-6 transform-gpu will-change-transform transition-all duration-[700ms] ease-out"
+                style={{ opacity: dashAnim ? 1 : 0, transform: dashAnim ? "translateY(0)" : "translateY(-120vh)", transitionDelay: dashAnim ? "100ms" : "0ms" }}
+              >
+                <div className={getVariantStyles(variant, 'section')}>
+                  <div className="flex items-center justify-between mb-2">
+                    <button
+                      type="button"
+                      onClick={() => navigateForward("/skills")}
+                      onMouseEnter={() => { try { router.prefetch("/skills"); } catch {} }}
+                      onFocus={() => { try { router.prefetch("/skills"); } catch {} }}
+                      aria-label="Go to skills overview"
+                      className="block"
+                    >
+                      <div id="skills-label" className="text-sm font-semibold uppercase tracking-wide">SKILLS</div>
+                    </button>
+                  </div>
+
+                  {loading ? (
+                    <div className="grid grid-cols-2 gap-3">
+                      <SkeletonLoader className="h-24 rounded-2xl" />
+                      <SkeletonLoader className="h-24 rounded-2xl" />
+                    </div>
+                  ) : error ? (
+                    <div className="text-sm cu-error-text cu-error-soft-bg border cu-error-border rounded-lg p-3">
+                      {error}
+                    </div>
+                  ) : tracked && tracked.length > 0 ? (
+                    <ul className="grid grid-cols-2 gap-3">
+                      {[...tracked]
+                        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+                        .map((t) => (
+                          <li key={t.skillId} className={getVariantStyles(variant, 'skillCard')}>
+                            <button
+                              type="button"
+                              onClick={() => navigateForward(`/skills/${t.skillId}`)}
+                              className="w-full text-left p-4"
+                              aria-label={`Open ${t.skill?.title || 'skill'}`}
+                            >
+                              {/* base subtle gradient texture */}
+                              <span
+                                aria-hidden
+                                className="pointer-events-none absolute inset-0 opacity-[0.35]"
+                                style={{
+                                  background:
+                                    "linear-gradient(135deg, rgba(99,102,241,0.05), rgba(16,185,129,0.05))",
+                                }}
+                              />
+                              <span aria-hidden className="pointer-events-none absolute -top-10 -right-10 h-24 w-24 rounded-full opacity-0 group-hover:opacity-30 blur-2xl" style={{ background: 'radial-gradient(closest-side, rgba(99,102,241,0.35), transparent)' }} />
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-2">
+                                    <span className={`inline-flex items-center justify-center h-6 w-6 rounded-full bg-gradient-to-br from-indigo-500/20 to-emerald-500/20 text-[10px] font-semibold shadow-sm border cu-border-surface ${variant === 'dark' ? 'from-gray-600 to-gray-500 text-white' : variant === 'colorful' ? 'from-pink-500 to-orange-500 text-white' : ''}`}>{(Number.isFinite(latestLevelBySkillId[t.skillId]) ? latestLevelBySkillId[t.skillId] : (t.currentLevel ?? 0)) || 0}</span>
+                                    <div className="text-sm font-medium text-foreground truncate">{t.skill?.title || 'Untitled skill'}</div>
+                                  </div>
+                                  <div className="mt-1 text-[11px] cu-muted truncate">{t.skill?.category || `Lv ${(Number.isFinite(latestLevelBySkillId[t.skillId]) ? latestLevelBySkillId[t.skillId] : (t.currentLevel ?? 0))}/10`}</div>
+                                </div>
+                                <svg aria-hidden viewBox="0 0 24 24" className="w-4 h-4 cu-muted transition-all group-hover:translate-x-0.5 group-hover:opacity-100 opacity-60" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+                              </div>
+                              <div className="mt-3 relative h-1.5 cu-accent-soft-bg rounded-full overflow-hidden">
+                                <div className="absolute inset-0 pointer-events-none" aria-hidden style={{ background: 'linear-gradient(90deg, rgba(255,255,255,0.14), rgba(255,255,255,0))' }} />
+                                <div className="h-full transition-[width] duration-500 ease-out" style={{ width: `${Math.max(0, Math.min(10, Number(Number.isFinite(latestLevelBySkillId[t.skillId]) ? latestLevelBySkillId[t.skillId] : (t.currentLevel || 0)) || 0)) * 10}%`, background: 'linear-gradient(90deg, rgba(99,102,241,1), rgba(16,185,129,1))' }} />
+                              </div>
+                              <div className="mt-1 text-[11px] cu-muted">Lv {(Number.isFinite(latestLevelBySkillId[t.skillId]) ? latestLevelBySkillId[t.skillId] : (t.currentLevel ?? 0))}/10</div>
+                            </button>
+                          </li>
+                        ))}
+                    </ul>
+                  ) : (
+                    <div className={`relative overflow-hidden ${getVariantStyles(variant, 'card').replace('border-2', 'border-2 border-dashed').replace('border-4', 'border-4 border-dashed')} p-6 text-center`}>
+                      <div aria-hidden className="pointer-events-none absolute -top-10 left-1/2 -translate-x-1/2 h-32 w-32 rounded-full opacity-20 blur-3xl cu-accent-soft-bg" />
+                      <div className="text-sm cu-muted mb-3">You haven't added any tracked skills yet.</div>
+                      <button
+                        type="button"
+                        onClick={() => navigateForward('/skills')}
+                        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md cu-surface border cu-border-surface hover:bg-surface/80 active:scale-[0.98] transition-all text-sm shadow-sm"
+                      >
+                        <svg aria-hidden="true" viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+                        Add skills
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              {/* Log */}
+              <section
+                aria-labelledby="recent-label"
+                className="transform-gpu will-change-transform transition-all duration-[500ms] ease-out"
+                style={{ opacity: dashAnim ? 1 : 0, transform: dashAnim ? "translateY(0)" : "translateY(-120vh)", transitionDelay: dashAnim ? "150ms" : "0ms" }}
+              >
+                <div className={getVariantStyles(variant, 'section')}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div id="recent-label" className="text-sm font-semibold uppercase tracking-wide">LOG</div>
+                  </div>
+                  <ul className="space-y-3">
+                    {[...recent].sort((a, b) => b.createdAt - a.createdAt).map((item) => (
+                      <li key={item.id} className={`group ${getVariantStyles(variant, 'card')} hover:bg-surface/80`}>
+                        <button
+                          type="button"
+                          onClick={() => setExpanded((m) => ({ ...m, [item.id]: !m[item.id] }))}
+                          aria-expanded={!!expanded[item.id]}
+                          aria-controls={`log-${item.id}-panel`}
+                          className="w-full flex items-center gap-3"
+                        >
+                          <div className="text-sm text-foreground mr-2 flex-1 text-left">
+                            {item.title}
+                            <span className="ml-2 text-xs cu-muted">{timeAgo(item.createdAt)}</span>
+                          </div>
+                          {!expanded[item.id] && (
+                            <div className="hidden sm:flex items-center gap-3 flex-wrap text-xs cu-muted mr-1">
+                              {item.scores.map((s) => (
+                                <span key={s.category} className="whitespace-nowrap">
+                                  {s.category}: Lv {s.level}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          <svg aria-hidden viewBox="0 0 24 24" className="w-4 h-4 cu-muted transition-transform" style={{ transform: expanded[item.id] ? 'rotate(90deg)' : 'rotate(0deg)' }} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+                        </button>
+                        {expanded[item.id] && (
+                          <div id={`log-${item.id}-panel`} className="mt-3 text-sm">
+                            <div className="grid grid-cols-2 gap-2">
+                              {item.scores.map((s) => (
+                                <div key={s.category} className={`rounded-lg border cu-border-surface cu-surface p-2 text-center ${variant === 'sharp' ? 'border-2 border-black' : variant === 'elevated' ? 'shadow-lg' : variant === 'soft' ? 'rounded-xl' : variant === 'minimal' ? 'border-0' : ''}`}>
+                                  <div className="cu-muted text-xs">{s.category}</div>
+                                  <div className="font-semibold text-foreground">Lv {s.level}</div>
+                                </div>
+                              ))}
+                            </div>
+                            {item.scores.some((s) => s.feedback && s.feedback.length) && (
+                              <div className="mt-2">
+                                <div className="text-xs font-medium cu-muted">Feedback</div>
+                                <ul className="list-disc ml-5 mt-1">
+                                  {item.scores.flatMap((s) => s.feedback || []).map((f, i) => (
+                                    <li key={i} className="text-sm">{f}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </section>
+            </div>
+          </header>
+        )}
+
+        {/* Overlays portal: configuration modal, and toasts (mic button is now global) */}
+        {mounted && createPortal(
+          <>
+            {/* Unified Configure button */}
+            <button
+              type="button"
+              onClick={() => setShowConfig(true)}
+              className="fixed bottom-4 right-4 z-40 px-3 py-1.5 text-xs rounded-md cu-surface cu-border-surface cu-accent-text shadow"
+              aria-haspopup="dialog"
+            >
+              Configure
+            </button>
+
+            {/* Config Modal */}
+            {showConfig && (
+              <div className="fixed z-50 bottom-16 right-4">
+                <div className="relative w-[58vw] h-[58vw] max-w-[92vw] max-h-[82vh] rounded-lg border cu-border-surface cu-surface p-3 overflow-auto shadow-2xl ring-1 ring-black/10">
+                  <div className="flex items-center justify-between mb-2">
+                    <h2 className="text-base font-semibold">Coach Configuration</h2>
+                    <button
+                      type="button"
+                      onClick={() => setShowConfig(false)}
+                      className="rounded px-2 py-1 cu-accent-soft-bg hover:opacity-90 text-sm"
+                    >
+                      Close
+                    </button>
+                  </div>
+
+                  {/* Tabs */}
+                  <div className="flex items-center gap-1 border-b cu-border-surface mb-3">
+                    {(
+                      ENABLE_MODEL_SELECTOR
+                        ? ([
+                            { key: 'logs', label: 'Logs' },
+                            { key: 'voice', label: 'Voice Tuner' },
+                            { key: 'model', label: 'Model' },
+                          ] as const)
+                        : ([
+                            { key: 'logs', label: 'Logs' },
+                            { key: 'voice', label: 'Voice Tuner' },
+                          ] as const)
+                    ).map((tab) => (
+                      <button
+                        key={tab.key}
+                        type="button"
+                        onClick={() => setConfigTab(tab.key)}
+                        className={`px-3 py-1.5 text-sm -mb-px border-b-2 ${configTab === tab.key ? 'border-accent text-foreground' : 'border-transparent cu-muted hover:text-foreground'}`}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Model */}
+                  {ENABLE_MODEL_SELECTOR && configTab === 'model' && (
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Model</label>
+                      <select
+                        className="w-full rounded border cu-border-surface px-3 py-1.5"
+                        value={selectedModel}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setSelectedModel(v);
+                          try { localStorage.setItem("chat:model", v); } catch {}
+                        }}
+                      >
+                        {MODEL_OPTIONS.map((m) => (
+                          <option key={m.value || 'default'} value={m.value}>{m.label}</option>
+                        ))}
+                      </select>
+                      <div className="text-xs cu-muted mt-1">
+                        The selected model will be included as a <code>model</code> parameter in chat requests.
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Voice tuner */}
+                  {configTab === 'voice' && (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => mic.resetTuning?.()}
+                          className="px-2 py-1 rounded border cu-border-surface hover:bg-surface/80 text-[11px]"
+                        >
+                          Reset to defaults
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            try { localStorage.removeItem('cu.voice.tuning'); } catch {}
+                            try { window.location.reload(); } catch {}
+                          }}
+                          className="px-2 py-1 rounded border cu-border-surface hover:bg-surface/80 text-[11px]"
+                        >
+                          Clear overrides
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-1 gap-3">
+                        <label className="flex flex-col gap-1">
+                          <span className="text-[11px] cu-muted">VAD Threshold (RMS)</span>
+                          <div className="flex items-center gap-2">
+                            <input type="range" min={0.005} max={0.1} step={0.001} value={mic.vadThreshold} onChange={(e) => mic.setTuning({ vadThreshold: Number(e.target.value) })} className="flex-1" />
+                            <input type="number" min={0.001} max={0.5} step={0.001} value={Number(mic.vadThreshold.toFixed(3))} onChange={(e) => mic.setTuning({ vadThreshold: Number(e.target.value) })} className="w-24 px-2 py-1 rounded border cu-border-surface bg-transparent" />
+                          </div>
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-[11px] cu-muted">Max Silence (ms)</span>
+                          <div className="flex items-center gap-2">
+                            <input type="range" min={200} max={3000} step={50} value={mic.vadMaxSilenceMs} onChange={(e) => mic.setTuning({ vadMaxSilenceMs: Number(e.target.value) })} className="flex-1" />
+                            <input type="number" min={100} max={10000} step={50} value={mic.vadMaxSilenceMs} onChange={(e) => mic.setTuning({ vadMaxSilenceMs: Number(e.target.value) })} className="w-28 px-2 py-1 rounded border cu-border-surface bg-transparent" />
+                          </div>
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-[11px] cu-muted">Barge RMS Threshold</span>
+                          <div className="flex items-center gap-2">
+                            <input type="range" min={0.01} max={0.4} step={0.005} value={mic.bargeRmsThreshold} onChange={(e) => mic.setTuning({ bargeRmsThreshold: Number(e.target.value) })} className="flex-1" />
+                            <input type="number" min={0.01} max={1} step={0.005} value={Number(mic.bargeRmsThreshold.toFixed(3))} onChange={(e) => mic.setTuning({ bargeRmsThreshold: Number(e.target.value) })} className="w-28 px-2 py-1 rounded border cu-border-surface bg-transparent" />
+                          </div>
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-[11px] cu-muted">Barge Min Frames</span>
+                          <div className="flex items-center gap-2">
+                            <input type="range" min={1} max={15} step={1} value={mic.bargeMinFrames} onChange={(e) => mic.setTuning({ bargeMinFrames: Number(e.target.value) })} className="flex-1" />
+                            <input type="number" min={0} max={100} step={1} value={mic.bargeMinFrames} onChange={(e) => mic.setTuning({ bargeMinFrames: Number(e.target.value) })} className="w-24 px-2 py-1 rounded border cu-border-surface bg-transparent" />
+                          </div>
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-[11px] cu-muted">Max Utterance (ms)</span>
+                          <div className="flex items-center gap-2">
+                            <input type="range" min={2000} max={15000} step={250} value={mic.maxUtterMs} onChange={(e) => mic.setTuning({ maxUtterMs: Number(e.target.value) })} className="flex-1" />
+                            <input type="number" min={1000} max={30000} step={100} value={mic.maxUtterMs} onChange={(e) => mic.setTuning({ maxUtterMs: Number(e.target.value) })} className="w-28 px-2 py-1 rounded border cu-border-surface bg-transparent" />
+                          </div>
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-[11px] cu-muted">Min Speech (ms)</span>
+                          <div className="flex items-center gap-2">
+                            <input type="range" min={100} max={2000} step={50} value={mic.minSpeechMs} onChange={(e) => mic.setTuning({ minSpeechMs: Number(e.target.value) })} className="flex-1" />
+                            <input type="number" min={0} max={5000} step={50} value={mic.minSpeechMs} onChange={(e) => mic.setTuning({ minSpeechMs: Number(e.target.value) })} className="w-28 px-2 py-1 rounded border cu-border-surface bg-transparent" />
+                          </div>
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-[11px] cu-muted">Silence Debounce (frames)</span>
+                          <div className="flex items-center gap-2">
+                            <input type="range" min={0} max={10} step={1} value={mic.silenceDebounceFrames} onChange={(e) => mic.setTuning({ silenceDebounceFrames: Number(e.target.value) })} className="flex-1" />
+                            <input type="number" min={0} max={50} step={1} value={mic.silenceDebounceFrames} onChange={(e) => mic.setTuning({ silenceDebounceFrames: Number(e.target.value) })} className="w-24 px-2 py-1 rounded border cu-border-surface bg-transparent" />
+                          </div>
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-[11px] cu-muted">VAD Grace (ms)</span>
+                          <div className="flex items-center gap-2">
+                            <input type="range" min={0} max={2000} step={50} value={mic.vadGraceMs} onChange={(e) => mic.setTuning({ vadGraceMs: Number(e.target.value) })} className="flex-1" />
+                            <input type="number" min={0} max={5000} step={50} value={mic.vadGraceMs} onChange={(e) => mic.setTuning({ vadGraceMs: Number(e.target.value) })} className="w-28 px-2 py-1 rounded border cu-border-surface bg-transparent" />
+                          </div>
+                        </label>
+                      </div>
+                      <div className="mt-1 text-[11px] cu-muted">Changes apply immediately and persist locally.</div>
+                    </div>
+                  )}
+
+                  {/* Logs */}
+                  {configTab === 'logs' && (
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="text-sm font-medium">Logs</div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[11px] cu-muted">sessionId={sessionId} · mediaSupported={String(mic.mediaSupported)} · recording={String(mic.recording)} · busy={voice.busy}</span>
+                          <button
+                            type="button"
+                            onClick={() => setLogs([])}
+                            className="px-2 py-1 rounded border cu-border-surface hover:bg-surface/80 text-[11px]"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+                      <pre className="whitespace-pre-wrap break-words leading-4 text-xs max-h-56 overflow-auto">{logs.join("\n") || "(no logs yet)"}</pre>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Inline mic error toast */}
+            {voice.voiceError && (
+              <div className="fixed bottom-4 left-1/2 -translate-x-1/2 px-3 py-2 rounded cu-error-bg text-sm shadow">
+                {voice.voiceError}
+              </div>
+            )}
+          </>,
+          document.body as any
+        )}
+
+        {/* Voice Mode toggle removed: mic icon now controls pause/resume */}
+
+        {/* Main content area */}
+        {!showDashboard && (
+          <main className="px-6 pt-10 pb-32">
+            <div className="max-w-md mx-auto space-y-4">
+              {/* Multi-turn interaction indicator */}
+              <div className={`flex items-center justify-between ${variant === 'sharp' ? 'border-2 border-black rounded-none' : variant === 'elevated' ? 'shadow-lg' : variant === 'soft' ? 'rounded-xl' : variant === 'minimal' ? 'border-0' : 'rounded-lg border cu-border-surface cu-surface'} p-2 shadow-sm`}>
+                <div className="flex items-center gap-2 text-sm">
+                  <span
+                    aria-hidden
+                    className={["inline-block h-2.5 w-2.5 rounded-full",
+                      mic.interactionState === "active" ? "bg-emerald-500" : "bg-zinc-400"].join(" ")}
+                  />
+                  <span className="font-medium">
+                    {mic.interactionState === "active" ? "Multi‑turn active" : "Idle"}
+                  </span>
+                  {mic.interactionGroupId && (
+                    <span className="text-xs cu-muted">· {mic.interactionGroupId.length > 12 ? `${mic.interactionGroupId.slice(0,6)}…${mic.interactionGroupId.slice(-4)}` : mic.interactionGroupId}</span>
+                  )}
+                </div>
+                <div className="text-xs cu-muted">Turns: {mic.interactionTurnCount || 0}</div>
+              </div>
+
+              {/* Live assistant stream panel */}
+              <section aria-label="Live assistant" className={`p-3 shadow-sm ${variant === 'sharp' ? 'border-2 border-black rounded-none' : variant === 'elevated' ? 'shadow-lg' : variant === 'soft' ? 'rounded-xl' : variant === 'minimal' ? 'border-0' : 'rounded-lg border cu-border-surface cu-surface'}`}>
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-sm font-semibold">Assistant</div>
+                  <div className="text-[11px] cu-muted">
+                    busy={voice.busy} · recording={String(mic.recording)}
+                  </div>
+                </div>
+                <div className="text-sm whitespace-pre-wrap break-words min-h-[2.5rem]">
+                  {voice.assistantText || <span className="cu-muted">(waiting for response…)</span>}
+                </div>
+                {voice.transcript ? (
+                  <div className="mt-2 border-t cu-border-surface pt-2 text-xs">
+                    <div className="cu-muted mb-0.5">You</div>
+                    <div className="whitespace-pre-wrap break-words">{voice.transcript}</div>
+                  </div>
+                ) : null}
+
+                {/* Debug prompt controls */}
+                <div className="mt-3 flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={debugPrompt}
+                    onChange={(e) => setDebugPrompt(e.target.value)}
+                    placeholder="Type a prompt to test streaming"
+                    className={`flex-1 px-2 py-1 bg-transparent text-sm ${variant === 'sharp' ? 'border-2 border-black rounded-none' : variant === 'elevated' ? 'shadow-sm' : variant === 'soft' ? 'rounded-xl' : variant === 'minimal' ? 'border-0' : 'rounded border cu-border-surface'}`}
+                  />
+                  <button
+                    type="button"
+                    onClick={async () => { try { await mic.sendPrompt(debugPrompt); } catch {} }}
+                    className={`px-2 py-1 text-sm hover:bg-surface/80 ${variant === 'sharp' ? 'border-2 border-black rounded-none' : variant === 'elevated' ? 'shadow-sm' : variant === 'soft' ? 'rounded-xl' : variant === 'minimal' ? 'border-0' : 'rounded border cu-border-surface'}`}
+                  >
+                    Send
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => { try { await convo.chatToTextWithTTS(debugPrompt); } catch {} }}
+                    className={`px-2 py-1 text-sm hover:bg-surface/80 ${variant === 'sharp' ? 'border-2 border-black rounded-none' : variant === 'elevated' ? 'shadow-sm' : variant === 'soft' ? 'rounded-xl' : variant === 'minimal' ? 'border-0' : 'rounded border cu-border-surface'}`}
+                  >
+                    Send (TTS)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { try { convo.abortTurn(); } catch {} }}
+                    className={`px-2 py-1 text-sm hover:bg-surface/80 ${variant === 'sharp' ? 'border-2 border-black rounded-none' : variant === 'elevated' ? 'shadow-sm' : variant === 'soft' ? 'rounded-xl' : variant === 'minimal' ? 'border-0' : 'rounded border cu-border-surface'}`}
+                  >
+                    Abort Turn
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { try { mic.clear(); } catch {}; setDebugPrompt(""); }}
+                    className={`px-2 py-1 text-sm hover:bg-surface/80 ${variant === 'sharp' ? 'border-2 border-black rounded-none' : variant === 'elevated' ? 'shadow-sm' : variant === 'soft' ? 'rounded-xl' : variant === 'minimal' ? 'border-0' : 'rounded border cu-border-surface'}`}
+                  >
+                    Clear
+                  </button>
+                </div>
+              </section>
+
+              {/* Assessment chips row */}
+              {mic.assessmentChips && mic.assessmentChips.length > 0 && (
+                <section aria-label="Assessments">
+                  <div className="flex gap-2 overflow-x-auto pb-1">
+                    {mic.assessmentChips.map((chip) => (
+                      <button
+                        key={chip.id}
+                        type="button"
+                        onClick={() => setChipOpen((m) => ({ ...m, [chip.id]: !m[chip.id] }))}
+                        aria-expanded={!!chipOpen[chip.id]}
+                        className={`shrink-0 inline-flex items-center gap-2 px-2.5 py-1.5 text-xs shadow-sm hover:shadow-md transition-all hover:-translate-y-[0.5px] ${variant === 'sharp' ? 'border-2 border-black rounded-none' : variant === 'elevated' ? 'shadow-lg' : variant === 'soft' ? 'rounded-xl' : variant === 'minimal' ? 'border-0' : 'rounded-full border cu-border-surface cu-surface'}`}
+                        title={chip.id}
+                      >
+                        {/* Status icon */}
+                        {chip.status === "done" ? (
+                          <svg aria-hidden viewBox="0 0 24 24" className="w-3.5 h-3.5 cu-success-text" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+                        ) : chip.status === "error" ? (
+                          <svg aria-hidden viewBox="0 0 24 24" className="w-3.5 h-3.5 cu-error-text" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>
+                        ) : (
+                          <span className="inline-block h-2.5 w-2.5 rounded-full bg-amber-400" aria-hidden />
+                        )}
+                        <span className="whitespace-nowrap">Assessment</span>
+                        <span className="text-[11px] cu-muted">
+                          {chip.status === "queued" ? "Queued" : chip.status === "done" ? "Ready" : "Error"}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Chip details panels */}
+                  <div className="space-y-2 mt-1">
+                    {mic.assessmentChips.map((chip) => (
+                      chipOpen[chip.id] ? (
+                        <div key={chip.id} className={`p-3 text-sm ${variant === 'sharp' ? 'border-2 border-black rounded-none' : variant === 'elevated' ? 'shadow-lg' : variant === 'soft' ? 'rounded-xl' : variant === 'minimal' ? 'border-0' : 'rounded-lg border cu-border-surface cu-surface'}`}>
+                          <div className="flex items-center justify-between">
+                            <div className="font-medium">Assessment {chip.id.length > 14 ? `${chip.id.slice(0,8)}…${chip.id.slice(-4)}` : chip.id}</div>
+                            <span className="text-xs cu-muted">{new Date(chip.createdAt).toLocaleTimeString()}</span>
+                          </div>
+                          {chip.status === "queued" && (
+                            <div className="mt-2 text-xs cu-muted">Queued — awaiting results…</div>
+                          )}
+                          {chip.status === "error" && (
+                            <div className="mt-2 text-xs cu-error-text">Error. {String(chip.summary?.error || chip.summary?.message || "See logs")}</div>
+                          )}
+                          {chip.status === "done" && (
+                            <div className="mt-2 space-y-2">
+                              {/* Meta summary if present */}
+                              {chip.summary?.meta && (
+                                <div className="grid grid-cols-2 gap-2 text-xs">
+                                  <div className="rounded border cu-border-surface p-2"><div className="cu-muted">Tokens In</div><div className="font-semibold">{chip.summary?.meta?.tokensIn ?? "-"}</div></div>
+                                  <div className="rounded border cu-border-surface p-2"><div className="cu-muted">Tokens Out</div><div className="font-semibold">{chip.summary?.meta?.tokensOut ?? "-"}</div></div>
+                                  <div className="rounded border cu-border-surface p-2"><div className="cu-muted">Cost</div><div className="font-semibold">{chip.summary?.meta?.costUsd != null ? `$${chip.summary.meta.costUsd.toFixed?.(4) ?? chip.summary.meta.costUsd}` : "-"}</div></div>
+                                  <div className="rounded border cu-border-surface p-2"><div className="cu-muted">Latency</div><div className="font-semibold">{chip.summary?.meta?.latencyMsTotal != null ? `${chip.summary.meta.latencyMsTotal} ms` : "-"}</div></div>
+                                </div>
+                              )}
+                              {/* Counts if present */}
+                              <div className="text-xs cu-muted">
+                                {Array.isArray(chip.summary?.skillAssessments) && (<span className="mr-2">Skills: {chip.summary.skillAssessments.length}</span>)}
+                                {Array.isArray(chip.summary?.errors) && chip.summary.errors.length > 0 && (<span>Errors: {chip.summary.errors.length}</span>)}
+                              </div>
+                              {/* Fallback raw JSON if nothing else */}
+                              {!chip.summary?.meta && !Array.isArray(chip.summary?.skillAssessments) && !Array.isArray(chip.summary?.errors) && (
+                                <pre className="text-xs overflow-auto max-h-48 cu-muted">{JSON.stringify(chip.summary ?? {}, null, 2)}</pre>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ) : null
+                    ))}
+                  </div>
+                </section>
+              )}
+            </div>
+          </main>
+        )}
+
+        {/* Navigation help */}
+        <div         className={`fixed bottom-4 left-4 p-3 z-40 max-w-xs ${
+          variant === 'terminal' ? 'bg-green-400 text-black border border-green-400' :
+          variant === 'brutalist' ? 'bg-white text-gray-800 border-4 border-white' :
+          variant === 'glassmorphism' ? 'bg-white/20 backdrop-blur-md border border-white/30 text-white' :
+          variant === 'neumorphism' ? 'bg-gray-100 text-gray-800 shadow-[inset_-2px_-2px_4px_rgba(255,255,255,0.7),inset_2px_2px_4px_rgba(209,213,219,0.7)]' :
+          variant === 'bold' ? 'bg-gradient-to-r from-pink-500 to-orange-500 text-white shadow-lg' :
+          variant === 'material' ? 'bg-blue-100 text-blue-800 rounded-2xl shadow-sm' :
+          'bg-black bg-opacity-75 text-white rounded-lg shadow-lg'
+        }`}>
+          <div className="text-xs font-semibold mb-1">Navigation</div>
+          <div className="text-xs opacity-90 space-y-1">
+            <div>← → Arrow keys to navigate</div>
+            <div>Space/Enter for style menu</div>
+            <div>Click buttons to switch</div>
+          </div>
+        </div>
+
+        {/* Overlays moved to portal above */}
+      </div>
+    );
+  };
+
+  return renderDashboardVariant(currentVariant);
+}
