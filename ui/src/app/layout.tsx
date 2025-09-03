@@ -26,15 +26,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   const publishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
-  const signInUrl = process.env.NEXT_PUBLIC_CLERK_SIGN_IN_URL || "/sign-in";
-  const signInFallbackRedirectUrl = process.env.NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL || "/";
-  const signUpFallbackRedirectUrl = process.env.NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL || "/";
   return (
     <ClerkProvider
       publishableKey={publishableKey}
-      signInUrl={signInUrl}
-      signInFallbackRedirectUrl={signInFallbackRedirectUrl}
-      signUpFallbackRedirectUrl={signUpFallbackRedirectUrl}
+      signInUrl="/sign-in"
+      signUpUrl="/sign-up"
+      afterSignInUrl="/coach-min"
+      afterSignUpUrl="/coach-min"
     >
       <html lang="en" suppressHydrationWarning>
         <body
