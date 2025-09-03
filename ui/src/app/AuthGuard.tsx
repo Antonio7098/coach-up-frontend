@@ -1,6 +1,6 @@
 "use client";
 
-import { SignedIn, SignedOut, SignInButton, SignUpButton } from "@clerk/nextjs";
+import { SignedIn, SignedOut, SignInButton, SignUpButton, SignOutButton } from "@clerk/nextjs";
 import { usePathname } from "next/navigation";
 import { ChatProvider } from "../context/ChatContext";
 import { MicProvider } from "../context/MicContext";
@@ -35,6 +35,14 @@ export default function AuthGuard({ children }: AuthGuardProps) {
                 <ConversationProvider>
                   <MicProvider>
                     <MicUIProvider>
+                      {/* Quick sign-out control in the top-right */}
+                      <div className="fixed top-3 right-3 z-50">
+                        <SignOutButton>
+                          <button className="px-3 py-1.5 rounded-md text-sm bg-secondary text-secondary-foreground hover:bg-secondary/90 border border-border">
+                            Sign out
+                          </button>
+                        </SignOutButton>
+                      </div>
                       {/* Global listener to mark popstate as 'back' for entry animations */}
                       <NavDirListener />
                       {children}
