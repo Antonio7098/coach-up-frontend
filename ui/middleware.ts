@@ -1,17 +1,64 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
+import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server';
 
-// Debug middleware - very simple to test if middleware runs at all
-export function middleware(request: NextRequest) {
-  // Force log to console.error to make sure it shows up
-  console.error(`[DEBUG-MW] Running middleware for: ${request.method} ${request.nextUrl.pathname}`);
+// Define routes that should be public (no auth required)
+const isPublicRoute = createRouteMatcher([
+  '/sign-in(.*)',
+  '/sign-up(.*)',
+  '/api/uploadthing(.*)',
+  '/api/webhooks(.*)',
+]);
 
-  const response = NextResponse.next();
-  response.headers.set('X-Middleware-Debug', Date.now().toString());
+// Define routes that should be protected (require auth)
+const isProtectedRoute = createRouteMatcher([
+  '/dashboard(.*)',
+  '/settings(.*)',
+  '/coach-min(.*)',
+  // Add other protected routes here
+]);
 
-  return response;
-}
+export default clerkMiddleware(async (auth, req) => {
+  const session = await auth();
+  const userId = session?.userId;
+  const path = req.nextUrl.pathname;
+  const isProduction = process.env.NODE_ENV === 'production';
 
+  // In production, redirect root to /coach-min
+  if (isProduction && path === '/') {
+    return NextResponse.redirect(new URL('/coach-min', req.url));
+  }
+
+  // Handle API routes - allow all but protect based on requireAuth() in route handlers
+  if (path.startsWith('/api/')) {
+    return NextResponse.next();
+  }
+
+  // If it's a public route, allow access
+  if (isPublicRoute(req)) {
+    return NextResponse.next();
+  }
+
+  // If user is signed in and the route is protected, allow access
+  if (userId && isProtectedRoute(req)) {
+    return NextResponse.next();
+  }
+
+  // If user is not signed in and the route is protected, redirect to sign-in
+  if (!userId && isProtectedRoute(req)) {
+    const signInUrl = new URL('/sign-in', req.url);
+    signInUrl.searchParams.set('redirect_url', req.url);
+    return NextResponse.redirect(signInUrl);
+  }
+
+  // Allow access to all other routes
+  return NextResponse.next();
+});
+
+// Configure which routes the middleware should run on
 export const config = {
-  matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)'],
+  // Match all routes except static files, Next.js internals, and image/static assets
+  matcher: [
+    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+  ],
 };
