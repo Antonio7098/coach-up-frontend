@@ -93,7 +93,8 @@ export async function POST(request: Request) {
   const auth = await requireAuth(request);
   if (!auth.ok) {
     console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 401, reason: auth.reason, latencyMs: Date.now() - started }));
-    return respond(401, { error: "Unauthorized" });
+    // Include reason in body to help diagnose production 401s
+    return respond(401, { error: "Unauthorized", reason: auth.reason });
   }
 
   // Determine content type
