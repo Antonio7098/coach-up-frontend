@@ -72,9 +72,12 @@ export function MinimalVoiceProvider({ children }: { children: React.ReactNode }
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 12000);
+        const tkn = await getToken();
+        const headers: Record<string, string> = { "content-type": "application/json" };
+        if (tkn) headers["authorization"] = `Bearer ${tkn}`;
         const res = await fetch("/api/v1/tts", {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers,
           body: JSON.stringify({ text: seg }),
           signal: controller.signal,
         });
@@ -117,9 +120,12 @@ export function MinimalVoiceProvider({ children }: { children: React.ReactNode }
         try {
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort(), 12000);
+          const tkn = await getToken();
+          const headers: Record<string, string> = { "content-type": "application/json" };
+          if (tkn) headers["authorization"] = `Bearer ${tkn}`;
           const res = await fetch("/api/v1/tts", {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers,
             body: JSON.stringify({ text: seg }),
             signal: controller.signal,
           });

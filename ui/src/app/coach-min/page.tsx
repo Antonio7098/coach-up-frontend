@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import { useAuth } from "@clerk/nextjs";
 import { MinimalAudioProvider, useMinimalAudio } from "../../context/minimal/MinimalAudioContext";
 import { MinimalVoiceProvider } from "../../context/minimal/MinimalVoiceContext";
 import { MinimalConversationProvider, useMinimalConversation } from "../../context/minimal/MinimalConversationContext";
@@ -103,6 +104,15 @@ function Content({
   const convo = useMinimalConversation();
   const { sessionId } = useMinimalSession();
   const { user } = useUser();
+  const { getToken } = useAuth();
+
+  const buildAuthHeaders = React.useCallback(async (base: HeadersInit = {}): Promise<HeadersInit> => {
+    try {
+      const token = await getToken();
+      if (token) return { ...base, Authorization: `Bearer ${token}` };
+    } catch {}
+    return base;
+  }, [getToken]);
 
   // Dashboard state management
   const [showDashboard, setShowDashboard] = React.useState<boolean>(false);
@@ -155,9 +165,10 @@ function Content({
     setServerTranscriptErr(undefined);
     try {
       const reqId = Math.random().toString(36).slice(2);
+      const headers = await buildAuthHeaders({ accept: 'application/json', 'x-request-id': reqId });
       const res = await fetch(`/api/v1/transcripts?sessionId=${encodeURIComponent(sessionId)}&limit=200`, {
         method: 'GET',
-        headers: { accept: 'application/json', 'x-request-id': reqId },
+        headers,
         cache: 'no-store',
       });
       const data = await res.json().catch(() => ({} as any));
@@ -181,9 +192,10 @@ function Content({
     setSessionStateErr(undefined);
     try {
       const reqId = Math.random().toString(36).slice(2);
+      const headers = await buildAuthHeaders({ accept: 'application/json', 'x-request-id': reqId });
       const res = await fetch(`/api/v1/sessions?sessionId=${encodeURIComponent(sessionId)}`, {
         method: 'GET',
-        headers: { accept: 'application/json', 'x-request-id': reqId },
+        headers,
         cache: 'no-store',
       });
       const data = await res.json().catch(() => ({} as any));
@@ -206,9 +218,10 @@ function Content({
       try { console.log("[fresh] GET start", { sessionId }); } catch {}
       const reqId = Math.random().toString(36).slice(2);
       // Prefer UI API (Convex-backed) session summary
+      const headers = await buildAuthHeaders({ accept: "application/json", "x-request-id": reqId });
       const res = await fetch(`/api/v1/session-summary?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "GET",
-        headers: { accept: "application/json", "x-request-id": reqId },
+        headers,
         cache: "no-store",
       });
       const data = await res.json().catch(() => ({}));
@@ -253,9 +266,10 @@ function Content({
       // Save debug prompt details for the panel
       try { setDbgPrompt({ prevSummary: prev, messages: recentMessages }); } catch {}
       try { console.log("[fresh] POST start", { sessionId, prevLen: prev.length, msgs: recentMessages.length }); } catch {}
+      const headers = await buildAuthHeaders({ 'content-type': 'application/json' });
       const res = await fetch(`/api/v1/session-summary`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers,
         body: JSON.stringify({ sessionId, prevSummary: prev, messages: recentMessages, tokenBudget: 600 }),
       });
       const data = await res.json().catch(() => ({} as any));
@@ -311,7 +325,8 @@ function Content({
   const fetchProfile = React.useCallback(async () => {
     setProfileLoading(true);
     try {
-      const response = await fetch(`/api/v1/users/profile?userId=${encodeURIComponent(userId)}`);
+      const headers = await buildAuthHeaders({ accept: 'application/json' });
+      const response = await fetch(`/api/v1/users/profile?userId=${encodeURIComponent(userId)}`, { headers });
       const data = await response.json();
       if (data.profile) {
         setProfile(data.profile);
@@ -327,7 +342,8 @@ function Content({
   const fetchGoals = React.useCallback(async () => {
     setGoalsLoading(true);
     try {
-      const response = await fetch(`/api/v1/users/goals?userId=${encodeURIComponent(userId)}`);
+      const headers = await buildAuthHeaders({ accept: 'application/json' });
+      const response = await fetch(`/api/v1/users/goals?userId=${encodeURIComponent(userId)}`, { headers });
       const data = await response.json();
       if (data.goals) {
         setGoals(data.goals);
@@ -354,9 +370,10 @@ function Content({
     if (!title.trim()) return;
     try {
       const goalId = `goal_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const headers = await buildAuthHeaders({ 'Content-Type': 'application/json' });
       const response = await fetch('/api/v1/users/goals', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           userId,
           goalId,
@@ -380,9 +397,10 @@ function Content({
   // Update goal
   const updateGoal = React.useCallback(async (goalId: string, updates: any) => {
     try {
+      const headers = await buildAuthHeaders({ 'Content-Type': 'application/json' });
       const response = await fetch('/api/v1/users/goals', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           userId,
           goalId,
@@ -401,9 +419,8 @@ function Content({
   // Delete goal
   const deleteGoal = React.useCallback(async (goalId: string) => {
     try {
-      const response = await fetch(`/api/v1/users/goals?userId=${encodeURIComponent(userId)}&goalId=${encodeURIComponent(goalId)}`, {
-        method: 'DELETE'
-      });
+      const headers = await buildAuthHeaders();
+      const response = await fetch(`/api/v1/users/goals?userId=${encodeURIComponent(userId)}&goalId=${encodeURIComponent(goalId)}`, { method: 'DELETE', headers });
       if (response.ok) {
         await fetchGoals();
       }
@@ -415,9 +432,10 @@ function Content({
   // Update profile
   const updateProfile = React.useCallback(async (displayName: string, bio: string) => {
     try {
+      const headers = await buildAuthHeaders({ 'Content-Type': 'application/json' });
       const response = await fetch('/api/v1/users/profile', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           userId,
           displayName: displayName.trim() || undefined,
