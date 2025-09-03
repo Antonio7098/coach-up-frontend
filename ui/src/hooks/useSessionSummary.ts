@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useAuth } from "@clerk/nextjs";
 
 export type SessionSummary = {
   text: string;
@@ -49,6 +50,15 @@ export function useSessionSummary(sessionId?: string | null, opts?: UseSessionSu
   const retryAttemptsRef = useRef<number>(0);
   const maxRetryAttempts = parseEnvInt(process.env.NEXT_PUBLIC_SUMMARY_RETRY_ATTEMPTS, 3);
   const retryDelayMs = parseEnvInt(process.env.NEXT_PUBLIC_SUMMARY_RETRY_DELAY_MS, 1500);
+  const { getToken } = useAuth();
+
+  const buildAuthHeaders = useCallback(async (base: HeadersInit = {}): Promise<HeadersInit> => {
+    try {
+      const token = await getToken();
+      if (token) return { ...base, Authorization: `Bearer ${token}` };
+    } catch {}
+    return base;
+  }, [getToken]);
 
   const thresholds = useMemo(() => ({
     turns: parseEnvInt(process.env.NEXT_PUBLIC_SUMMARY_REFRESH_TURNS, 8),
@@ -99,9 +109,10 @@ export function useSessionSummary(sessionId?: string | null, opts?: UseSessionSu
     let ok = false;
     try {
       const reqId = Math.random().toString(36).slice(2);
+      const headers = await buildAuthHeaders({ accept: "application/json", "x-request-id": reqId });
       const res = await fetch(`/api/v1/session-summary?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "GET",
-        headers: { accept: "application/json", "x-request-id": reqId },
+        headers,
         cache: "no-store",
       });
       const data = await res.json().catch(() => ({}));

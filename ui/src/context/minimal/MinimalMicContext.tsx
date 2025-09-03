@@ -423,7 +423,7 @@ export function MinimalMicProvider({
               const newSamples = prevData.voiceProfile.samples + 1;
               const alpha = 1.0 / Math.min(newSamples, 100); // Adaptive learning rate
 
-              let newData = { ...prevData };
+              const newData = { ...prevData };
               newData.voiceProfile.samples = newSamples;
 
               if (wasSpeech) {

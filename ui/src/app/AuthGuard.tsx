@@ -1,6 +1,7 @@
 "use client";
 
-import { SignedIn, SignedOut, SignInButton, SignUpButton } from "@clerk/nextjs";
+import { SignedIn, SignedOut, SignInButton, SignUpButton, SignOutButton } from "@clerk/nextjs";
+import { usePathname } from "next/navigation";
 import { ChatProvider } from "../context/ChatContext";
 import { MicProvider } from "../context/MicContext";
 import { AudioProvider } from "../context/AudioContext";
@@ -16,6 +17,14 @@ interface AuthGuardProps {
 }
 
 export default function AuthGuard({ children }: AuthGuardProps) {
+  const pathname = usePathname();
+  const isAuthRoute = pathname?.startsWith("/sign-in") || pathname?.startsWith("/sign-up");
+
+  // Bypass guard for Clerk auth routes so their pages render directly
+  if (isAuthRoute) {
+    return <>{children}</>;
+  }
+
   return (
     <>
       <SignedIn>
@@ -26,6 +35,14 @@ export default function AuthGuard({ children }: AuthGuardProps) {
                 <ConversationProvider>
                   <MicProvider>
                     <MicUIProvider>
+                      {/* Quick sign-out control in the top-left */}
+                      <div className="fixed top-3 left-3 z-50">
+                        <SignOutButton>
+                          <button className="px-3 py-1.5 rounded-md text-sm bg-secondary text-secondary-foreground hover:bg-secondary/90 border border-border">
+                            Sign out
+                          </button>
+                        </SignOutButton>
+                      </div>
                       {/* Global listener to mark popstate as 'back' for entry animations */}
                       <NavDirListener />
                       {children}

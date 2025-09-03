@@ -282,8 +282,8 @@ export async function POST(request: Request) {
     }
 
     // At this point, text is non-empty due to early return above
-    let effectiveText = text;
-    let effectiveLastMessageTs = Date.now();
+    const effectiveText = text;
+    const effectiveLastMessageTs = Date.now();
     // Persist new summary row in Convex
     const resIns: any = await convex.mutation("functions/summaries:insert", { sessionId, text: effectiveText, lastMessageTs: effectiveLastMessageTs, meta: { tokenBudget } });
     const payload = { status: 'completed', summary: { sessionId, version: resIns?.version || 1, updatedAt: resIns?.updatedAt || Date.now() } };

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useMemo, useRef } from "react";
+import { useAuth } from "@clerk/nextjs";
 import { useMinimalAudio } from "./MinimalAudioContext";
 
 export type MinimalVoiceContextValue = {
@@ -20,6 +21,7 @@ export function useMinimalVoice() {
 
 export function MinimalVoiceProvider({ children }: { children: React.ReactNode }) {
   const audio = useMinimalAudio();
+  const { getToken } = useAuth();
   const ttsGenRef = useRef(0);
   const pendingChunksRef = useRef<string[]>([]);
   const isProcessingRef = useRef(false);
@@ -70,14 +72,17 @@ export function MinimalVoiceProvider({ children }: { children: React.ReactNode }
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 12000);
+        const tkn = await getToken();
+        const headers: Record<string, string> = { "content-type": "application/json" };
+        if (tkn) headers["authorization"] = `Bearer ${tkn}`;
         const res = await fetch("/api/v1/tts", {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers,
           body: JSON.stringify({ text: seg }),
           signal: controller.signal,
         });
         clearTimeout(timeout);
-        const data: any = await res.json().catch(() => ({}));
+        const data = await res.json().catch(() => ({})) as { audioUrl?: string };
         if (!res.ok) continue;
         const url = String(data?.audioUrl || "");
         if (url && ttsGenRef.current === myGen) {
@@ -115,14 +120,17 @@ export function MinimalVoiceProvider({ children }: { children: React.ReactNode }
         try {
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort(), 12000);
+          const tkn = await getToken();
+          const headers: Record<string, string> = { "content-type": "application/json" };
+          if (tkn) headers["authorization"] = `Bearer ${tkn}`;
           const res = await fetch("/api/v1/tts", {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers,
             body: JSON.stringify({ text: seg }),
             signal: controller.signal,
           });
           clearTimeout(timeout);
-          const data: any = await res.json().catch(() => ({}));
+          const data = await res.json().catch(() => ({})) as { audioUrl?: string };
           if (!res.ok) continue;
           const url = String(data?.audioUrl || "");
           if (url && ttsGenRef.current === myGen) {
@@ -145,11 +153,17 @@ export function MinimalVoiceProvider({ children }: { children: React.ReactNode }
   const sttFromBlob = useCallback(async (b: Blob): Promise<{ text: string }> => {
     const form = new FormData();
     form.set("audio", b, "u.webm");
-    const res = await fetch("/api/v1/stt", { method: "POST", body: form });
-    const data: any = await res.json().catch(() => ({}));
+    // Get Clerk session token for authentication
+    const token = await getToken();
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers["authorization"] = `Bearer ${token}`;
+    }
+    const res = await fetch("/api/v1/stt", { method: "POST", body: form, headers });
+    const data = await res.json().catch(() => ({})) as { text?: string; error?: string };
     if (!res.ok) throw new Error(data?.error || "stt failed");
     return { text: String(data?.text || "") };
-  }, []);
+  }, [getToken]);
 
   const cancelTTS = useCallback(() => {
     ttsGenRef.current++;

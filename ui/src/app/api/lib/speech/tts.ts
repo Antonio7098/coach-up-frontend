@@ -17,9 +17,8 @@ const awsTts: TtsProvider = {
     const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || process.env.S3_REGION || 'us-east-1'
     const endpoint = process.env.AWS_ENDPOINT_URL // for LocalStack compatibility (optional)
     // Lazy load SDK
-    const mod: any = await import('@aws-sdk/client-polly')
-    const PollyClient = mod.PollyClient
-    const SynthesizeSpeechCommand = mod.SynthesizeSpeechCommand
+    const mod = await import('@aws-sdk/client-polly')
+    const { PollyClient, SynthesizeSpeechCommand } = mod
     if (!PollyClient || !SynthesizeSpeechCommand) throw new Error('AWS Polly SDK not available')
 
     let { contentType, ext } = pickFormat(input.format)
@@ -46,7 +45,7 @@ const awsTts: TtsProvider = {
       new SynthesizeSpeechCommand({
         OutputFormat: outputFormat,
         Text: input.text,
-        VoiceId: voiceId,
+        VoiceId: voiceId as any,
         Engine: engine,
       }),
     )
@@ -67,14 +66,14 @@ const awsTts: TtsProvider = {
   },
 }
 
-async function toUint8(body: any): Promise<Uint8Array> {
+async function toUint8(body: Uint8Array | { transformToByteArray(): Promise<Uint8Array> } | { arrayBuffer(): Promise<ArrayBuffer> } | AsyncIterable<Buffer> | null | undefined): Promise<Uint8Array> {
   if (!body) return new Uint8Array()
   if (body instanceof Uint8Array) return body
-  if (typeof body.transformToByteArray === 'function') return (await body.transformToByteArray()) as Uint8Array
-  if (typeof body.arrayBuffer === 'function') return new Uint8Array(await body.arrayBuffer())
+  if ('transformToByteArray' in body && typeof body.transformToByteArray === 'function') return (await body.transformToByteArray()) as Uint8Array
+  if ('arrayBuffer' in body && typeof body.arrayBuffer === 'function') return new Uint8Array(await body.arrayBuffer())
   const chunks: Buffer[] = []
   try {
-    for await (const chunk of body) {
+    for await (const chunk of body as AsyncIterable<Buffer>) {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
     }
   } catch {}
@@ -157,12 +156,39 @@ const mockTts: TtsProvider = {
 }
 
 // Google Cloud Text-to-Speech integration
+interface GoogleConfig {
+  credentials?: Record<string, unknown>;
+  scopes?: string[];
+  keyFilename?: string;
+  [key: string]: any;
+}
+
 const googleTts: TtsProvider = {
   name: 'google',
   async synthesize(input: TtsInput): Promise<TtsResult> {
-    if (!process.env.GOOGLE_APPLICATION_CREDENTIALS && !process.env.GOOGLE_CLOUD_PROJECT) {
-      throw new ProviderNotConfiguredError('Google Cloud ADC not configured (set GOOGLE_APPLICATION_CREDENTIALS)')
+    if (!process.env.GOOGLE_APPLICATION_CREDENTIALS && !process.env.GOOGLE_CLOUD_PROJECT && !process.env.GOOGLE_CLOUD_CREDENTIALS_JSON) {
+      throw new ProviderNotConfiguredError('Google Cloud ADC not configured (set one of: GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_CREDENTIALS_JSON)')
     }
+
+    const config: GoogleConfig = {};
+
+    if (process.env.GOOGLE_CLOUD_CREDENTIALS_JSON) {
+      try {
+        config.credentials = JSON.parse(process.env.GOOGLE_CLOUD_CREDENTIALS_JSON);
+        // Explicitly disable file-based credential loading
+        config.scopes = ['https://www.googleapis.com/auth/cloud-platform'];
+        delete config.keyFilename;
+        // Handle refresh token explicitly
+        if (config.credentials && !config.credentials.refresh_token && process.env.GOOGLE_REFRESH_TOKEN) {
+          config.credentials.refresh_token = process.env.GOOGLE_REFRESH_TOKEN;
+        }
+      } catch (e) {
+        throw new Error(`Failed to parse GOOGLE_CLOUD_CREDENTIALS_JSON: ${(e as Error).message}`);
+      }
+    } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+      console.warn('Using file-based Google credentials - not recommended in serverless environments');
+    }
+
     let { contentType, ext } = pickFormat(input.format)
     // Map to Google AudioEncoding
     type AudioEncoding = 'MP3' | 'LINEAR16' | 'OGG_OPUS'
@@ -181,10 +207,10 @@ const googleTts: TtsProvider = {
     }
 
     // Lazy-load SDK to avoid bundling when not used (use static literal for Next.js tracing)
-    const mod: any = await import('@google-cloud/text-to-speech')
-    const TextToSpeechClient = mod.TextToSpeechClient || mod.default?.TextToSpeechClient
+    const mod = await import('@google-cloud/text-to-speech')
+    const { TextToSpeechClient } = mod
     if (!TextToSpeechClient) throw new Error('Google TTS SDK not available')
-    const client = new TextToSpeechClient()
+    const client = new TextToSpeechClient(config)
     const languageCode = process.env.GOOGLE_TTS_LANGUAGE || 'en-US'
     const voiceName = input.voiceId || process.env.GOOGLE_TTS_VOICE || undefined
 
@@ -195,10 +221,13 @@ const googleTts: TtsProvider = {
         ...(voiceName ? { name: voiceName } : {}),
       },
       audioConfig: {
-        audioEncoding: audioEncoding as any,
+        audioEncoding,
       },
     })
-    const buf = resp.audioContent instanceof Buffer ? resp.audioContent : Buffer.from(resp.audioContent as any)
+    if (!resp.audioContent) {
+      throw new Error('No audio content received from Google TTS');
+    }
+    const buf = Buffer.from(resp.audioContent)
     const u8 = new Uint8Array(buf)
     const bytes = u8.byteLength
     const s3Url = await uploadToS3(u8, contentType)

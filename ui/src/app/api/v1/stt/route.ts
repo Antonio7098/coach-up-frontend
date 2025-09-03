@@ -73,6 +73,13 @@ export async function POST(request: Request) {
   const routePath = "/api/v1/stt";
   const method = "POST";
   const started = Date.now();
+  // Safe diagnostics: meta only, no secrets
+  let host = "";
+  let path = "";
+  try { const u = new URL(request.url); host = u.host; path = u.pathname; } catch {}
+  const hasAuthHeader = !!headersIn.get("authorization");
+  const hasCookie = !!headersIn.get("cookie");
+  try { console.log(JSON.stringify({ level: 'debug', where: 'stt.entry', host, path, method, hasAuthHeader, hasCookie })); } catch {}
   let provider = getSttProvider(process.env.STT_PROVIDER);
   let mode = provider.name;
   const endTimer = promMetrics.requestDurationSeconds.startTimer();
@@ -92,9 +99,11 @@ export async function POST(request: Request) {
 
   const auth = await requireAuth(request);
   if (!auth.ok) {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 401, reason: auth.reason, latencyMs: Date.now() - started }));
-    return respond(401, { error: "Unauthorized" });
+    console.log(JSON.stringify({ level: 'warn', where: 'stt.authFail', route: routePath, requestId, status: 401, reason: auth.reason, host, path, hasAuthHeader, hasCookie, latencyMs: Date.now() - started }));
+    // Include reason in body to help diagnose production 401s
+    return respond(401, { error: "Unauthorized", reason: auth.reason });
   }
+  try { console.log(JSON.stringify({ level: 'info', where: 'stt.authOk', route: routePath, requestId, userId: !!auth?.userId, latencyMs: Date.now() - started })); } catch {}
 
   // Determine content type
   const ct = (headersIn.get("content-type") || "").toLowerCase();

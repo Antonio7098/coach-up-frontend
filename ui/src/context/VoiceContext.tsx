@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useAuth } from "@clerk/nextjs";
 import { useChat } from "./ChatContext";
 
 export type VoiceContextValue = {
@@ -31,7 +32,7 @@ let currentState: VoiceState = {
   assistantText: "",
   voiceError: "",
 };
-let subscribers = new Set<(s: VoiceState) => void>();
+const subscribers = new Set<(s: VoiceState) => void>();
 let adapters: Pick<VoiceContextValue, "enqueueTTSSegment" | "sttFromBlob"> = {
   enqueueTTSSegment: () => {},
   sttFromBlob: async () => ({ text: "" }),
@@ -54,6 +55,7 @@ export function useVoice() {
 
 export function VoiceProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<VoiceState>(currentState);
+  const { getToken } = useAuth();
   const { sessionId } = useChat();
 
   // --- Local refs for TTS worker ---
@@ -243,7 +245,13 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ contentType: b.type || "audio/webm", sizeBytes: b.size })
         });
-        const presignData: any = await presignRes.json().catch(() => ({}));
+        const presignData = await presignRes.json().catch(() => ({})) as {
+          url?: string;
+          headers?: Record<string, string>;
+          method?: string;
+          objectKey?: string;
+          error?: string;
+        };
         if (!presignRes.ok) throw new Error(presignData?.error || `presign failed: ${presignRes.status}`);
         const { url, headers: putHeaders = {}, method = "PUT", objectKey } = presignData || {};
         if (!url || !objectKey) throw new Error("invalid presign payload");
@@ -255,10 +263,13 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
           const controller = new AbortController();
           const timeoutId = setTimeout(() => controller.abort(), STT_TIMEOUT_MS);
           try {
+            // Get Clerk session token for authentication
+            const token = await getToken();
             const res = await fetch("/api/v1/stt", {
               method: "POST",
               headers: {
                 "content-type": "application/json",
+                ...(token ? { "authorization": `Bearer ${token}` } : {}),
                 ...(typeof detectMs === 'number' && isFinite(detectMs) && detectMs >= 0 ? { "x-detect-ms": String(Math.round(detectMs)) } : {}),
               },
               body: JSON.stringify({ objectKey, sessionId: sessionId || undefined }),
@@ -294,6 +305,11 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), STT_TIMEOUT_MS);
       try {
+        // Get Clerk session token for authentication
+        const token = await getToken();
+        if (token) {
+          headers["authorization"] = `Bearer ${token}`;
+        }
         const res = await fetch("/api/v1/stt", { method: "POST", body: form, headers, signal: controller.signal });
         return res;
       } finally {
@@ -310,7 +326,7 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data?.error || `stt failed: ${res.status}`);
     return { text: String(data?.text || "") };
-  }, [sessionId, STT_TIMEOUT_MS, STT_DIRECT_UPLOAD_ENABLED, STT_DIRECT_UPLOAD_THRESHOLD_BYTES]);
+  }, [sessionId, STT_TIMEOUT_MS, STT_DIRECT_UPLOAD_ENABLED, STT_DIRECT_UPLOAD_THRESHOLD_BYTES, getToken]);
 
   // Provide adapters from within VoiceContext
   useEffect(() => {

@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import { useAuth } from "@clerk/nextjs";
 import { MinimalAudioProvider, useMinimalAudio } from "../../context/minimal/MinimalAudioContext";
 import { MinimalVoiceProvider } from "../../context/minimal/MinimalVoiceContext";
 import { MinimalConversationProvider, useMinimalConversation } from "../../context/minimal/MinimalConversationContext";
@@ -12,8 +13,8 @@ import { useUser } from "@clerk/nextjs";
 
 function App() {
   // Profile and Goals data - moved to parent so it can be passed to MinimalMicProvider
-  const [profile, setProfile] = React.useState<any>(null);
-  const [goals, setGoals] = React.useState<any[]>([]);
+  const [profile, setProfile] = React.useState<{ displayName?: string; bio?: string } | null>(null);
+  const [goals, setGoals] = React.useState<Array<{ goalId: string; title: string; description?: string; status?: string }>>([]);
   const [profileLoading, setProfileLoading] = React.useState<boolean>(false);
   const [goalsLoading, setGoalsLoading] = React.useState<boolean>(false);
 
@@ -103,6 +104,15 @@ function Content({
   const convo = useMinimalConversation();
   const { sessionId } = useMinimalSession();
   const { user } = useUser();
+  const { getToken } = useAuth();
+
+  const buildAuthHeaders = React.useCallback(async (base: HeadersInit = {}): Promise<HeadersInit> => {
+    try {
+      const token = await getToken();
+      if (token) return { ...base, Authorization: `Bearer ${token}` };
+    } catch {}
+    return base;
+  }, [getToken]);
 
   // Dashboard state management
   const [showDashboard, setShowDashboard] = React.useState<boolean>(false);
@@ -155,22 +165,24 @@ function Content({
     setServerTranscriptErr(undefined);
     try {
       const reqId = Math.random().toString(36).slice(2);
+      const headers = await buildAuthHeaders({ accept: 'application/json', 'x-request-id': reqId });
       const res = await fetch(`/api/v1/transcripts?sessionId=${encodeURIComponent(sessionId)}&limit=200`, {
         method: 'GET',
-        headers: { accept: 'application/json', 'x-request-id': reqId },
+        headers,
         cache: 'no-store',
       });
-      const data = await res.json().catch(() => ({} as any));
+      const data = await res.json().catch(() => ({})) as { items?: Array<{ id?: string; role?: string; text?: string; createdAt?: number }>; error?: string };
       if (!res.ok) throw new Error(data?.error || `transcripts failed: ${res.status}`);
       const items = Array.isArray(data?.items) ? data.items : [];
-      const mapped = items.map((it: any) => ({ id: String(it.id || ''), role: String(it.role || ''), text: String(it.text || ''), createdAt: Number(it.createdAt || Date.now()) }));
+      const mapped = items.map((it) => ({ id: String(it.id || ''), role: String(it.role || ''), text: String(it.text || ''), createdAt: Number(it.createdAt || Date.now()) }));
       setServerTranscript(mapped);
       setServerTranscriptStatus('ready');
     } catch (e) {
       setServerTranscriptErr(e instanceof Error ? e.message : String(e));
       setServerTranscriptStatus('error');
     }
-  }, [sessionId]);
+  }, [sessionId, buildAuthHeaders]);
+
   // Session state (Convex-backed)
   const [sessionState, setSessionState] = React.useState<any>(null);
   const [sessionStateStatus, setSessionStateStatus] = React.useState<"idle"|"loading"|"ready"|"error">("idle");
@@ -181,12 +193,13 @@ function Content({
     setSessionStateErr(undefined);
     try {
       const reqId = Math.random().toString(36).slice(2);
+      const headers = await buildAuthHeaders({ accept: 'application/json', 'x-request-id': reqId });
       const res = await fetch(`/api/v1/sessions?sessionId=${encodeURIComponent(sessionId)}`, {
         method: 'GET',
-        headers: { accept: 'application/json', 'x-request-id': reqId },
+        headers,
         cache: 'no-store',
       });
-      const data = await res.json().catch(() => ({} as any));
+      const data = await res.json().catch(() => ({})) as { session?: any; error?: string };
       if (!res.ok) throw new Error(data?.error || `sessions failed: ${res.status}`);
       setSessionState(data?.session ?? null);
       setSessionStateStatus('ready');
@@ -194,10 +207,11 @@ function Content({
       setSessionStateErr(e instanceof Error ? e.message : String(e));
       setSessionStateStatus('error');
     }
-  }, [sessionId]);
+  }, [sessionId, buildAuthHeaders]);
+
   // Note: turns tracking is now handled server-side only
   // Server-driven cadence values (fallbacks remain for local-only)
-  const thresholdTurns = Number.isFinite(Number(fresh?.['thresholdTurns'])) ? Number((fresh as any)['thresholdTurns']) : undefined;
+  const thresholdTurns = fresh && Number.isFinite(Number(fresh.thresholdTurns)) ? Number(fresh.thresholdTurns) : undefined;
   const refreshFresh = React.useCallback(async () => {
     if (!sessionId) return;
     setFreshStatus("loading");
@@ -206,9 +220,10 @@ function Content({
       try { console.log("[fresh] GET start", { sessionId }); } catch {}
       const reqId = Math.random().toString(36).slice(2);
       // Prefer UI API (Convex-backed) session summary
+      const headers = await buildAuthHeaders({ accept: "application/json", "x-request-id": reqId });
       const res = await fetch(`/api/v1/session-summary?sessionId=${encodeURIComponent(sessionId)}`, {
         method: "GET",
-        headers: { accept: "application/json", "x-request-id": reqId },
+        headers,
         cache: "no-store",
       });
       const data = await res.json().catch(() => ({}));
@@ -236,7 +251,8 @@ function Content({
       setFreshErr(e instanceof Error ? e.message : String(e));
       setFreshStatus("error");
     }
-  }, [sessionId]);
+  }, [sessionId, buildAuthHeaders]);
+
   const generateFresh = React.useCallback(async () => {
     if (!sessionId) return;
     try {
@@ -253,12 +269,13 @@ function Content({
       // Save debug prompt details for the panel
       try { setDbgPrompt({ prevSummary: prev, messages: recentMessages }); } catch {}
       try { console.log("[fresh] POST start", { sessionId, prevLen: prev.length, msgs: recentMessages.length }); } catch {}
+      const headers = await buildAuthHeaders({ 'content-type': 'application/json' });
       const res = await fetch(`/api/v1/session-summary`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers,
         body: JSON.stringify({ sessionId, prevSummary: prev, messages: recentMessages, tokenBudget: 600 }),
       });
-      const data = await res.json().catch(() => ({} as any));
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || `generate failed: ${res.status}`);
       // After ack, refresh to fetch latest text/version and transcript for diff
       await Promise.all([
@@ -268,7 +285,8 @@ function Content({
       setFreshStatus("ready");
       try { console.log("[fresh] POST ok (ack)"); } catch {}
     } catch {}
-  }, [sessionId, fresh?.text, fresh?.version, convo, mic.transcript, mic.assistantText]);
+  }, [sessionId, fresh, convo, mic.transcript, mic.assistantText, buildAuthHeaders]);
+
   // Server cadence: remove UI auto trigger; rely on backend via persisted interactions
   const lastAutoRef = React.useRef<number>(0);
   const autoInflightRef = React.useRef<boolean>(false);
@@ -280,6 +298,7 @@ function Content({
     void refreshSessionState();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
   // When assistant produces a new reply, schedule a short delayed refresh to pick up
   // backend cadence-generated summaries (non-blocking and debounced)
   const lastAssistantRef = React.useRef<string | null>(null);
@@ -300,14 +319,16 @@ function Content({
         ]).finally(() => { refreshInflightRef.current = false; });
       }, 1200);
     }
-  }, [mic.assistantText, refreshFresh]);
+  }, [mic.assistantText, refreshFresh, refreshServerTranscript, refreshSessionState]);
+
   // Note: turn counter reset is now handled server-side
 
   // Fetch profile data
   const fetchProfile = React.useCallback(async () => {
     setProfileLoading(true);
     try {
-      const response = await fetch(`/api/v1/users/profile?userId=${encodeURIComponent(userId)}`);
+      const headers = await buildAuthHeaders({ accept: 'application/json' });
+      const response = await fetch(`/api/v1/users/profile?userId=${encodeURIComponent(userId)}`, { headers });
       const data = await response.json();
       if (data.profile) {
         setProfile(data.profile);
@@ -317,13 +338,14 @@ function Content({
     } finally {
       setProfileLoading(false);
     }
-  }, [userId]);
+  }, [userId, buildAuthHeaders]);
 
   // Fetch goals data
   const fetchGoals = React.useCallback(async () => {
     setGoalsLoading(true);
     try {
-      const response = await fetch(`/api/v1/users/goals?userId=${encodeURIComponent(userId)}`);
+      const headers = await buildAuthHeaders({ accept: 'application/json' });
+      const response = await fetch(`/api/v1/users/goals?userId=${encodeURIComponent(userId)}`, { headers });
       const data = await response.json();
       if (data.goals) {
         setGoals(data.goals);
@@ -333,7 +355,7 @@ function Content({
     } finally {
       setGoalsLoading(false);
     }
-  }, [userId]);
+  }, [userId, buildAuthHeaders]);
 
   // Fetch profile and goals on mount and when userId changes
   React.useEffect(() => {
@@ -350,9 +372,10 @@ function Content({
     if (!title.trim()) return;
     try {
       const goalId = `goal_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const headers = await buildAuthHeaders({ 'Content-Type': 'application/json' });
       const response = await fetch('/api/v1/users/goals', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           userId,
           goalId,
@@ -371,14 +394,15 @@ function Content({
     } catch (error) {
       console.error('Failed to add goal:', error);
     }
-  }, [userId, fetchGoals]);
+  }, [userId, fetchGoals, buildAuthHeaders]);
 
   // Update goal
-  const updateGoal = React.useCallback(async (goalId: string, updates: any) => {
+  const updateGoal = React.useCallback(async (goalId: string, updates: Partial<{ goalId: string; title: string; description?: string; status?: string }>) => {
     try {
+      const headers = await buildAuthHeaders({ 'Content-Type': 'application/json' });
       const response = await fetch('/api/v1/users/goals', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           userId,
           goalId,
@@ -392,28 +416,28 @@ function Content({
     } catch (error) {
       console.error('Failed to update goal:', error);
     }
-  }, [userId, fetchGoals]);
+  }, [userId, fetchGoals, buildAuthHeaders]);
 
   // Delete goal
   const deleteGoal = React.useCallback(async (goalId: string) => {
     try {
-      const response = await fetch(`/api/v1/users/goals?userId=${encodeURIComponent(userId)}&goalId=${encodeURIComponent(goalId)}`, {
-        method: 'DELETE'
-      });
+      const headers = await buildAuthHeaders();
+      const response = await fetch(`/api/v1/users/goals?userId=${encodeURIComponent(userId)}&goalId=${encodeURIComponent(goalId)}`, { method: 'DELETE', headers });
       if (response.ok) {
         await fetchGoals();
       }
     } catch (error) {
       console.error('Failed to delete goal:', error);
     }
-  }, [userId, fetchGoals]);
+  }, [userId, fetchGoals, buildAuthHeaders]);
 
   // Update profile
   const updateProfile = React.useCallback(async (displayName: string, bio: string) => {
     try {
+      const headers = await buildAuthHeaders({ 'Content-Type': 'application/json' });
       const response = await fetch('/api/v1/users/profile', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           userId,
           displayName: displayName.trim() || undefined,
@@ -429,7 +453,7 @@ function Content({
     } catch (error) {
       console.error('Failed to update profile:', error);
     }
-  }, [userId, fetchProfile]);
+  }, [userId, fetchProfile, buildAuthHeaders]);
 
   // Dashboard animation logic (similar to coach page)
   React.useEffect(() => {
@@ -452,6 +476,7 @@ function Content({
       }, EXIT_MS);
     }
   }, [showDashboard, fetchProfile, fetchGoals]);
+
   return (
     <div className="min-h-screen p-4">
       {audio.needsAudioUnlock ? (
@@ -761,7 +786,7 @@ function Content({
                 {goals.length >= 2 && (
                   <div className="mt-4 pt-4 border-t border-gray-200">
                     <div className="text-center text-sm text-gray-600">
-                      You've reached the maximum of 2 goals. Complete or delete existing goals to add more.
+                      You&apos;ve reached the maximum of 2 goals. Complete or delete existing goals to add more.
                     </div>
                   </div>
                 )}
@@ -881,7 +906,7 @@ function Content({
                       const reqId = Math.random().toString(36).slice(2);
                       const body = { sessionId, messageId: `test_${now}`, role: 'user', contentHash: 'test', text: 'ping', ts: now };
                       const res = await fetch('/api/v1/interactions', { method: 'POST', headers: { 'content-type': 'application/json', 'x-request-id': reqId }, body: JSON.stringify(body) });
-                      const data = await res.json().catch(() => ({} as any));
+                      const data = await res.json().catch(() => ({}));
                       setIngestTestStatus(res.ok ? `ok id=${String(data?.id || '')}` : `err ${res.status}: ${String(data?.error || '')}`);
                     } catch (e) { setIngestTestStatus(e instanceof Error ? e.message : String(e)); }
                   }}
@@ -1013,8 +1038,8 @@ function Content({
                       {fresh ? ` | v${fresh.version}` : ""}
             {(() => {
               // Only show turns until due if we have server data
-              const serverTurnsSince = Number.isFinite(Number((fresh as any)?.turnsSince)) ? Number((fresh as any)?.turnsSince) : undefined;
-              const serverThresholdTurns = Number.isFinite(Number((fresh as any)?.thresholdTurns)) ? Number((fresh as any)?.thresholdTurns) : undefined;
+              const serverTurnsSince = fresh && Number.isFinite(Number(fresh.turnsSince)) ? Number(fresh.turnsSince) : undefined;
+              const serverThresholdTurns = fresh && Number.isFinite(Number(fresh.thresholdTurns)) ? Number(fresh.thresholdTurns) : undefined;
 
               if (serverTurnsSince !== undefined && serverThresholdTurns !== undefined) {
                 const effectiveSince = Math.max(0, serverTurnsSince + (Number.isFinite(sinceFetchDelta) ? sinceFetchDelta : 0));
