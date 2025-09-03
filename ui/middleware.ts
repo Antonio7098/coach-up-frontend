@@ -15,7 +15,7 @@ const isProtectedRoute = createRouteMatcher([
   '/dashboard(.*)',
   '/settings(.*)',
   '/coach-min(.*)',
-  // Add other protected routes here
+  '/api/v1/interactions(.*)',
 ]);
 
 export default clerkMiddleware(async (auth, req) => {
@@ -27,11 +27,6 @@ export default clerkMiddleware(async (auth, req) => {
   // In production, redirect root to /coach-min
   if (isProduction && path === '/') {
     return NextResponse.redirect(new URL('/coach-min', req.url));
-  }
-
-  // Handle API routes - allow all but protect based on requireAuth() in route handlers
-  if (path.startsWith('/api/')) {
-    return NextResponse.next();
   }
 
   // If it's a public route, allow access

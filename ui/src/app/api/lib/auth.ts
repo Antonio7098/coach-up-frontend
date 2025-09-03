@@ -14,18 +14,45 @@ export async function requireAuth(request: Request): Promise<AuthResult> {
     // Safe diagnostics: no secrets, only booleans and meta
     let path = "";
     let host = "";
+    let query = "";
     try {
       const u = new URL(request.url);
       path = u.pathname;
       host = u.host;
+      query = u.search;
     } catch {}
+    
     const headersIn = new Headers((request as any)?.headers || {});
-    const hasAuthHeader = !!headersIn.get("authorization");
+    const authHeader = headersIn.get("authorization") || headersIn.get("Authorization") || '';
+    const hasAuthHeader = !!authHeader;
+    const authHeaderPrefix = hasAuthHeader ? (authHeader.split(' ')[0] || '') : '';
     const cookieHeader = headersIn.get("cookie") || "";
     const hasClerkCookie = /(__session|Clerk)/i.test(cookieHeader);
     const hasPublishable = !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
     const hasSecret = !!process.env.CLERK_SECRET_KEY;
-    try { console.log(JSON.stringify({ level: 'debug', where: 'requireAuth.entry', path, host, enabled, hasAuthHeader, hasClerkCookie, env: { hasPublishable, hasSecret } })); } catch {}
+    
+    // Enhanced debug logging
+    try { 
+      console.log(JSON.stringify({ 
+        level: 'debug', 
+        where: 'requireAuth.entry', 
+        path,
+        query,
+        method: (request as any)?.method,
+        host, 
+        enabled, 
+        authHeaderPrefix,
+        hasAuthHeader, 
+        hasClerkCookie, 
+        env: { 
+          hasPublishable, 
+          hasSecret,
+          clerkEnabled: enabled,
+          nodeEnv: process.env.NODE_ENV,
+          vercelEnv: process.env.VERCEL_ENV
+        } 
+      })); 
+    } catch {}
     if (!enabled) {
       return { ok: true, userId: "anonymous" };
     }
@@ -38,7 +65,18 @@ export async function requireAuth(request: Request): Promise<AuthResult> {
         const payload: any = await verifyToken(token, { secretKey: process.env.CLERK_SECRET_KEY });
         const userId = payload?.sub || payload?.userId;
         if (userId) {
-          try { console.log(JSON.stringify({ level: 'info', where: 'requireAuth.ok', path, via: 'verifyToken', hasToken: true })); } catch {}
+          try { 
+            console.log(JSON.stringify({ 
+              level: 'info', 
+              where: 'requireAuth.ok', 
+              path,
+              via: 'verifyToken',
+              userId,
+              tokenLength: token?.length,
+              tokenPrefix: token?.substring(0, 10) + '...',
+              timestamp: new Date().toISOString()
+            })); 
+          } catch {}
           return { ok: true, userId: String(userId) };
         }
       } catch (e: any) {

@@ -164,13 +164,23 @@ const googleTts: TtsProvider = {
       throw new ProviderNotConfiguredError('Google Cloud ADC not configured (set one of: GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_CREDENTIALS_JSON)')
     }
 
-    let config = {}
+    let config: any = {};
+
     if (process.env.GOOGLE_CLOUD_CREDENTIALS_JSON) {
       try {
-        config = { credentials: JSON.parse(process.env.GOOGLE_CLOUD_CREDENTIALS_JSON) }
+        config.credentials = JSON.parse(process.env.GOOGLE_CLOUD_CREDENTIALS_JSON);
+        // Explicitly disable file-based credential loading
+        config.scopes = ['https://www.googleapis.com/auth/cloud-platform'];
+        config.keyFilename = null;
+        // Handle refresh token explicitly
+        if (!config.credentials.refresh_token && process.env.GOOGLE_REFRESH_TOKEN) {
+          config.credentials.refresh_token = process.env.GOOGLE_REFRESH_TOKEN;
+        }
       } catch (e) {
-        throw new Error(`Failed to parse GOOGLE_CLOUD_CREDENTIALS_JSON: ${(e as Error).message}`)
+        throw new Error(`Failed to parse GOOGLE_CLOUD_CREDENTIALS_JSON: ${(e as Error).message}`);
       }
+    } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+      console.warn('Using file-based Google credentials - not recommended in serverless environments');
     }
 
     let { contentType, ext } = pickFormat(input.format)
