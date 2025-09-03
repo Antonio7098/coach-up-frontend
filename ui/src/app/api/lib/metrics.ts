@@ -21,6 +21,9 @@ const g = globalThis as unknown as {
       voiceEventsTotal: client.Counter<string>;
       voiceTtsPlaybackMs: client.Histogram<string>;
       chatDisconnectsTotal: client.Counter<string>;
+      apiRetriesTotal: client.Counter<string>;
+      apiRetryDurationMs: client.Histogram<string>;
+      apiRetryErrorsTotal: client.Counter<string>;
     };
   };
 };
@@ -154,9 +157,32 @@ function createMetrics() {
     registers: [registry],
   });
 
+  // API retry metrics
+  const apiRetriesTotal = new client.Counter({
+    name: "coachup_ui_api_retries_total",
+    help: "Total number of API retry attempts",
+    labelNames: ["endpoint", "method", "attempt", "outcome"] as unknown as string[],
+    registers: [registry],
+  });
+
+  const apiRetryDurationMs = new client.Histogram({
+    name: "coachup_ui_api_retry_duration_ms",
+    help: "Duration of API retry attempts in milliseconds",
+    labelNames: ["endpoint", "method", "attempt", "outcome"] as unknown as string[],
+    buckets: [100, 250, 500, 1000, 2000, 4000, 8000, 12000],
+    registers: [registry],
+  });
+
+  const apiRetryErrorsTotal = new client.Counter({
+    name: "coachup_ui_api_retry_errors_total",
+    help: "Total number of API retry errors by type",
+    labelNames: ["endpoint", "method", "error_type", "status_code"] as unknown as string[],
+    registers: [registry],
+  });
+
   return {
     registry,
-    metrics: { requestsTotal, requestErrorsTotal, rateLimitedTotal, requestDurationSeconds, audioBytesIn, audioBytesOut, storageBytesUploaded, storagePresignBytesPlanned, sttLatencyMs, ttsLatencyMs, chatFirstTokenMs, clientDetectMs, voiceEventsTotal, voiceTtsPlaybackMs, chatDisconnectsTotal },
+    metrics: { requestsTotal, requestErrorsTotal, rateLimitedTotal, requestDurationSeconds, audioBytesIn, audioBytesOut, storageBytesUploaded, storagePresignBytesPlanned, sttLatencyMs, ttsLatencyMs, chatFirstTokenMs, clientDetectMs, voiceEventsTotal, voiceTtsPlaybackMs, chatDisconnectsTotal, apiRetriesTotal, apiRetryDurationMs, apiRetryErrorsTotal },
   } as const;
 }
 

@@ -5,6 +5,7 @@ import { useMinimalVoice } from "./MinimalVoiceContext";
 import { useMinimalAudio } from "./MinimalAudioContext";
 import { useMinimalConversation } from "./MinimalConversationContext";
 import { useMinimalSession } from "./MinimalSessionContext";
+import { fetchWithRetry } from "../../app/api/lib/retry";
 
 export type MinimalMicContextValue = {
   recording: boolean;
@@ -304,11 +305,13 @@ export function MinimalMicProvider({
                 };
                 // user message
                 try { console.log('[ingest] mic → POST user', { sid, len: (text || '').length }); } catch {}
-                void fetch('/api/v1/interactions', {
+                void fetchWithRetry('/api/v1/interactions', {
                   method: 'POST',
                   headers: { 'content-type': 'application/json', 'x-request-id': reqId },
                   body: JSON.stringify({ sessionId: sid, messageId: `m_user_${now}`, role: 'user', contentHash: djb2(text || `m_user_${now}`), text, ts: now })
-                }).catch(() => {});
+                }, { maxAttempts: 3, endpoint: 'interactions' }).catch((error) => {
+                  try { console.error('[ingest] mic → POST user failed after retries:', error); } catch {}
+                });
                 // assistant message (slightly later ts) - will be updated after streaming completes
                 // Note: We can't persist here because streamingReply isn't available yet
                 // The persistence will happen after the streaming response is complete
@@ -372,11 +375,13 @@ export function MinimalMicProvider({
                   return (h >>> 0).toString(16);
                 };
                 try { console.log('[ingest] mic → POST assistant', { sid, len: (streamingReply || '').length }); } catch {}
-                void fetch('/api/v1/interactions', {
+                void fetchWithRetry('/api/v1/interactions', {
                   method: 'POST',
                   headers: { 'content-type': 'application/json', 'x-request-id': reqId },
                   body: JSON.stringify({ sessionId: sid, messageId: `m_assistant_${now}`, role: 'assistant', contentHash: djb2((streamingReply || `m_assistant_${now}`)), text: streamingReply, ts: now })
-                }).catch(() => {});
+                }, { maxAttempts: 3, endpoint: 'interactions' }).catch((error) => {
+                  try { console.error('[ingest] mic → POST assistant failed after retries:', error); } catch {}
+                });
               }
             } catch {}
 

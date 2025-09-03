@@ -8,6 +8,7 @@ import { MinimalConversationProvider, useMinimalConversation } from "../../conte
 import { useMinimalSession } from "../../context/minimal/MinimalSessionContext";
 import { MinimalMicProvider, useMinimalMic } from "../../context/minimal/MinimalMicContext";
 import { MinimalSessionProvider } from "../../context/minimal/MinimalSessionContext";
+import { fetchWithRetry } from "../../app/api/lib/retry";
 import MicMinButton from "../../components/MicMinButton";
 import { useUser } from "@clerk/nextjs";
 
@@ -153,8 +154,7 @@ function Content({
   // Local in-session history of summaries (ascending by version)
   const [history, setHistory] = React.useState<Array<{ version: number; updatedAt: number; text: string }>>([]);
   const [openMap, setOpenMap] = React.useState<Record<number, boolean>>({});
-  // Local delta since last server cadence fetch
-  const [sinceFetchDelta, setSinceFetchDelta] = React.useState<number>(0);
+  // Note: Local turn counting removed - now handled server-side via onTurn() callback
   // Server transcript (Convex-backed)
   const [serverTranscript, setServerTranscript] = React.useState<Array<{ id: string; role: 'user'|'assistant'|'system'|string; text: string; createdAt: number }>>([]);
   const [serverTranscriptStatus, setServerTranscriptStatus] = React.useState<"idle"|"loading"|"ready"|"error">("idle");
@@ -238,7 +238,6 @@ function Content({
       };
       try { console.log("[fresh] GET ok", { len: next.text.length, version: next.version, updatedAt: next.updatedAt }); } catch {}
       setFresh(next);
-      setSinceFetchDelta(0);
       setHistory((cur) => {
         const exists = cur.some((h) => h.version === next.version);
         const arr = exists ? cur : [...cur, { version: next.version, updatedAt: next.updatedAt, text: next.text }];
@@ -311,8 +310,7 @@ function Content({
     const cur = mic.assistantText || "";
     const prev = lastAssistantRef.current || "";
     if (cur && cur !== prev && !refreshInflightRef.current) {
-      // Note: turn counting is now handled server-side
-      setSinceFetchDelta((d) => (Number.isFinite(d) ? d + 1 : 1));
+      // Note: turn counting is now handled server-side via onTurn() callback
       refreshInflightRef.current = true;
       lastAssistantRef.current = cur;
       setTimeout(() => {
@@ -909,7 +907,7 @@ function Content({
                       const now = Date.now();
                       const reqId = Math.random().toString(36).slice(2);
                       const body = { sessionId, messageId: `test_${now}`, role: 'user', contentHash: 'test', text: 'ping', ts: now };
-                      const res = await fetch('/api/v1/interactions', { method: 'POST', headers: { 'content-type': 'application/json', 'x-request-id': reqId }, body: JSON.stringify(body) });
+                      const res = await fetchWithRetry('/api/v1/interactions', { method: 'POST', headers: { 'content-type': 'application/json', 'x-request-id': reqId }, body: JSON.stringify(body) }, { maxAttempts: 3, endpoint: 'interactions' });
                       const data = await res.json().catch(() => ({}));
                       setIngestTestStatus(res.ok ? `ok id=${String(data?.id || '')}` : `err ${res.status}: ${String(data?.error || '')}`);
                     } catch (e) { setIngestTestStatus(e instanceof Error ? e.message : String(e)); }
@@ -1046,8 +1044,7 @@ function Content({
               const serverThresholdTurns = fresh && Number.isFinite(Number(fresh.thresholdTurns)) ? Number(fresh.thresholdTurns) : undefined;
 
               if (serverTurnsSince !== undefined && serverThresholdTurns !== undefined) {
-                const effectiveSince = Math.max(0, serverTurnsSince + (Number.isFinite(sinceFetchDelta) ? sinceFetchDelta : 0));
-                const turnsUntilDue = Math.max(0, serverThresholdTurns - effectiveSince);
+                const turnsUntilDue = Math.max(0, serverThresholdTurns - serverTurnsSince);
                 return ` | turns_until_due: ${turnsUntilDue}`;
               } else {
                 return ` | turns_until_due: unknown`;

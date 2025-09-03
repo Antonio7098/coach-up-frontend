@@ -8,6 +8,7 @@ import { promMetrics } from "../../lib/metrics";
 import { makeConvex } from "../../lib/convex";
 import * as mockConvex from "../../lib/mockConvex";
 import { ProviderNotConfiguredError, getTtsProvider } from "../../lib/speech/tts";
+import { CostCalculator } from "../../lib/cost-calculator";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -25,6 +26,8 @@ async function persistInteraction(opts: {
   groupId?: string;
   text: string;
   audioUrl?: string | null;
+  ttsCostCents?: number;
+  ttsCharacters?: number;
 }) {
   try {
     const { sessionId, groupId, text } = opts;
@@ -46,7 +49,17 @@ async function persistInteraction(opts: {
     }
     const convexUrl = process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || "http://127.0.0.1:3210";
     const client = makeConvex(convexUrl);
-    await client.mutation("functions/interactions:appendInteraction", { sessionId, groupId, messageId, role, contentHash, audioUrl: opts.audioUrl ?? undefined, ts });
+    await client.mutation("functions/interactions:appendInteraction", { 
+      sessionId, 
+      groupId, 
+      messageId, 
+      role, 
+      contentHash, 
+      audioUrl: opts.audioUrl ?? undefined, 
+      ttsCostCents: opts.ttsCostCents,
+      ttsCharacters: opts.ttsCharacters,
+      ts 
+    });
   } catch (e) {
     try { console.error("[tts] persistInteraction failed", e); } catch {}
   }
@@ -58,6 +71,24 @@ function safeUUID(): string {
     return g.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
   } catch {
     return Math.random().toString(36).slice(2);
+  }
+}
+
+async function calculateTTSCost(provider: string, modelId: string | undefined, characters: number): Promise<{ costCents: number; characters: number }> {
+  try {
+    const result = CostCalculator.calculate({
+      provider,
+      service: 'tts',
+      modelId,
+      characters,
+    });
+    return {
+      costCents: result.costCents,
+      characters: result.usage.characters || characters,
+    };
+  } catch (error) {
+    console.error('[tts] Cost calculation failed:', error);
+    return { costCents: 0, characters };
   }
 }
 
@@ -120,6 +151,10 @@ export async function POST(request: Request) {
 
   try {
     const result = await provider.synthesize({ text, voiceId, format });
+    
+    // Calculate TTS cost based on character count
+    const ttsCost = await calculateTTSCost(result.provider || mode, result.voiceId, text.length);
+    
     const payload = {
       provider: result.provider || mode,
       text,
@@ -130,10 +165,19 @@ export async function POST(request: Request) {
       audioUrl: result.audioUrl,
       durationMs: result.durationMs ?? undefined,
       note: result.note ?? undefined,
+      ttsCostCents: ttsCost.costCents,
+      ttsCharacters: ttsCost.characters,
     } as const;
 
-    // Fire-and-forget persistence of assistant interaction row
-    persistInteraction({ sessionId, groupId, text, audioUrl: result.audioUrl }).catch(() => {});
+    // Fire-and-forget persistence of assistant interaction row with cost data
+    persistInteraction({ 
+      sessionId, 
+      groupId, 
+      text, 
+      audioUrl: result.audioUrl,
+      ttsCostCents: ttsCost.costCents,
+      ttsCharacters: ttsCost.characters,
+    }).catch(() => {});
 
     // Metrics: audio bytes out and storage uploaded bytes
     try {
