@@ -13,7 +13,7 @@ function parseIntEnv(name: string, def: number): number {
   return Number.isFinite(v) && v > 0 ? Math.floor(v) : def;
 }
 
-let _config = {
+const _config = {
   maxRps: parseIntEnv("RATE_LIMIT_MAX_RPS", 10),
   burst: parseIntEnv("RATE_LIMIT_BURST", 20),
 };

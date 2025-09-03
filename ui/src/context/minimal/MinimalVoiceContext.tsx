@@ -82,7 +82,7 @@ export function MinimalVoiceProvider({ children }: { children: React.ReactNode }
           signal: controller.signal,
         });
         clearTimeout(timeout);
-        const data: any = await res.json().catch(() => ({}));
+        const data = await res.json().catch(() => ({})) as { audioUrl?: string };
         if (!res.ok) continue;
         const url = String(data?.audioUrl || "");
         if (url && ttsGenRef.current === myGen) {
@@ -130,7 +130,7 @@ export function MinimalVoiceProvider({ children }: { children: React.ReactNode }
             signal: controller.signal,
           });
           clearTimeout(timeout);
-          const data: any = await res.json().catch(() => ({}));
+          const data = await res.json().catch(() => ({})) as { audioUrl?: string };
           if (!res.ok) continue;
           const url = String(data?.audioUrl || "");
           if (url && ttsGenRef.current === myGen) {
@@ -160,7 +160,7 @@ export function MinimalVoiceProvider({ children }: { children: React.ReactNode }
       headers["authorization"] = `Bearer ${token}`;
     }
     const res = await fetch("/api/v1/stt", { method: "POST", body: form, headers });
-    const data: any = await res.json().catch(() => ({}));
+    const data = await res.json().catch(() => ({})) as { text?: string; error?: string };
     if (!res.ok) throw new Error(data?.error || "stt failed");
     return { text: String(data?.text || "") };
   }, [getToken]);

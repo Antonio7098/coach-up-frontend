@@ -46,7 +46,7 @@ export function generateSummaryText(prevSummary: string, recentMessages: Summari
 
 function parsePrevSummary(input: string): { core: string; prevRecents: string } {
   try {
-    let s = (input || '').trim();
+    const s = (input || '').trim();
     if (!s) return { core: '', prevRecents: '' };
     // If previous text already contains our headings, extract the core summary body and previous recent messages.
     // Pattern: "Summary so far:\n<core>\n\nRecent messages:\n<prevRecents>"

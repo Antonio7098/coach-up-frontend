@@ -6,23 +6,51 @@ import { api } from '../../convex/_generated/api';
 export default function SettingsPage() {
   const isMock = process.env.NEXT_PUBLIC_MOCK_CONVEX === '1';
 
+  // Always call ALL hooks at the top level, before any conditional logic
+  // Convex hooks - called unconditionally but only used when !isMock
+  const profile = useQuery(api.profile.getUserProfile);
+  const goals = useQuery(api.goals.getUserGoals);
+  const updateProfile = useMutation(api.profile.updateUserProfile);
+  const createGoal = useMutation(api.goals.createGoal);
+  const updateGoal = useMutation(api.goals.updateGoal);
+  const deleteGoal = useMutation(api.goals.deleteGoal);
+
+  // State hooks
+  const [profileForm, setProfileForm] = useState({
+    displayName: '',
+    email: '',
+    avatarUrl: '',
+    bio: '',
+  });
+  const [goalForm, setGoalForm] = useState({
+    title: '',
+    description: '',
+    status: 'active' as 'active' | 'paused' | 'completed',
+    targetDateMs: Date.now() + 30 * 24 * 60 * 60 * 1000,
+    tags: [] as string[],
+  });
+  const [profileErrors, setProfileErrors] = useState<Record<string, string>>({});
+  const [goalErrors, setGoalErrors] = useState<Record<string, string>>({});
+  const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
+  const [createGoalLoading, setCreateGoalLoading] = useState(false);
+  const [updateGoalLoading, setUpdateGoalLoading] = useState(false);
+  const [deleteGoalLoading, setDeleteGoalLoading] = useState(false);
+
+  // Initialize forms with Convex data when available
+  const profileData = profile || { displayName: '', email: '', avatarUrl: '', bio: '' };
+  React.useEffect(() => {
+    if (profile) {
+      setProfileForm({
+        displayName: profile.displayName || '',
+        email: profile.email || '',
+        avatarUrl: profile.avatarUrl || '',
+        bio: profile.bio || '',
+      });
+    }
+  }, [profile]);
+
   if (isMock) {
     // Mocked UI: local-only state, no Convex calls
-    const [profileForm, setProfileForm] = useState({
-      displayName: '',
-      email: '',
-      avatarUrl: '',
-      bio: '',
-    });
-    const [goalForm, setGoalForm] = useState({
-      title: '',
-      description: '',
-      status: 'active' as 'active' | 'paused' | 'completed',
-      targetDateMs: Date.now() + 30 * 24 * 60 * 60 * 1000,
-      tags: [] as string[],
-    });
-    const [profileErrors, setProfileErrors] = useState<Record<string, string>>({});
-    const [goalErrors, setGoalErrors] = useState<Record<string, string>>({});
 
     const handleProfileSubmit = (e: React.FormEvent) => {
       e.preventDefault();
@@ -162,33 +190,7 @@ export default function SettingsPage() {
     );
   }
 
-  const profile = useQuery(api.profile.getUserProfile);
-  const goals = useQuery(api.goals.getUserGoals);
-  
-  const updateProfile = useMutation(api.profile.updateUserProfile);
-  const createGoalMutation = useMutation(api.goals.createGoal);
-  const updateGoalMutation = useMutation(api.goals.updateGoal);
-  const deleteGoalMutation = useMutation(api.goals.deleteGoal);
-  
-  const [profileForm, setProfileForm] = useState({
-    displayName: profile?.displayName || '',
-    email: profile?.email || '',
-    avatarUrl: profile?.avatarUrl || '',
-    bio: profile?.bio || '',
-  });
-  
-  const [profileErrors, setProfileErrors] = useState<Record<string, string>>({});
 
-  const [goalForm, setGoalForm] = useState({
-    title: '',
-    description: '',
-    status: 'active' as 'active' | 'paused' | 'completed',
-    targetDateMs: Date.now() + 30 * 24 * 60 * 60 * 1000, // 30 days from now
-    tags: [] as string[],
-  });
-  
-  const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
-  const [goalErrors, setGoalErrors] = useState<Record<string, string>>({});
 
   const handleProfileSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

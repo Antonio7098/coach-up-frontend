@@ -17,9 +17,8 @@ const awsTts: TtsProvider = {
     const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || process.env.S3_REGION || 'us-east-1'
     const endpoint = process.env.AWS_ENDPOINT_URL // for LocalStack compatibility (optional)
     // Lazy load SDK
-    const mod: any = await import('@aws-sdk/client-polly')
-    const PollyClient = mod.PollyClient
-    const SynthesizeSpeechCommand = mod.SynthesizeSpeechCommand
+    const mod = await import('@aws-sdk/client-polly')
+    const { PollyClient, SynthesizeSpeechCommand } = mod
     if (!PollyClient || !SynthesizeSpeechCommand) throw new Error('AWS Polly SDK not available')
 
     let { contentType, ext } = pickFormat(input.format)
@@ -67,7 +66,7 @@ const awsTts: TtsProvider = {
   },
 }
 
-async function toUint8(body: any): Promise<Uint8Array> {
+async function toUint8(body: Uint8Array | { transformToByteArray(): Promise<Uint8Array> } | { arrayBuffer(): Promise<ArrayBuffer> } | AsyncIterable<Buffer> | null | undefined): Promise<Uint8Array> {
   if (!body) return new Uint8Array()
   if (body instanceof Uint8Array) return body
   if (typeof body.transformToByteArray === 'function') return (await body.transformToByteArray()) as Uint8Array
@@ -157,6 +156,12 @@ const mockTts: TtsProvider = {
 }
 
 // Google Cloud Text-to-Speech integration
+interface GoogleConfig {
+  credentials?: Record<string, unknown>;
+  scopes?: string[];
+  keyFilename?: string | null;
+}
+
 const googleTts: TtsProvider = {
   name: 'google',
   async synthesize(input: TtsInput): Promise<TtsResult> {
@@ -164,7 +169,7 @@ const googleTts: TtsProvider = {
       throw new ProviderNotConfiguredError('Google Cloud ADC not configured (set one of: GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_CREDENTIALS_JSON)')
     }
 
-    let config: any = {};
+    const config: GoogleConfig = {};
 
     if (process.env.GOOGLE_CLOUD_CREDENTIALS_JSON) {
       try {
@@ -201,8 +206,8 @@ const googleTts: TtsProvider = {
     }
 
     // Lazy-load SDK to avoid bundling when not used (use static literal for Next.js tracing)
-    const mod: any = await import('@google-cloud/text-to-speech')
-    const TextToSpeechClient = mod.TextToSpeechClient || mod.default?.TextToSpeechClient
+    const mod = await import('@google-cloud/text-to-speech')
+    const { TextToSpeechClient } = mod
     if (!TextToSpeechClient) throw new Error('Google TTS SDK not available')
     const client = new TextToSpeechClient(config)
     const languageCode = process.env.GOOGLE_TTS_LANGUAGE || 'en-US'
@@ -215,10 +220,10 @@ const googleTts: TtsProvider = {
         ...(voiceName ? { name: voiceName } : {}),
       },
       audioConfig: {
-        audioEncoding: audioEncoding as any,
+        audioEncoding,
       },
     })
-    const buf = resp.audioContent instanceof Buffer ? resp.audioContent : Buffer.from(resp.audioContent as any)
+    const buf = Buffer.from(resp.audioContent)
     const u8 = new Uint8Array(buf)
     const bytes = u8.byteLength
     const s3Url = await uploadToS3(u8, contentType)

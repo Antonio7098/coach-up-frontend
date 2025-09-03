@@ -29,6 +29,9 @@ const SkillChart: React.FC<SkillChartProps> = ({
   xTickLabels,
   yTickLabels,
 }) => {
+  // Always call hooks at the top level, before any conditional logic
+  const [hoverIdx, setHoverIdx] = React.useState<number | null>(null);
+
   if (!data || data.length === 0) {
     return <div className="text-sm text-muted-foreground">No data available</div>;
   }
@@ -89,7 +92,6 @@ const SkillChart: React.FC<SkillChartProps> = ({
     '10'
   ] : yTicks.map(v => Math.round(v).toString()));
 
-  const [hoverIdx, setHoverIdx] = React.useState<number | null>(null);
   const handleMove = showHover ? (e: React.MouseEvent<SVGSVGElement>) => {
     const rect = (e.target as SVGElement).closest('svg')!.getBoundingClientRect();
     const relX = e.clientX - rect.left;
