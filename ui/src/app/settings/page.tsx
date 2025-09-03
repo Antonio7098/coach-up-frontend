@@ -1,5 +1,5 @@
 "use client";
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation } from 'convex/react';
 import { api } from '../../convex/_generated/api';
 
@@ -38,7 +38,7 @@ export default function SettingsPage() {
 
   // Initialize forms with Convex data when available
   const profileData = profile || { displayName: '', email: '', avatarUrl: '', bio: '' };
-  React.useEffect(() => {
+  useEffect(() => {
     if (profile) {
       setProfileForm({
         displayName: profile.displayName || '',
@@ -220,9 +220,9 @@ export default function SettingsPage() {
     
     try {
       if (editingGoalId) {
-        await updateGoalMutation({ goalId: editingGoalId, ...goalForm });
+        await updateGoal({ goalId: editingGoalId, ...goalForm });
       } else {
-        await createGoalMutation(goalForm);
+        await createGoal(goalForm);
       }
       // Reset form
       setGoalForm({
@@ -457,7 +457,7 @@ export default function SettingsPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => deleteGoalMutation({ goalId: g.goalId })}
+                      onClick={() => deleteGoal({ goalId: g.goalId })}
                       className="cu-button-danger"
                     >
                       Delete

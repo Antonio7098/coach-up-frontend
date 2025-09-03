@@ -45,7 +45,7 @@ const awsTts: TtsProvider = {
       new SynthesizeSpeechCommand({
         OutputFormat: outputFormat,
         Text: input.text,
-        VoiceId: voiceId,
+        VoiceId: voiceId as any,
         Engine: engine,
       }),
     )
@@ -69,11 +69,11 @@ const awsTts: TtsProvider = {
 async function toUint8(body: Uint8Array | { transformToByteArray(): Promise<Uint8Array> } | { arrayBuffer(): Promise<ArrayBuffer> } | AsyncIterable<Buffer> | null | undefined): Promise<Uint8Array> {
   if (!body) return new Uint8Array()
   if (body instanceof Uint8Array) return body
-  if (typeof body.transformToByteArray === 'function') return (await body.transformToByteArray()) as Uint8Array
-  if (typeof body.arrayBuffer === 'function') return new Uint8Array(await body.arrayBuffer())
+  if ('transformToByteArray' in body && typeof body.transformToByteArray === 'function') return (await body.transformToByteArray()) as Uint8Array
+  if ('arrayBuffer' in body && typeof body.arrayBuffer === 'function') return new Uint8Array(await body.arrayBuffer())
   const chunks: Buffer[] = []
   try {
-    for await (const chunk of body) {
+    for await (const chunk of body as AsyncIterable<Buffer>) {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
     }
   } catch {}
@@ -159,7 +159,8 @@ const mockTts: TtsProvider = {
 interface GoogleConfig {
   credentials?: Record<string, unknown>;
   scopes?: string[];
-  keyFilename?: string | null;
+  keyFilename?: string;
+  [key: string]: any;
 }
 
 const googleTts: TtsProvider = {
@@ -176,9 +177,9 @@ const googleTts: TtsProvider = {
         config.credentials = JSON.parse(process.env.GOOGLE_CLOUD_CREDENTIALS_JSON);
         // Explicitly disable file-based credential loading
         config.scopes = ['https://www.googleapis.com/auth/cloud-platform'];
-        config.keyFilename = null;
+        delete config.keyFilename;
         // Handle refresh token explicitly
-        if (!config.credentials.refresh_token && process.env.GOOGLE_REFRESH_TOKEN) {
+        if (config.credentials && !config.credentials.refresh_token && process.env.GOOGLE_REFRESH_TOKEN) {
           config.credentials.refresh_token = process.env.GOOGLE_REFRESH_TOKEN;
         }
       } catch (e) {
@@ -223,6 +224,9 @@ const googleTts: TtsProvider = {
         audioEncoding,
       },
     })
+    if (!resp.audioContent) {
+      throw new Error('No audio content received from Google TTS');
+    }
     const buf = Buffer.from(resp.audioContent)
     const u8 = new Uint8Array(buf)
     const bytes = u8.byteLength

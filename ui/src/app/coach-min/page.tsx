@@ -171,7 +171,7 @@ function Content({
         headers,
         cache: 'no-store',
       });
-      const data = await res.json().catch(() => ({})) as { items?: Array<{ id?: string; role?: string; text?: string; createdAt?: number }> };
+      const data = await res.json().catch(() => ({})) as { items?: Array<{ id?: string; role?: string; text?: string; createdAt?: number }>; error?: string };
       if (!res.ok) throw new Error(data?.error || `transcripts failed: ${res.status}`);
       const items = Array.isArray(data?.items) ? data.items : [];
       const mapped = items.map((it) => ({ id: String(it.id || ''), role: String(it.role || ''), text: String(it.text || ''), createdAt: Number(it.createdAt || Date.now()) }));
@@ -199,7 +199,7 @@ function Content({
         headers,
         cache: 'no-store',
       });
-      const data = await res.json().catch(() => ({})) as { session?: any };
+      const data = await res.json().catch(() => ({})) as { session?: any; error?: string };
       if (!res.ok) throw new Error(data?.error || `sessions failed: ${res.status}`);
       setSessionState(data?.session ?? null);
       setSessionStateStatus('ready');
@@ -211,7 +211,7 @@ function Content({
 
   // Note: turns tracking is now handled server-side only
   // Server-driven cadence values (fallbacks remain for local-only)
-  const thresholdTurns = Number.isFinite(Number(fresh?.thresholdTurns)) ? Number(fresh.thresholdTurns) : undefined;
+  const thresholdTurns = fresh && Number.isFinite(Number(fresh.thresholdTurns)) ? Number(fresh.thresholdTurns) : undefined;
   const refreshFresh = React.useCallback(async () => {
     if (!sessionId) return;
     setFreshStatus("loading");
@@ -1042,8 +1042,8 @@ function Content({
                       {fresh ? ` | v${fresh.version}` : ""}
             {(() => {
               // Only show turns until due if we have server data
-              const serverTurnsSince = Number.isFinite(Number(fresh?.turnsSince)) ? Number(fresh.turnsSince) : undefined;
-              const serverThresholdTurns = Number.isFinite(Number(fresh?.thresholdTurns)) ? Number(fresh.thresholdTurns) : undefined;
+              const serverTurnsSince = fresh && Number.isFinite(Number(fresh.turnsSince)) ? Number(fresh.turnsSince) : undefined;
+              const serverThresholdTurns = fresh && Number.isFinite(Number(fresh.thresholdTurns)) ? Number(fresh.thresholdTurns) : undefined;
 
               if (serverTurnsSince !== undefined && serverThresholdTurns !== undefined) {
                 const effectiveSince = Math.max(0, serverTurnsSince + (Number.isFinite(sinceFetchDelta) ? sinceFetchDelta : 0));
