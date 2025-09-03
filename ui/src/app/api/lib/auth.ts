@@ -10,25 +10,45 @@ export type AuthResult = {
 export async function requireAuth(request: Request): Promise<AuthResult> {
   try {
     const enabled = process.env.CLERK_ENABLED === "1";
+    // Safe diagnostics: no secrets, only booleans and meta
+    let path = "";
+    let host = "";
+    try {
+      const u = new URL(request.url);
+      path = u.pathname;
+      host = u.host;
+    } catch {}
+    const headersIn = new Headers((request as any)?.headers || {});
+    const hasAuthHeader = !!headersIn.get("authorization");
+    const cookieHeader = headersIn.get("cookie") || "";
+    const hasClerkCookie = /(__session|Clerk)/i.test(cookieHeader);
+    const hasPublishable = !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+    const hasSecret = !!process.env.CLERK_SECRET_KEY;
+    try { console.log(JSON.stringify({ level: 'debug', where: 'requireAuth.entry', path, host, enabled, hasAuthHeader, hasClerkCookie, env: { hasPublishable, hasSecret } })); } catch {}
     if (!enabled) {
       return { ok: true, userId: "anonymous" };
     }
 
     // Prefer reading auth directly from the incoming Request (works without middleware)
     const fromReq = getAuth(request as any);
+    try { console.log(JSON.stringify({ level: 'debug', where: 'requireAuth.getAuth', path, hasFromReq: !!fromReq, fromReqUserId: !!fromReq?.userId })); } catch {}
     if (fromReq?.userId) {
+      try { console.log(JSON.stringify({ level: 'info', where: 'requireAuth.ok', path, via: 'getAuth(request)' })); } catch {}
       return { ok: true, userId: fromReq.userId };
     }
 
     // Fallback to auth() (requires clerkMiddleware context)
     const { userId } = await auth();
+    try { console.log(JSON.stringify({ level: 'debug', where: 'requireAuth.auth()', path, hasUserId: !!userId })); } catch {}
     if (userId) {
+      try { console.log(JSON.stringify({ level: 'info', where: 'requireAuth.ok', path, via: 'auth()' })); } catch {}
       return { ok: true, userId };
     }
 
     return { ok: false, reason: "unauthenticated" };
   } catch (e) {
     const errorMessage = e instanceof Error ? e.message : String(e);
+    try { console.log(JSON.stringify({ level: 'error', where: 'requireAuth.catch', msg: errorMessage })); } catch {}
     if (errorMessage.includes("clerkMiddleware") || errorMessage.includes("cannot detect")) {
       return { ok: false, reason: "middleware_error" };
     }
