@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useMemo, useRef } from "react";
+import { useAuth } from "@clerk/nextjs";
 import { useMinimalAudio } from "./MinimalAudioContext";
 
 export type MinimalVoiceContextValue = {
@@ -20,6 +21,7 @@ export function useMinimalVoice() {
 
 export function MinimalVoiceProvider({ children }: { children: React.ReactNode }) {
   const audio = useMinimalAudio();
+  const { getToken } = useAuth();
   const ttsGenRef = useRef(0);
   const pendingChunksRef = useRef<string[]>([]);
   const isProcessingRef = useRef(false);
@@ -145,11 +147,17 @@ export function MinimalVoiceProvider({ children }: { children: React.ReactNode }
   const sttFromBlob = useCallback(async (b: Blob): Promise<{ text: string }> => {
     const form = new FormData();
     form.set("audio", b, "u.webm");
-    const res = await fetch("/api/v1/stt", { method: "POST", body: form });
+    // Get Clerk session token for authentication
+    const token = await getToken();
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers["authorization"] = `Bearer ${token}`;
+    }
+    const res = await fetch("/api/v1/stt", { method: "POST", body: form, headers });
     const data: any = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data?.error || "stt failed");
     return { text: String(data?.text || "") };
-  }, []);
+  }, [getToken]);
 
   const cancelTTS = useCallback(() => {
     ttsGenRef.current++;
