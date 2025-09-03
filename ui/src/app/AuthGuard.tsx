@@ -35,8 +35,8 @@ export default function AuthGuard({ children }: AuthGuardProps) {
                 <ConversationProvider>
                   <MicProvider>
                     <MicUIProvider>
-                      {/* Quick sign-out control in the top-right */}
-                      <div className="fixed top-3 right-3 z-50">
+                      {/* Quick sign-out control in the top-left */}
+                      <div className="fixed top-3 left-3 z-50">
                         <SignOutButton>
                           <button className="px-3 py-1.5 rounded-md text-sm bg-secondary text-secondary-foreground hover:bg-secondary/90 border border-border">
                             Sign out
