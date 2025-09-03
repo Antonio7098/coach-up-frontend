@@ -1,6 +1,7 @@
 "use client";
 
 import { SignedIn, SignedOut, SignInButton, SignUpButton } from "@clerk/nextjs";
+import { usePathname } from "next/navigation";
 import { ChatProvider } from "../context/ChatContext";
 import { MicProvider } from "../context/MicContext";
 import { AudioProvider } from "../context/AudioContext";
@@ -16,6 +17,14 @@ interface AuthGuardProps {
 }
 
 export default function AuthGuard({ children }: AuthGuardProps) {
+  const pathname = usePathname();
+  const isAuthRoute = pathname?.startsWith("/sign-in") || pathname?.startsWith("/sign-up");
+
+  // Bypass guard for Clerk auth routes so their pages render directly
+  if (isAuthRoute) {
+    return <>{children}</>;
+  }
+
   return (
     <>
       <SignedIn>
