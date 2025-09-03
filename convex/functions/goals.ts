@@ -1,6 +1,6 @@
 import { v } from 'convex/values';
-import { mutation, query, QueryCtx, MutationCtx } from './_generated/server';
-import { getUser, getOrCreateUser } from './users';
+import { mutation, query, QueryCtx, MutationCtx } from '../_generated/server';
+import { getUser, getOrCreateUser } from '../users';
 
 const getUserQueryCtx = async (ctx: QueryCtx) => {
   const user = await getUser(ctx);

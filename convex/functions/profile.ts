@@ -1,6 +1,6 @@
 import { v } from 'convex/values';
-import { mutation, query } from './_generated/server';
-import { getUser, getOrCreateUser } from './users';
+import { mutation, query } from '../_generated/server';
+import { getUser, getOrCreateUser } from '../users';
 
 export const getUserProfile = query({
   args: {},
