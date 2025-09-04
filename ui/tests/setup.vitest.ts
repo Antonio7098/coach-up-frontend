@@ -9,15 +9,15 @@ vi.mock('convex/browser', () => {
     url: string;
     query = vi.fn((..._args: any[]) => {
       if ((globalThis as any).__convexMockBehavior?.queryThrow) {
-        throw (globalThis as any).__convexMockBehavior.queryThrow;
+        return Promise.reject((globalThis as any).__convexMockBehavior.queryThrow);
       }
-      return (globalThis as any).__convexMockBehavior?.queryReturn;
+      return Promise.resolve((globalThis as any).__convexMockBehavior?.queryReturn);
     });
     mutation = vi.fn((..._args: any[]) => {
       if ((globalThis as any).__convexMockBehavior?.mutationThrow) {
-        throw (globalThis as any).__convexMockBehavior.mutationThrow;
+        return Promise.reject((globalThis as any).__convexMockBehavior.mutationThrow);
       }
-      return (globalThis as any).__convexMockBehavior?.mutationReturn;
+      return Promise.resolve((globalThis as any).__convexMockBehavior?.mutationReturn);
     });
     constructor(url: string) {
       this.url = url;

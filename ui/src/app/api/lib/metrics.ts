@@ -21,6 +21,13 @@ const g = globalThis as unknown as {
       voiceEventsTotal: client.Counter<string>;
       voiceTtsPlaybackMs: client.Histogram<string>;
       chatDisconnectsTotal: client.Counter<string>;
+      // SPR-008: Session Summary Metrics
+      summaryGenerateLatencyMs: client.Histogram<string>;
+      summariesTriggeredTotal: client.Counter<string>;
+      summaryLocksTotal: client.Gauge<string>;
+      summaryAgeMs: client.Gauge<string>;
+      promptDebugRequestsTotal: client.Counter<string>;
+      serverFetchFallbacksTotal: client.Counter<string>;
     };
   };
 };

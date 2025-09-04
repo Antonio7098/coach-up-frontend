@@ -85,7 +85,8 @@ describe('API: POST /api/v1/stt', () => {
     const res = await sttPOST(makeReq({ audioUrl: 'https://example.com/a.wav' }))
     expect(res.status).toBe(401)
     const json = await res.json()
-    expect(json).toEqual({ error: 'Unauthorized' })
+    expect(json.error).toBe('Unauthorized')
+    expect(json.reason).toBeDefined()
   })
   
   it('multipart: returns 400 when audio file is missing', async () => {

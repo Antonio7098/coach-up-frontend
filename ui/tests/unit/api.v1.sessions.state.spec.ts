@@ -43,7 +43,7 @@ describe('API: POST /api/v1/sessions/state', () => {
 
     const expectedHash = sha256Hex(trackedSkillId);
     expect(client.mutation).toHaveBeenCalledWith(
-      'events:logEvent',
+      'functions/events:logEvent',
       expect.objectContaining({ sessionId: body.sessionId, groupId: body.latestGroupId, trackedSkillIdHash: expectedHash, kind: 'session_state_updated' })
     );
   });

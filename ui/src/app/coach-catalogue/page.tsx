@@ -732,11 +732,11 @@ export default function CoachCataloguePage() {
               variant === 'terminal' ? 'bg-green-400 text-black border border-green-400' :
               variant === 'brutalist' ? 'bg-white text-gray-800 border-4 border-white' :
               variant === 'glassmorphism' ? 'bg-white/20 backdrop-blur-md border border-white/30 text-white' :
-              variant === 'neomorphism' ? 'bg-gray-100 text-gray-800 shadow-[inset_-2px_-2px_4px_rgba(255,255,255,0.7),inset_2px_2px_4px_rgba(209,213,219,0.7)]' :
+              variant === 'neumorphism' ? 'bg-gray-100 text-gray-800 shadow-[inset_-2px_-2px_4px_rgba(255,255,255,0.7),inset_2px_2px_4px_rgba(209,213,219,0.7)]' :
               variant === 'bold' ? 'bg-gradient-to-r from-pink-500 to-orange-500 text-white shadow-lg hover:shadow-xl' :
               variant === 'material' ? 'bg-blue-600 text-white shadow-sm hover:shadow-md' :
               'bg-blue-500 text-white shadow-lg hover:bg-blue-600'
-            } ${variant === 'terminal' || variant === 'brutalist' || variant === 'grid' ? '' : 'rounded-full'}`}
+            } ${variant === 'terminal' || variant === 'brutalist' ? '' : 'rounded-full'}`}
             aria-label="Previous variant"
           >
             <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2">
@@ -750,11 +750,11 @@ export default function CoachCataloguePage() {
               variant === 'terminal' ? 'bg-green-400 text-black border border-green-400' :
               variant === 'brutalist' ? 'bg-white text-gray-800 border-4 border-white' :
               variant === 'glassmorphism' ? 'bg-white/20 backdrop-blur-md border border-white/30 text-white' :
-              variant === 'neomorphism' ? 'bg-gray-100 text-gray-800 shadow-[inset_-2px_-2px_4px_rgba(255,255,255,0.7),inset_2px_2px_4px_rgba(209,213,219,0.7)]' :
+              variant === 'neumorphism' ? 'bg-gray-100 text-gray-800 shadow-[inset_-2px_-2px_4px_rgba(255,255,255,0.7),inset_2px_2px_4px_rgba(209,213,219,0.7)]' :
               variant === 'bold' ? 'bg-gradient-to-r from-pink-500 to-orange-500 text-white shadow-lg hover:shadow-xl' :
               variant === 'material' ? 'bg-blue-600 text-white shadow-sm hover:shadow-md' :
               'bg-blue-500 text-white shadow-lg hover:bg-blue-600'
-            } ${variant === 'terminal' || variant === 'brutalist' || variant === 'grid' ? '' : 'rounded-full'}`}
+            } ${variant === 'terminal' || variant === 'brutalist' ? '' : 'rounded-full'}`}
             aria-label="Select dashboard variant"
           >
             <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2">
@@ -769,11 +769,11 @@ export default function CoachCataloguePage() {
               variant === 'terminal' ? 'bg-green-400 text-black border border-green-400' :
               variant === 'brutalist' ? 'bg-white text-gray-800 border-4 border-white' :
               variant === 'glassmorphism' ? 'bg-white/20 backdrop-blur-md border border-white/30 text-white' :
-              variant === 'neomorphism' ? 'bg-gray-100 text-gray-800 shadow-[inset_-2px_-2px_4px_rgba(255,255,255,0.7),inset_2px_2px_4px_rgba(209,213,219,0.7)]' :
+              variant === 'neumorphism' ? 'bg-gray-100 text-gray-800 shadow-[inset_-2px_-2px_4px_rgba(255,255,255,0.7),inset_2px_2px_4px_rgba(209,213,219,0.7)]' :
               variant === 'bold' ? 'bg-gradient-to-r from-pink-500 to-orange-500 text-white shadow-lg hover:shadow-xl' :
               variant === 'material' ? 'bg-blue-600 text-white shadow-sm hover:shadow-md' :
               'bg-blue-500 text-white shadow-lg hover:bg-blue-600'
-            } ${variant === 'terminal' || variant === 'brutalist' || variant === 'grid' ? '' : 'rounded-full'}`}
+            } ${variant === 'terminal' || variant === 'brutalist' ? '' : 'rounded-full'}`}
             aria-label="Next variant"
           >
             <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2">
@@ -803,7 +803,7 @@ export default function CoachCataloguePage() {
             variant === 'terminal' ? 'bg-green-400 text-black border border-green-400' :
             variant === 'brutalist' ? 'bg-white text-gray-800 border-4 border-white' :
             variant === 'glassmorphism' ? 'bg-white/20 backdrop-blur-md border border-white/30 text-white' :
-            variant === 'neomorphism' ? 'bg-gray-100 text-gray-800 shadow-[inset_-2px_-2px_4px_rgba(255,255,255,0.7),inset_2px_2px_4px_rgba(209,213,219,0.7)]' :
+            variant === 'neumorphism' ? 'bg-gray-100 text-gray-800 shadow-[inset_-2px_-2px_4px_rgba(255,255,255,0.7),inset_2px_2px_4px_rgba(209,213,219,0.7)]' :
             variant === 'bold' ? 'bg-gradient-to-r from-pink-500 to-orange-500 text-white shadow-lg hover:shadow-xl' :
             variant === 'material' ? 'bg-blue-600 text-white shadow-sm hover:shadow-md' :
             'bg-gray-500 text-white shadow-lg hover:bg-gray-600 rounded-full'
@@ -954,8 +954,8 @@ export default function CoachCataloguePage() {
                           variant === 'newspaper' ? 'text-gray-600' :
                           variant === 'brutalist' ? 'text-gray-300' :
                           variant === 'glassmorphism' ? 'text-white/80' :
-                          variant === 'neomorphism' ? 'text-gray-500' :
-                          variant === 'grid' ? 'text-gray-600' :
+                          variant === 'neumorphism' ? 'text-gray-500' :
+                          
                           'cu-muted'
                         }`}>Level</div>
                         <div className="justify-self-center relative inline-block leading-none">
@@ -1028,7 +1028,7 @@ export default function CoachCataloguePage() {
                         <div className="mt-2 flex flex-wrap gap-2">
                           <span className="inline-flex items-center gap-2 text-xs px-2.5 py-1 rounded-full border cu-border-surface cu-surface shadow-sm hover:shadow-md transition-all hover:-translate-y-[0.5px]">
                             <svg aria-hidden viewBox="0 0 24 24" className="w-3.5 h-3.5 cu-success-text" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-                            Reduce filler words like "um"
+                            Reduce filler words like &ldquo;um&rdquo;
                           </span>
                           <span className="inline-flex items-center gap-2 text-xs px-2.5 py-1 rounded-full border cu-border-surface cu-surface shadow-sm hover:shadow-md transition-all hover:-translate-y-[0.5px]">
                             <svg aria-hidden viewBox="0 0 24 24" className="w-3.5 h-3.5 cu-success-text" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
@@ -1173,7 +1173,7 @@ export default function CoachCataloguePage() {
                   ) : (
                     <div className={`relative overflow-hidden ${getVariantStyles(variant, 'card').replace('border-2', 'border-2 border-dashed').replace('border-4', 'border-4 border-dashed')} p-6 text-center`}>
                       <div aria-hidden className="pointer-events-none absolute -top-10 left-1/2 -translate-x-1/2 h-32 w-32 rounded-full opacity-20 blur-3xl cu-accent-soft-bg" />
-                      <div className="text-sm cu-muted mb-3">You haven't added any tracked skills yet.</div>
+                      <div className="text-sm cu-muted mb-3">You haven&apos;t added any tracked skills yet.</div>
                       <button
                         type="button"
                         onClick={() => navigateForward('/skills')}
@@ -1443,7 +1443,7 @@ export default function CoachCataloguePage() {
               </div>
             )}
           </>,
-          document.body as any
+          document.body
         )}
 
         {/* Voice Mode toggle removed: mic icon now controls pause/resume */}

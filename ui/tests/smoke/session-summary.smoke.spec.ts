@@ -186,3 +186,4 @@ test.describe('Session Summary Smoke Tests', () => {
     expect(apiCallCount).toBeGreaterThan(0);
   });
 });
+

@@ -45,13 +45,13 @@ describe('API: POST /api/v1/interactions', () => {
     expect(client).toBeTruthy();
     // appendInteraction called
     expect(client.mutation).toHaveBeenCalledWith(
-      'interactions:appendInteraction',
+      'functions/interactions:appendInteraction',
       expect.objectContaining({ sessionId: body.sessionId, groupId: body.groupId, messageId: body.messageId, contentHash: body.contentHash })
     );
     // events:logEvent called with hash
     const expectedHash = sha256Hex(trackedSkillId);
     expect(client.mutation).toHaveBeenCalledWith(
-      'events:logEvent',
+      'functions/events:logEvent',
       expect.objectContaining({ sessionId: body.sessionId, groupId: body.groupId, trackedSkillIdHash: expectedHash, kind: 'interaction_appended' })
     );
   });

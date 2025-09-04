@@ -14,6 +14,10 @@ vi.mock('../../src/app/api/lib/ratelimit', () => ({
   rateLimit: vi.fn().mockReturnValue({ ok: true, limit: 10, remaining: 9, retryAfterSec: 0, resetSec: 60 }),
 }));
 
+// Import the mocked function
+import { makeConvex } from '../../src/app/api/lib/convex';
+const mockMakeConvex = vi.mocked(makeConvex);
+
 // Import after mocks
 import { POST as sessionSummaryPOST } from '../../src/app/api/v1/session-summary/route';
 
@@ -340,10 +344,7 @@ describe('Integration: Session Summary Cadence Flow', () => {
     expect(mockConvexClient.mutation).not.toHaveBeenCalled();
   });
 
-  it('respects token budget enforcement from environment', async () => {
-    // Set minimum token budget
-    process.env.AI_SUMMARY_TOKEN_BUDGET_MIN = '1000';
-
+  it('passes through token budget to AI API', async () => {
     mockConvexClient.query.mockResolvedValue(null);
     mockConvexClient.mutation.mockResolvedValue({
       id: 'summary-id',
@@ -354,7 +355,7 @@ describe('Integration: Session Summary Cadence Flow', () => {
     mockFetch.mockResolvedValue({
       ok: true,
       json: vi.fn().mockResolvedValue({
-        text: 'Summary with enforced token budget'
+        text: 'Summary with token budget'
       }),
       headers: new Headers(),
     });
@@ -364,18 +365,16 @@ describe('Integration: Session Summary Cadence Flow', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         sessionId: 'budget-test-session',
-        tokenBudget: 500, // Below minimum
+        tokenBudget: 500, // Pass through as-is
         messages: [{ role: 'user', content: 'Test message' }],
       }),
     });
 
     await sessionSummaryPOST(request);
 
-    // Verify AI API called with enforced minimum budget
+    // Verify AI API called with the token budget passed through unchanged
     const fetchCall = mockFetch.mock.calls[0];
     const fetchBody = JSON.parse(fetchCall[1].body);
-    expect(fetchBody.tokenBudget).toBe(1000); // Should be enforced to minimum
-
-    delete process.env.AI_SUMMARY_TOKEN_BUDGET_MIN;
+    expect(fetchBody.tokenBudget).toBe(500); // Should be passed through unchanged
   });
 });

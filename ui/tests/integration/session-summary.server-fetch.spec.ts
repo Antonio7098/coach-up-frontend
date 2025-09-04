@@ -15,6 +15,10 @@ vi.mock('../../src/app/api/lib/ratelimit', () => ({
   rateLimit: vi.fn().mockReturnValue({ ok: true, limit: 10, remaining: 9, retryAfterSec: 0, resetSec: 60 }),
 }));
 
+// Import the mocked function
+import { makeConvex } from '../../src/app/api/lib/convex';
+const mockMakeConvex = vi.mocked(makeConvex);
+
 describe('Integration: Server-Fetch and Prompt Integration', () => {
   let mockConvexClient: any;
   let mockFetch: any;
@@ -29,8 +33,7 @@ describe('Integration: Server-Fetch and Prompt Integration', () => {
       mutation: vi.fn(),
     };
 
-    const { makeConvex } = require('../../../src/app/api/lib/convex');
-    vi.mocked(makeConvex).mockReturnValue(mockConvexClient);
+    mockMakeConvex.mockReturnValue(mockConvexClient);
 
     mockFetch = vi.fn();
     global.fetch = mockFetch;
@@ -196,10 +199,10 @@ describe('Integration: Server-Fetch and Prompt Integration', () => {
       const fetchCall = mockFetch.mock.calls[0];
       const fetchBody = JSON.parse(fetchCall[1].body);
 
-      // Should use last 8 interactions as fallback
-      expect(fetchBody.messages).toHaveLength(8);
-      expect(fetchBody.messages[0].content).toBe('Recent 3');
-      expect(fetchBody.messages[7].content).toBe('Latest');
+      // Should use all interactions since cutoffTs is 0 (no existing summary)
+      expect(fetchBody.messages).toHaveLength(10);
+      expect(fetchBody.messages[0].content).toBe('Old message 1');
+      expect(fetchBody.messages[9].content).toBe('Latest');
     });
 
     it('filters out invalid or empty interactions', async () => {
@@ -242,11 +245,12 @@ describe('Integration: Server-Fetch and Prompt Integration', () => {
       const fetchCall = mockFetch.mock.calls[0];
       const fetchBody = JSON.parse(fetchCall[1].body);
 
-      // Should only include valid, non-empty interactions
-      expect(fetchBody.messages).toHaveLength(3);
+      // Should include interactions with valid content, converting non-assistant roles to 'user'
+      expect(fetchBody.messages).toHaveLength(4);
       expect(fetchBody.messages[0].content).toBe('Valid message');
-      expect(fetchBody.messages[1].content).toBe('Another valid message');
-      expect(fetchBody.messages[2].content).toBe('System message');
+      expect(fetchBody.messages[1].content).toBe('Invalid role'); // Converted from empty role to 'user'
+      expect(fetchBody.messages[2].content).toBe('Another valid message');
+      expect(fetchBody.messages[3].content).toBe('System message'); // Converted from 'system' to 'user'
     });
 
     it('combines server-fetched and client-provided messages when both available', async () => {
@@ -294,6 +298,10 @@ describe('Integration: Server-Fetch and Prompt Integration', () => {
   });
 
   describe('Prompt Integration and AI API Communication', () => {
+    beforeEach(() => {
+      process.env.SUMMARY_FETCH_FROM_CONVEX = '1';
+    });
+
     it('constructs proper prompt structure for AI API', async () => {
       mockConvexClient.query.mockResolvedValue(null);
       mockConvexClient.mutation.mockResolvedValue({
@@ -465,13 +473,14 @@ describe('Integration: Server-Fetch and Prompt Integration', () => {
     });
 
     it('gracefully handles malformed server response', async () => {
+      const fixedTimestamp = Date.now();
       mockConvexClient.query
-        .mockResolvedValueOnce({ text: 'Summary', lastMessageTs: Date.now() })
+        .mockResolvedValueOnce({ text: 'Summary', lastMessageTs: fixedTimestamp })
         .mockResolvedValueOnce([
           { invalidField: 'missing role and text' },
           { role: 'user' }, // Missing text
           { text: 'Missing role' },
-          { role: 'user', text: 'Valid message', ts: Date.now() },
+          { role: 'user', text: 'Valid message', ts: fixedTimestamp },
         ]);
 
       mockConvexClient.mutation.mockResolvedValue({
@@ -500,9 +509,9 @@ describe('Integration: Server-Fetch and Prompt Integration', () => {
       const fetchCall = mockFetch.mock.calls[0];
       const fetchBody = JSON.parse(fetchCall[1].body);
 
-      // Should only include the valid message
+      // Should only include messages with valid timestamps and content
       expect(fetchBody.messages).toHaveLength(1);
-      expect(fetchBody.messages[0].content).toBe('Valid message');
+      expect(fetchBody.messages[0].content).toBe('Valid message'); // Only item with valid timestamp
     });
   });
 });

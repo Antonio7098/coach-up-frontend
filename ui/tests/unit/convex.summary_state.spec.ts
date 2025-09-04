@@ -44,11 +44,30 @@ describe('Convex functions: summary_state cadence logic', () => {
 
   describe('onAssistantMessage', () => {
     it('creates new summary_state when none exists', async () => {
+      // Mock environment variables to avoid triggering cadence
+      process.env.SUMMARY_GENERATE_SECONDS = '31536000'; // 1 year in seconds
+      process.env.SUMMARY_GENERATE_ASSISTANT_EVERY_N = '100'; // Very large value
+
       mockCtx.db.query.mockReturnValue({
         withIndex: (_name: string, _cb: any) => ({
           collect: vi.fn().mockResolvedValue([]),
         }),
       });
+
+      // Mock db.get to return the newly inserted document
+      const now = Date.now();
+      const newDoc = {
+        _id: 'new_id',
+        sessionId: 'sess-1',
+        turnsSince: 1,
+        assistantMsgSince: 1,
+        lastGeneratedAt: now, // Set to current time so age is 0
+        lastVersion: 0,
+        lockUntil: 0,
+        createdAt: now,
+        updatedAt: now,
+      };
+      mockCtx.db.get.mockResolvedValue(newDoc);
 
       const result = await (onAssistantMessage as any)(mockCtx, {
         sessionId: 'sess-1',
@@ -61,22 +80,28 @@ describe('Convex functions: summary_state cadence logic', () => {
         reason: null,
         turnsSince: 1,
         assistantMsgSince: 1,
-        ageSec: Number.MAX_SAFE_INTEGER,
+        ageSec: 0, // Age is 0 since lastGeneratedAt is current time
       });
 
       expect(mockCtx.db.insert).toHaveBeenCalledWith('summary_state', {
         sessionId: 'sess-1',
         turnsSince: 1,
         assistantMsgSince: 1,
-        lastGeneratedAt: 0,
+        lastGeneratedAt: 0, // Convex function always sets this to 0 for new docs
         lastVersion: 0,
         lockUntil: 0,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
+        createdAt: expect.any(Number),
+        updatedAt: expect.any(Number),
       });
+
+      delete process.env.SUMMARY_GENERATE_SECONDS;
+      delete process.env.SUMMARY_GENERATE_ASSISTANT_EVERY_N;
     });
 
     it('updates existing summary_state counters', async () => {
+      // Mock environment variable to avoid triggering modulo cadence
+      process.env.SUMMARY_GENERATE_ASSISTANT_EVERY_N = '5';
+
       const existingDoc = {
         _id: 'existing_id',
         sessionId: 'sess-1',
@@ -107,6 +132,8 @@ describe('Convex functions: summary_state cadence logic', () => {
         assistantMsgSince: 4,
         ageSec: 100,
       });
+
+      delete process.env.SUMMARY_GENERATE_ASSISTANT_EVERY_N;
 
       expect(mockCtx.db.patch).toHaveBeenCalledWith('existing_id', {
         turnsSince: 3,

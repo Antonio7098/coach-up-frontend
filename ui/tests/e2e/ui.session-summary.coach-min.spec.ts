@@ -370,3 +370,4 @@ test.describe('Session Summary in Coach-min', () => {
     await expect(page.getByText('> FULL_PROMPT_TO_LLM:')).toBeVisible();
   });
 });
+

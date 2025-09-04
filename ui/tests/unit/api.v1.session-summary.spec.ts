@@ -3,6 +3,7 @@ import { GET as sessionSummaryGET } from '../../src/app/api/v1/session-summary/r
 import { setConvexMockBehavior } from '../setup.vitest';
 import { __rateLimitTestReset } from '../../src/app/api/lib/ratelimit';
 import * as mockConvex from '../../src/app/api/lib/mockConvex';
+import { upsertSummary } from '../../src/app/api/lib/summaries';
 
 const withQuery = (url: string, params: Record<string, string | number | undefined>) => {
   const u = new URL(url);
@@ -46,13 +47,11 @@ describe('API: /api/v1/session-summary', () => {
     expect(res404.headers.get('X-RateLimit-Reset')).toBeTruthy();
 
     // Seed a summary and expect 200
-    const groupId = 'g1';
-    await mockConvex.createAssessmentGroup({ sessionId, groupId, rubricVersion: 'v1' });
-    await mockConvex.finalizeAssessmentSummary({ sessionId, groupId, rubricVersion: 'v1', summary: {
-      highlights: ['h1'],
-      recommendations: ['r1'],
-      rubricKeyPoints: ['k1'],
-    }});
+    upsertSummary({
+      sessionId,
+      text: 'Test summary text with highlights: h1, recommendations: r1, rubricKeyPoints: k1',
+      lastMessageTs: Date.now(),
+    });
 
     const url200 = withQuery('http://localhost:3000/api/v1/session-summary', { sessionId });
     const res200 = await sessionSummaryGET(new Request(url200, { headers: { 'Idempotency-Key': 'xyz789', 'x-forwarded-for': '8.8.8.8', 'user-agent': 'ua-200' } }));
@@ -90,18 +89,18 @@ describe('API: /api/v1/session-summary', () => {
   });
 
   it('REAL: uses Convex client in non-mock mode', async () => {
-    // Provide a realistic Convex query return shape
+    // Provide a realistic Convex query return shape for summaries:getLatest
     const sessionId = 'sess-real';
-    setConvexMockBehavior({ queryReturn: {
-      sessionId,
-      latestGroupId: 'g-real',
-      summary: {
-        highlights: ['A'],
-        recommendations: ['B'],
-        rubricKeyPoints: ['C'],
-      },
-      rubricVersion: 'v2'
-    }});
+    setConvexMockBehavior({
+      queryReturn: {
+        sessionId,
+        text: 'Mock summary text from Convex',
+        lastMessageTs: Date.now() - 1000,
+        updatedAt: Date.now(),
+        version: 1,
+        meta: { tokenBudget: 500 }
+      }
+    });
 
     const url = withQuery('http://localhost:3000/api/v1/session-summary', { sessionId });
     const res = await sessionSummaryGET(new Request(url, { headers: { 'user-agent': 'vitest-real' } }));
@@ -109,5 +108,6 @@ describe('API: /api/v1/session-summary', () => {
     const json = await res.json();
     expect(json.sessionId).toBe(sessionId);
     expect(typeof json.text).toBe('string');
+    expect(json.text).toBe('Mock summary text from Convex');
   });
 });

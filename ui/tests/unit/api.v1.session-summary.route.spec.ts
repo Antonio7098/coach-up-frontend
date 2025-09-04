@@ -317,11 +317,15 @@ describe('API Route: /api/v1/session-summary', () => {
     it('returns empty status when AI returns empty text', async () => {
       process.env.MOCK_CONVEX = '1';
 
-      global.fetch = vi.fn().mockResolvedValue({
+      // Mock fetch to return empty response with header
+      const mockFetch = vi.fn().mockResolvedValue({
         ok: true,
         json: vi.fn().mockResolvedValue({ text: '' }),
         headers: new Headers({ 'x-summary-empty': '1' }),
       });
+
+      // Replace global fetch
+      global.fetch = mockFetch;
 
       const request = new Request('http://localhost:3000/api/v1/session-summary/generate', {
         method: 'POST',
@@ -339,19 +343,21 @@ describe('API Route: /api/v1/session-summary', () => {
       expect(data.status).toBe('empty');
       expect(response.headers.get('X-Summary-Empty')).toBe('1');
 
+      // Restore global fetch (optional cleanup)
       delete process.env.MOCK_CONVEX;
     });
 
     it('handles server-fetch mode when SUMMARY_FETCH_FROM_CONVEX is set', async () => {
       process.env.SUMMARY_FETCH_FROM_CONVEX = '1';
 
+      // Override the global makeConvex mock for this test
       const mockMakeConvex = vi.mocked(makeConvex);
-      const mockConvexClient = {
+      const testConvexClient = {
         query: vi.fn(),
         mutation: vi.fn(),
       };
 
-      mockConvexClient.query.mockImplementation(async (functionName: string, args: any) => {
+      testConvexClient.query.mockImplementation(async (functionName: string, args: any) => {
         if (functionName === 'functions/summaries:getLatest') {
           return { text: 'Latest summary', lastMessageTs: Date.now() - 1000 };
         } else if (functionName === 'functions/interactions:listBySession') {
@@ -360,7 +366,9 @@ describe('API Route: /api/v1/session-summary', () => {
         return null;
       });
 
-      mockMakeConvex.mockReturnValue(mockConvexClient);
+      testConvexClient.mutation.mockResolvedValue({ version: 1, updatedAt: Date.now() });
+
+      mockMakeConvex.mockReturnValue(testConvexClient);
 
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
@@ -380,7 +388,7 @@ describe('API Route: /api/v1/session-summary', () => {
       const response = await sessionSummaryPOST(request);
 
       expect(response.status).toBe(200);
-      expect(mockConvexClient.query).toHaveBeenCalledWith('functions/interactions:listBySession', {
+      expect(testConvexClient.query).toHaveBeenCalledWith('functions/interactions:listBySession', {
         sessionId: 'test-session',
         limit: 200,
       });

@@ -121,7 +121,7 @@ export async function GET(request: Request) {
     // SPR-008: Track summary age
     if (payload.updatedAt) {
       const ageMs = Date.now() - payload.updatedAt;
-      promMetrics.summaryAgeMs.set({ session_id: sessionId }, ageMs);
+      promMetrics.summaryAgeMs.labels(sessionId).set(ageMs);
     }
 
     console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, sessionId, mode, hasText: !!payload.text, rlLimit: rl.limit, rlRemaining: rl.remaining, rlResetSec: rl.resetSec, latencyMs: Date.now() - started }));
@@ -203,8 +203,12 @@ export async function POST(request: Request) {
         const headerEmpty = String(res.headers.get('x-summary-empty') || '').trim() === '1';
         text = String((data as any)?.text || '');
         if (headerEmpty || !text || text.trim().length === 0) {
-          // Skip creating an empty summary; fall back to previous synthesizer
-          text = generateSummaryText(prev, recentMessages, tokenBudget);
+          console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, sessionId, msg: 'ai_returned_empty', headerEmpty }));
+          // Do not persist a new summary row; signal emptiness explicitly to the client
+          return new Response(JSON.stringify({ status: 'empty' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json; charset=utf-8', 'X-Request-Id': requestId, 'X-Summary-Empty': '1', ...corsHeaders },
+          });
         }
       } catch {
         // Fallback synthesizer in mock mode when AI API is unavailable
@@ -228,7 +232,7 @@ export async function POST(request: Request) {
         let interactions: any[] = await convex.query("functions/interactions:listBySession", { sessionId, limit: 200 }) as any[];
         interactions = Array.isArray(interactions) ? interactions : [];
         const filtered = interactions
-          .filter((d: any) => (Number(d?.ts) || 0) > cutoffTs)
+          .filter((d: any) => (Number(d?.ts) || 0) >= cutoffTs)
           .map((d: any) => ({ role: d?.role === 'assistant' ? 'assistant' as const : 'user' as const, content: String(d?.text || "") }))
           .filter((m: any) => m.content && m.content.trim().length > 0);
         // Fallbacks:
