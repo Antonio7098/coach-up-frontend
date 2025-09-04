@@ -244,6 +244,7 @@ export default defineSchema({
     lockUntil: v.optional(v.number()), // ms since epoch
     createdAt: v.number(),
     updatedAt: v.number(),
+    version: v.optional(v.number()), // optimistic locking version
   })
   .index('by_session', ['sessionId'])
   .index('by_updatedAt', ['updatedAt']),

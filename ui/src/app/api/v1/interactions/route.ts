@@ -389,6 +389,29 @@ export async function POST(request: Request) {
     if (body.role === 'assistant') {
       try {
         const cadence = await client.mutation("functions/summary_state:onAssistantMessage", { sessionId: body.sessionId }) as any;
+
+        // Check if the mutation failed due to concurrent modification
+        if (cadence === null || cadence === undefined) {
+          try {
+            console.warn(`[interactions] Cadence mutation failed (possibly concurrent modification) for session ${body.sessionId}`);
+            promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", "concurrent_modification", "0").inc();
+          } catch {}
+          // Don't proceed with summary generation if cadence update failed
+          return new Response(JSON.stringify({ ok: true, id, warning: "concurrent_modification" }), {
+            status: 200,
+            headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
+          });
+        }
+
+        // Log successful cadence update
+        try {
+          console.log(`[interactions] Cadence updated successfully for session ${body.sessionId}:`, {
+            dueNow: cadence?.dueNow,
+            locked: cadence?.locked,
+            turnsSince: cadence?.turnsSince,
+            assistantMsgSince: cadence?.assistantMsgSince
+          });
+        } catch {}
         await client.mutation("functions/events:logEvent", {
           userId: effectiveUserId,
           sessionId: body.sessionId,
@@ -398,6 +421,15 @@ export async function POST(request: Request) {
           kind: 'summary_cadence_onAssistantMessage',
           payload: { messageId: body.messageId, cadence },
         });
+
+        // Check for concurrent modification errors in the response
+        if (cadence === null || typeof cadence !== 'object') {
+          try {
+            console.warn(`[interactions] Cadence mutation returned invalid result for session ${body.sessionId}:`, cadence);
+            promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", "invalid_cadence_response", "0").inc();
+          } catch {}
+        }
+
         // Orchestrate generation if due and lock acquired
         if (cadence?.dueNow && cadence?.locked) {
           const tokenBudget = 600;
@@ -496,7 +528,25 @@ export async function POST(request: Request) {
             // Best-effort; lock was already cleared in onGenerated
           }
         }
-      } catch {}
+      } catch (cadenceError) {
+        // Handle errors in the cadence update process
+        try {
+          console.error(`[interactions] Cadence update failed for session ${body.sessionId}:`, cadenceError);
+          promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", "cadence_update_error", "0").inc();
+
+          // Check if this is a concurrent modification error
+          const isConcurrentError = cadenceError?.message?.includes("changed while") ||
+                                   cadenceError?.message?.includes("Concurrent modification") ||
+                                   cadenceError?.message?.includes("Documents changed");
+
+          if (isConcurrentError) {
+            promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", "concurrent_modification", "0").inc();
+          }
+        } catch {}
+
+        // Still return success for the interaction itself, even if cadence update failed
+        try { console.log(`[interactions] Interaction saved successfully despite cadence error for session ${body.sessionId}`); } catch {}
+      }
     }
 
     // Track successful interaction

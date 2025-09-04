@@ -18,47 +18,107 @@ export const onAssistantMessage = mutation({
     const maxAgeSec = Number(process.env.SUMMARY_GENERATE_SECONDS || 120);
     const lockMs = Number(process.env.SUMMARY_LOCK_MS || 15000);
 
-    const [existing] = await ctx.db
-      .query("summary_state")
-      .withIndex("by_session", (q: any) => q.eq("sessionId", sid))
-      .collect();
+    // Retry logic for concurrent modification errors
+    const maxRetries = 3;
+    let lastError: any;
 
-    let doc = existing;
-    if (!doc) {
-      const id = await ctx.db.insert("summary_state", {
-        sessionId: sid,
-        turnsSince: 1,
-        assistantMsgSince: 1,
-        lastGeneratedAt: 0,
-        lastVersion: args.lastKnownVersion ?? 0,
-        lockUntil: 0,
-        createdAt: nowMs,
-        updatedAt: nowMs,
-      });
-      doc = await ctx.db.get(id);
-    } else {
-      // Increment counters; treat assistant message as completing a turn
-      const turnsSince = (doc.turnsSince ?? 0) + 1;
-      const assistantMsgSince = (doc.assistantMsgSince ?? 0) + 1;
-      await ctx.db.patch(doc._id, { turnsSince, assistantMsgSince, updatedAt: nowMs });
-      doc = { ...doc, turnsSince, assistantMsgSince, updatedAt: nowMs };
-    }
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const [existing] = await ctx.db
+          .query("summary_state")
+          .withIndex("by_session", (q: any) => q.eq("sessionId", sid))
+          .collect();
 
-    const ageSec = doc.lastGeneratedAt > 0 ? Math.floor((nowMs - doc.lastGeneratedAt) / 1000) : Number.MAX_SAFE_INTEGER;
-    const moduloDue = doc.assistantMsgSince > 0 && everyN > 0 && (doc.assistantMsgSince % everyN === 0);
-    const timeDue = ageSec >= maxAgeSec;
-    const dueNow = !!(moduloDue || timeDue);
+        let doc = existing;
+        if (!doc) {
+          const id = await ctx.db.insert("summary_state", {
+            sessionId: sid,
+            turnsSince: 1,
+            assistantMsgSince: 1,
+            lastGeneratedAt: 0,
+            lastVersion: args.lastKnownVersion ?? 0,
+            lockUntil: 0,
+            createdAt: nowMs,
+            updatedAt: nowMs,
+            version: 1, // Add version field for optimistic locking
+          });
+          doc = await ctx.db.get(id);
+        } else {
+          // Optimistic locking: use version field to prevent concurrent modifications
+          const currentVersion = doc.version ?? 0;
+          const newVersion = currentVersion + 1;
 
-    let locked = false;
-    if (dueNow) {
-      const lockUntil = typeof doc.lockUntil === "number" ? doc.lockUntil : 0;
-      if (nowMs >= lockUntil) {
-        await ctx.db.patch(doc._id, { lockUntil: nowMs + lockMs, updatedAt: nowMs });
-        locked = true;
+          // Increment counters; treat assistant message as completing a turn
+          const turnsSince = (doc.turnsSince ?? 0) + 1;
+          const assistantMsgSince = (doc.assistantMsgSince ?? 0) + 1;
+
+          // Use replace instead of patch for atomic update with version check
+          const updateResult = await ctx.db.replace(doc._id, {
+            ...doc,
+            turnsSince,
+            assistantMsgSince,
+            updatedAt: nowMs,
+            version: newVersion,
+          });
+
+          if (!updateResult) {
+            // Replace failed (likely due to concurrent modification)
+            throw new Error("Concurrent modification detected");
+          }
+
+          doc = { ...doc, turnsSince, assistantMsgSince, updatedAt: nowMs, version: newVersion };
+        }
+
+        const ageSec = doc.lastGeneratedAt > 0 ? Math.floor((nowMs - doc.lastGeneratedAt) / 1000) : Number.MAX_SAFE_INTEGER;
+        const moduloDue = doc.assistantMsgSince > 0 && everyN > 0 && (doc.assistantMsgSince % everyN === 0);
+        const timeDue = ageSec >= maxAgeSec;
+        const dueNow = !!(moduloDue || timeDue);
+
+        let locked = false;
+        if (dueNow) {
+          const lockUntil = typeof doc.lockUntil === "number" ? doc.lockUntil : 0;
+          if (nowMs >= lockUntil) {
+            // Update lock with optimistic locking
+            const currentVersion = doc.version ?? 0;
+            const newVersion = currentVersion + 1;
+            const updateResult = await ctx.db.replace(doc._id, {
+              ...doc,
+              lockUntil: nowMs + lockMs,
+              updatedAt: nowMs,
+              version: newVersion,
+            });
+
+            if (updateResult) {
+              locked = true;
+              doc = { ...doc, lockUntil: nowMs + lockMs, updatedAt: nowMs, version: newVersion };
+            }
+          }
+        }
+
+        return { dueNow, locked, reason: moduloDue ? "assistant_modulo" : (timeDue ? "time" : null), turnsSince: doc.turnsSince, assistantMsgSince: doc.assistantMsgSince, ageSec } as const;
+
+      } catch (error) {
+        lastError = error;
+
+        // Check if this is a concurrent modification error
+        const isConcurrentError = error?.message?.includes("changed while") ||
+                                 error?.message?.includes("Concurrent modification") ||
+                                 error?.message?.includes("replace");
+
+        if (isConcurrentError && attempt < maxRetries - 1) {
+          // Wait with exponential backoff before retrying
+          const delay = Math.min(100 * Math.pow(2, attempt), 1000);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+
+        // If we've exhausted retries or it's not a concurrent error, rethrow
+        throw error;
       }
     }
 
-    return { dueNow, locked, reason: moduloDue ? "assistant_modulo" : (timeDue ? "time" : null), turnsSince: doc.turnsSince, assistantMsgSince: doc.assistantMsgSince, ageSec } as const;
+    // This should not be reached, but just in case
+    throw lastError || new Error("Failed to update summary state after retries");
   },
 });
 
@@ -69,20 +129,59 @@ export const onGenerated = mutation({
     generatedAt: v.number(),
   },
   handler: async (ctx, args) => {
-    const [doc] = await ctx.db
-      .query("summary_state")
-      .withIndex("by_session", (q: any) => q.eq("sessionId", args.sessionId))
-      .collect();
-    if (!doc) return { ok: false } as const;
-    await ctx.db.patch(doc._id, {
-      lastGeneratedAt: args.generatedAt,
-      lastVersion: args.newVersion,
-      turnsSince: 0,
-      assistantMsgSince: 0,
-      lockUntil: 0,
-      updatedAt: now(),
-    });
-    return { ok: true } as const;
+    // Retry logic for concurrent modification errors
+    const maxRetries = 3;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const [doc] = await ctx.db
+          .query("summary_state")
+          .withIndex("by_session", (q: any) => q.eq("sessionId", args.sessionId))
+          .collect();
+        if (!doc) return { ok: false } as const;
+
+        // Use optimistic locking
+        const currentVersion = doc.version ?? 0;
+        const newVersion = currentVersion + 1;
+
+        const updateResult = await ctx.db.replace(doc._id, {
+          ...doc,
+          lastGeneratedAt: args.generatedAt,
+          lastVersion: args.newVersion,
+          turnsSince: 0,
+          assistantMsgSince: 0,
+          lockUntil: 0,
+          updatedAt: now(),
+          version: newVersion,
+        });
+
+        if (!updateResult) {
+          if (attempt < maxRetries - 1) {
+            const delay = Math.min(100 * Math.pow(2, attempt), 1000);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            continue;
+          }
+          return { ok: false } as const;
+        }
+
+        return { ok: true } as const;
+
+      } catch (error) {
+        const isConcurrentError = error?.message?.includes("changed while") ||
+                                 error?.message?.includes("Concurrent modification") ||
+                                 error?.message?.includes("replace");
+
+        if (isConcurrentError && attempt < maxRetries - 1) {
+          const delay = Math.min(100 * Math.pow(2, attempt), 1000);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+
+        throw error;
+      }
+    }
+
+    return { ok: false } as const;
   },
 });
 
@@ -91,13 +190,55 @@ export const releaseLock = mutation({
     sessionId: v.string(),
   },
   handler: async (ctx, args) => {
-    const [doc] = await ctx.db
-      .query("summary_state")
-      .withIndex("by_session", (q: any) => q.eq("sessionId", args.sessionId))
-      .collect();
-    if (!doc) return { ok: false } as const;
-    await ctx.db.patch(doc._id, { lockUntil: 0, updatedAt: now() });
-    return { ok: true } as const;
+    // Retry logic for concurrent modification errors
+    const maxRetries = 3;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const [doc] = await ctx.db
+          .query("summary_state")
+          .withIndex("by_session", (q: any) => q.eq("sessionId", args.sessionId))
+          .collect();
+        if (!doc) return { ok: false } as const;
+
+        // Use optimistic locking
+        const currentVersion = doc.version ?? 0;
+        const newVersion = currentVersion + 1;
+
+        const updateResult = await ctx.db.replace(doc._id, {
+          ...doc,
+          lockUntil: 0,
+          updatedAt: now(),
+          version: newVersion,
+        });
+
+        if (!updateResult) {
+          if (attempt < maxRetries - 1) {
+            const delay = Math.min(100 * Math.pow(2, attempt), 1000);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            continue;
+          }
+          return { ok: false } as const;
+        }
+
+        return { ok: true } as const;
+
+      } catch (error) {
+        const isConcurrentError = error?.message?.includes("changed while") ||
+                                 error?.message?.includes("Concurrent modification") ||
+                                 error?.message?.includes("replace");
+
+        if (isConcurrentError && attempt < maxRetries - 1) {
+          const delay = Math.min(100 * Math.pow(2, attempt), 1000);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+
+        throw error;
+      }
+    }
+
+    return { ok: false } as const;
   },
 });
 

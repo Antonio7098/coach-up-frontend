@@ -152,3 +152,90 @@ export const updateSessionCosts = mutation({
     return { id: session._id } as const;
   },
 });
+
+export const getSessionCosts = query({
+  args: {
+    sessionId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const nonEmpty = (s: unknown) => typeof s === 'string' && s.trim().length > 0;
+    if (!nonEmpty(args.sessionId)) throw new Error('sessionId required');
+    
+    // Get session data
+    const session = await ctx.db
+      .query("sessions")
+      .withIndex("by_sessionId", (q: any) => q.eq("sessionId", args.sessionId))
+      .first();
+    
+    if (!session) {
+      return null;
+    }
+    
+    // Get all interactions for this session with cost data
+    const interactions = await ctx.db
+      .query("interactions")
+      .withIndex("by_session", (q: any) => q.eq("sessionId", args.sessionId))
+      .collect();
+    
+    // Calculate aggregated costs from interactions
+    let totalSttCost = 0;
+    let totalLlmCost = 0;
+    let totalTtsCost = 0;
+    let totalCost = 0;
+    let interactionCount = 0;
+    
+    interactions.forEach((interaction: any) => {
+      if (interaction.sttCostCents) totalSttCost += interaction.sttCostCents;
+      if (interaction.llmCostCents) totalLlmCost += interaction.llmCostCents;
+      if (interaction.ttsCostCents) totalTtsCost += interaction.ttsCostCents;
+      if (interaction.totalCostCents) totalCost += interaction.totalCostCents;
+      interactionCount++;
+    });
+    
+    // Calculate session duration
+    const now = Date.now();
+    const startTime = session.startTime || session.createdAt;
+    const endTime = session.endTime || now;
+    const durationMs = endTime - startTime;
+    
+    return {
+      session: {
+        sessionId: session.sessionId,
+        userId: session.userId,
+        startTime: session.startTime || session.createdAt,
+        endTime: session.endTime || now,
+        durationMs,
+        lastActivityAt: session.lastActivityAt,
+      },
+      costs: {
+        sttCostCents: totalSttCost,
+        llmCostCents: totalLlmCost,
+        ttsCostCents: totalTtsCost,
+        totalCostCents: totalCost,
+      },
+      metrics: {
+        interactionCount,
+        durationMs,
+      },
+      interactions: interactions.map((interaction: any) => ({
+        id: interaction._id,
+        role: interaction.role,
+        text: interaction.text,
+        ts: interaction.ts,
+        createdAt: interaction.createdAt,
+        costs: {
+          sttCostCents: interaction.sttCostCents || 0,
+          llmCostCents: interaction.llmCostCents || 0,
+          ttsCostCents: interaction.ttsCostCents || 0,
+          totalCostCents: interaction.totalCostCents || 0,
+        },
+        usage: {
+          sttDurationMs: interaction.sttDurationMs,
+          llmTokensIn: interaction.llmTokensIn,
+          llmTokensOut: interaction.llmTokensOut,
+          ttsCharacters: interaction.ttsCharacters,
+        },
+      })),
+    };
+  },
+});
