@@ -94,14 +94,19 @@ export class CostCalculator {
    */
   static calculate(input: CostCalculationInput): CostCalculationResult {
     const { provider, service, modelId } = input;
-    
+
     // Get pricing model for the provider
     const providerPricing = PRICING_MODELS[provider as keyof typeof PRICING_MODELS];
     if (!providerPricing) {
       return this.calculateWithFallback(input);
     }
-    
-    const servicePricing = providerPricing[service];
+
+    // Type-safe property access using 'in' operator
+    if (!(service in providerPricing)) {
+      return this.calculateWithFallback(input);
+    }
+
+    const servicePricing = providerPricing[service as keyof typeof providerPricing];
     if (!servicePricing) {
       return this.calculateWithFallback(input);
     }
