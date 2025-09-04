@@ -114,11 +114,11 @@ export class CostCalculator {
     // Calculate cost based on service type
     switch (service) {
       case 'stt':
-        return this.calculateSTTCost(input, servicePricing as Record<string, { perMinute: number }>);
+        return this.calculateSTTCost(input, servicePricing as unknown as Record<string, { perMinute: number }>);
       case 'llm':
-        return this.calculateLLMCost(input, servicePricing as Record<string, { input: number; output: number }>);
+        return this.calculateLLMCost(input, servicePricing as unknown as Record<string, { input: number; output: number }>);
       case 'tts':
-        return this.calculateTTSCost(input, servicePricing as Record<string, { perCharacter: number }>);
+        return this.calculateTTSCost(input, servicePricing as unknown as Record<string, { perCharacter: number }>);
       default:
         return this.calculateWithFallback(input);
     }
