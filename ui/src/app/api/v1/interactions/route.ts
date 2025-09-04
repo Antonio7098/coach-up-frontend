@@ -535,9 +535,10 @@ export async function POST(request: Request) {
           promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", "cadence_update_error", "0").inc();
 
           // Check if this is a concurrent modification error
-          const isConcurrentError = cadenceError?.message?.includes("changed while") ||
-                                   cadenceError?.message?.includes("Concurrent modification") ||
-                                   cadenceError?.message?.includes("Documents changed");
+          const errorMessage = (cadenceError as Error)?.message || String(cadenceError);
+          const isConcurrentError = errorMessage.includes("changed while") ||
+                                   errorMessage.includes("Concurrent modification") ||
+                                   errorMessage.includes("Documents changed");
 
           if (isConcurrentError) {
             promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", "concurrent_modification", "0").inc();
