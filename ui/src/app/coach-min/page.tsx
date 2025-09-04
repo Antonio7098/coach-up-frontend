@@ -8,8 +8,11 @@ import { MinimalConversationProvider, useMinimalConversation } from "../../conte
 import { useMinimalSession } from "../../context/minimal/MinimalSessionContext";
 import { MinimalMicProvider, useMinimalMic } from "../../context/minimal/MinimalMicContext";
 import { MinimalSessionProvider } from "../../context/minimal/MinimalSessionContext";
+import { fetchWithRetry } from "../../app/api/lib/retry";
 import MicMinButton from "../../components/MicMinButton";
 import { useUser } from "@clerk/nextjs";
+import { useQuery } from "convex/react";
+import { api } from "../../convex/_generated/api";
 
 function App() {
   // Profile and Goals data - moved to parent so it can be passed to MinimalMicProvider
@@ -139,9 +142,19 @@ function Content({
   const [ingestTestStatus, setIngestTestStatus] = React.useState<string>("");
   const [dbgPrompt, setDbgPrompt] = React.useState<{ prevSummary: string; messages: Array<{ role: 'user'|'assistant'; content: string }> } | null>(null);
   const [promptPreview, setPromptPreview] = React.useState<any>(null);
+  
+  // Session cost tracking state
+  const [sessionCosts, setSessionCosts] = React.useState<any>(null);
+  const [sessionCostsLoading, setSessionCostsLoading] = React.useState<boolean>(false);
+  const [sessionCostsError, setSessionCostsError] = React.useState<string>("");
+  
+  // Fetch session costs using Convex
+  const sessionCostsData = useQuery(api.functions.interactions.getSessionCosts, 
+    sessionId ? { sessionId } : "skip"
+  );
 
   // Tab management for collapsible panel
-  const [activeTab, setActiveTab] = React.useState<'status' | 'prompt' | 'summary' | 'transcript'>('status');
+  const [activeTab, setActiveTab] = React.useState<'status' | 'prompt' | 'summary' | 'transcript' | 'session'>('status');
   const [panelCollapsed, setPanelCollapsed] = React.useState<boolean>(true);
   // Keep the latest prompt preview from SSE in sync automatically
   const lastSsePreview = convo.promptPreview;
@@ -153,8 +166,7 @@ function Content({
   // Local in-session history of summaries (ascending by version)
   const [history, setHistory] = React.useState<Array<{ version: number; updatedAt: number; text: string }>>([]);
   const [openMap, setOpenMap] = React.useState<Record<number, boolean>>({});
-  // Local delta since last server cadence fetch
-  const [sinceFetchDelta, setSinceFetchDelta] = React.useState<number>(0);
+  // Note: Local turn counting removed - now handled server-side via onTurn() callback
   // Server transcript (Convex-backed)
   const [serverTranscript, setServerTranscript] = React.useState<Array<{ id: string; role: 'user'|'assistant'|'system'|string; text: string; createdAt: number }>>([]);
   const [serverTranscriptStatus, setServerTranscriptStatus] = React.useState<"idle"|"loading"|"ready"|"error">("idle");
@@ -238,7 +250,6 @@ function Content({
       };
       try { console.log("[fresh] GET ok", { len: next.text.length, version: next.version, updatedAt: next.updatedAt }); } catch {}
       setFresh(next);
-      setSinceFetchDelta(0);
       setHistory((cur) => {
         const exists = cur.some((h) => h.version === next.version);
         const arr = exists ? cur : [...cur, { version: next.version, updatedAt: next.updatedAt, text: next.text }];
@@ -307,8 +318,7 @@ function Content({
     const cur = mic.assistantText || "";
     const prev = lastAssistantRef.current || "";
     if (cur && cur !== prev && !refreshInflightRef.current) {
-      // Note: turn counting is now handled server-side
-      setSinceFetchDelta((d) => (Number.isFinite(d) ? d + 1 : 1));
+      // Note: turn counting is now handled server-side via onTurn() callback
       refreshInflightRef.current = true;
       lastAssistantRef.current = cur;
       setTimeout(() => {
@@ -880,6 +890,17 @@ function Content({
               >
                 TRANSCRIPT
               </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('session')}
+                className={`px-4 py-2 text-sm font-mono border-b-2 transition-colors ${
+                  activeTab === 'session'
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                SESSION
+              </button>
             </div>
 
             {/* Tab Content */}
@@ -905,7 +926,7 @@ function Content({
                       const now = Date.now();
                       const reqId = Math.random().toString(36).slice(2);
                       const body = { sessionId, messageId: `test_${now}`, role: 'user', contentHash: 'test', text: 'ping', ts: now };
-                      const res = await fetch('/api/v1/interactions', { method: 'POST', headers: { 'content-type': 'application/json', 'x-request-id': reqId }, body: JSON.stringify(body) });
+                      const res = await fetchWithRetry('/api/v1/interactions', { method: 'POST', headers: { 'content-type': 'application/json', 'x-request-id': reqId }, body: JSON.stringify(body) }, { maxAttempts: 3, endpoint: 'interactions' });
                       const data = await res.json().catch(() => ({}));
                       setIngestTestStatus(res.ok ? `ok id=${String(data?.id || '')}` : `err ${res.status}: ${String(data?.error || '')}`);
                     } catch (e) { setIngestTestStatus(e instanceof Error ? e.message : String(e)); }
@@ -1042,8 +1063,7 @@ function Content({
               const serverThresholdTurns = fresh && Number.isFinite(Number(fresh.thresholdTurns)) ? Number(fresh.thresholdTurns) : undefined;
 
               if (serverTurnsSince !== undefined && serverThresholdTurns !== undefined) {
-                const effectiveSince = Math.max(0, serverTurnsSince + (Number.isFinite(sinceFetchDelta) ? sinceFetchDelta : 0));
-                const turnsUntilDue = Math.max(0, serverThresholdTurns - effectiveSince);
+                const turnsUntilDue = Math.max(0, serverThresholdTurns - serverTurnsSince);
                 return ` | turns_until_due: ${turnsUntilDue}`;
               } else {
                 return ` | turns_until_due: unknown`;
@@ -1150,6 +1170,133 @@ function Content({
                       )}
                     </div>
                     {serverTranscriptErr ? <div className="text-xs text-red-600 mt-1 font-mono font-semibold">&gt; ERROR: {serverTranscriptErr}</div> : null}
+                  </div>
+                </div>
+              )}
+
+              {activeTab === 'session' && (
+                <div className="space-y-4">
+                  {/* Session Cost Summary */}
+                  <div className="border border-gray-200 rounded p-3 bg-gray-50">
+                    <div className="text-sm font-mono text-blue-600 font-semibold mb-2">[SESSION_COST_SUMMARY]</div>
+                    {sessionCostsData ? (
+                      <div className="text-xs space-y-2 font-mono">
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <div className="text-gray-600">Total Cost:</div>
+                            <div className="text-lg font-bold text-green-600">
+                              ${(sessionCostsData.costs.totalCostCents / 100).toFixed(2)}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-gray-600">Session Duration:</div>
+                            <div className="text-lg font-bold text-blue-600">
+                              {Math.floor(sessionCostsData.metrics.durationMs / 60000)}m {Math.floor((sessionCostsData.metrics.durationMs % 60000) / 1000)}s
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 pt-2 border-t border-gray-300">
+                          <div className="text-center">
+                            <div className="text-xs text-gray-600">STT</div>
+                            <div className="font-semibold text-orange-600">
+                              ${(sessionCostsData.costs.sttCostCents / 100).toFixed(2)}
+                            </div>
+                          </div>
+                          <div className="text-center">
+                            <div className="text-xs text-gray-600">LLM</div>
+                            <div className="font-semibold text-purple-600">
+                              ${(sessionCostsData.costs.llmCostCents / 100).toFixed(2)}
+                            </div>
+                          </div>
+                          <div className="text-center">
+                            <div className="text-xs text-gray-600">TTS</div>
+                            <div className="font-semibold text-blue-600">
+                              ${(sessionCostsData.costs.ttsCostCents / 100).toFixed(2)}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="pt-2 border-t border-gray-300">
+                          <div className="text-gray-600">Interactions:</div>
+                          <div className="font-semibold text-gray-800">{sessionCostsData.metrics.interactionCount}</div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-xs text-gray-500 font-mono">Loading session costs...</div>
+                    )}
+                  </div>
+
+                  {/* Per-Interaction Cost History */}
+                  <div className="border border-gray-200 rounded p-3 bg-gray-50">
+                    <div className="text-sm font-mono text-blue-600 font-semibold mb-2">[COST_HISTORY]</div>
+                    {sessionCostsData ? (
+                      <div className="text-xs space-y-1 font-mono max-h-40 overflow-auto">
+                        {sessionCostsData.interactions.length === 0 ? (
+                          <div className="text-gray-500">(no interactions yet)</div>
+                        ) : (
+                          sessionCostsData.interactions.map((interaction: any, index: number) => (
+                            <div key={interaction.id} className="border border-gray-200 rounded p-2 bg-white">
+                              <div className="flex justify-between items-start mb-1">
+                                <span className="text-blue-600 font-semibold">{interaction.role.toUpperCase()}:</span>
+                                <span className="text-gray-600">
+                                  {new Date(interaction.createdAt).toLocaleTimeString()}
+                                </span>
+                              </div>
+                              <div className="text-gray-800 mb-1">
+                                {interaction.text ? (interaction.text.length > 50 ? interaction.text.slice(0, 50) + '...' : interaction.text) : '(no text)'}
+                              </div>
+                              <div className="flex justify-between text-xs">
+                                <span className="text-gray-600">Cost:</span>
+                                <span className="font-semibold text-green-600">
+                                  ${(interaction.costs.totalCostCents / 100).toFixed(2)}
+                                </span>
+                              </div>
+                              {(interaction.costs.sttCostCents > 0 || interaction.costs.llmCostCents > 0 || interaction.costs.ttsCostCents > 0) && (
+                                <div className="flex justify-between text-xs mt-1">
+                                  <span className="text-gray-500">
+                                    STT: ${(interaction.costs.sttCostCents / 100).toFixed(2)} | 
+                                    LLM: ${(interaction.costs.llmCostCents / 100).toFixed(2)} | 
+                                    TTS: ${(interaction.costs.ttsCostCents / 100).toFixed(2)}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-gray-500 font-mono">Loading cost history...</div>
+                    )}
+                  </div>
+
+                  {/* Session Metrics */}
+                  <div className="border border-gray-200 rounded p-3 bg-gray-50">
+                    <div className="text-sm font-mono text-blue-600 font-semibold mb-2">[SESSION_METRICS]</div>
+                    {sessionCostsData ? (
+                      <div className="text-xs space-y-1 font-mono">
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Session ID:</span>
+                          <span className="text-gray-800 font-mono">{sessionCostsData.session.sessionId}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Start Time:</span>
+                          <span className="text-gray-800">
+                            {new Date(sessionCostsData.session.startTime).toLocaleTimeString()}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Last Activity:</span>
+                          <span className="text-gray-800">
+                            {new Date(sessionCostsData.session.lastActivityAt).toLocaleTimeString()}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Status:</span>
+                          <span className="text-gray-800">Active</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-xs text-gray-500 font-mono">Loading session metrics...</div>
+                    )}
                   </div>
                 </div>
               )}

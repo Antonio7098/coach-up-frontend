@@ -8,6 +8,7 @@ import { useMinimalSession } from "../../context/minimal/MinimalSessionContext";
 import { MinimalMicProvider, useMinimalMic } from "../../context/minimal/MinimalMicContext";
 import { MinimalSessionProvider } from "../../context/minimal/MinimalSessionContext";
 import { useUser } from "@clerk/nextjs";
+import { fetchWithRetry } from "../../app/api/lib/retry";
 
 function Content({
   customSystemPrompt,
@@ -316,7 +317,7 @@ function Content({
                       const now = Date.now();
                       const reqId = Math.random().toString(36).slice(2);
                       const body = { sessionId, messageId: `test_${now}`, role: 'user', contentHash: 'test', text: 'ping', ts: now };
-                      const res = await fetch('/api/v1/interactions', { method: 'POST', headers: { 'content-type': 'application/json', 'x-request-id': reqId }, body: JSON.stringify(body) });
+                      const res = await fetchWithRetry('/api/v1/interactions', { method: 'POST', headers: { 'content-type': 'application/json', 'x-request-id': reqId }, body: JSON.stringify(body) }, { maxAttempts: 3, endpoint: 'interactions' });
                       const data = await res.json().catch(() => ({} as any));
                       setIngestTestStatus(res.ok ? `ok id=${String(data?.id || '')}` : `err ${res.status}: ${String(data?.error || '')}`);
                     } catch (e) { setIngestTestStatus(e instanceof Error ? e.message : String(e)); }

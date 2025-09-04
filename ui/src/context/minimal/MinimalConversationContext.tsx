@@ -4,6 +4,7 @@ import React, { createContext, useCallback, useContext, useMemo, useRef } from "
 import { useSessionSummary } from "../../hooks/useSessionSummary";
 import { useMinimalSession } from "./MinimalSessionContext";
 import { useAuth } from "@clerk/nextjs";
+import { fetchWithRetry } from "../../app/api/lib/retry";
 
 export type PromptPreview = {
   system?: string;
@@ -228,21 +229,25 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
           try { console.log('[ingest] POST user', { sid, len: prompt.length }); } catch {}
           void (async () => {
             const headers = await buildAuthHeaders({ 'content-type': 'application/json', 'x-request-id': reqId });
-            await fetch('/api/v1/interactions', {
+            await fetchWithRetry('/api/v1/interactions', {
               method: 'POST',
               headers,
               body: JSON.stringify({ sessionId: sid, messageId: `c_user_${now}`, role: 'user', contentHash: djb2(prompt || `c_user_${now}`), text: prompt, ts: now })
-            }).catch(() => {});
+            }, { maxAttempts: 3, endpoint: 'interactions' }).catch((error) => {
+              try { console.error('[ingest] POST user failed after retries:', error); } catch {}
+            });
           })();
           // assistant
           try { console.log('[ingest] POST assistant', { sid, len: reply.length }); } catch {}
           void (async () => {
             const headers = await buildAuthHeaders({ 'content-type': 'application/json', 'x-request-id': reqId });
-            await fetch('/api/v1/interactions', {
+            await fetchWithRetry('/api/v1/interactions', {
               method: 'POST',
               headers,
               body: JSON.stringify({ sessionId: sid, messageId: `c_assistant_${now+1}`, role: 'assistant', contentHash: djb2(reply || `c_assistant_${now+1}`), text: reply, ts: now + 1 })
-            }).catch(() => {});
+            }, { maxAttempts: 3, endpoint: 'interactions' }).catch((error) => {
+              try { console.error('[ingest] POST assistant failed after retries:', error); } catch {}
+            });
           })();
         }
       } catch {}
@@ -280,21 +285,25 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
           try { console.log('[ingest] POST user streaming', { sid, len: prompt.length }); } catch {}
           void (async () => {
             const headers = await buildAuthHeaders({ 'content-type': 'application/json', 'x-request-id': reqId });
-            await fetch('/api/v1/interactions', {
+            await fetchWithRetry('/api/v1/interactions', {
               method: 'POST',
               headers,
               body: JSON.stringify({ sessionId: sid, messageId: `c_user_stream_${now}`, role: 'user', contentHash: djb2(prompt || `c_user_stream_${now}`), text: prompt, ts: now })
-            }).catch(() => {});
+            }, { maxAttempts: 3, endpoint: 'interactions' }).catch((error) => {
+              try { console.error('[ingest] POST user streaming failed after retries:', error); } catch {}
+            });
           })();
           // assistant
           try { console.log('[ingest] POST assistant streaming', { sid, len: reply.length }); } catch {}
           void (async () => {
             const headers = await buildAuthHeaders({ 'content-type': 'application/json', 'x-request-id': reqId });
-            await fetch('/api/v1/interactions', {
+            await fetchWithRetry('/api/v1/interactions', {
               method: 'POST',
               headers,
               body: JSON.stringify({ sessionId: sid, messageId: `c_assistant_stream_${now+1}`, role: 'assistant', contentHash: djb2(reply || `c_assistant_stream_${now+1}`), text: reply, ts: now + 1 })
-            }).catch(() => {});
+            }, { maxAttempts: 3, endpoint: 'interactions' }).catch((error) => {
+              try { console.error('[ingest] POST assistant streaming failed after retries:', error); } catch {}
+            });
           })();
         }
       } catch {}

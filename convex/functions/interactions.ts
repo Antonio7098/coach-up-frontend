@@ -14,6 +14,16 @@ export const appendInteraction = mutation({
     contentHash: v.string(),
     text: v.optional(v.string()),
     audioUrl: v.optional(v.string()),
+    // Cost tracking fields (in cents)
+    sttCostCents: v.optional(v.number()),
+    llmCostCents: v.optional(v.number()),
+    ttsCostCents: v.optional(v.number()),
+    totalCostCents: v.optional(v.number()),
+    // Usage tracking fields
+    sttDurationMs: v.optional(v.number()),
+    llmTokensIn: v.optional(v.number()),
+    llmTokensOut: v.optional(v.number()),
+    ttsCharacters: v.optional(v.number()),
     ts: v.number(), // original event timestamp (ms since epoch)
   },
   handler: async (ctx, args) => {
@@ -41,6 +51,16 @@ export const appendInteraction = mutation({
       contentHash: args.contentHash,
       text: args.text,
       audioUrl: args.audioUrl,
+      // Cost tracking fields
+      sttCostCents: args.sttCostCents,
+      llmCostCents: args.llmCostCents,
+      ttsCostCents: args.ttsCostCents,
+      totalCostCents: args.totalCostCents,
+      // Usage tracking fields
+      sttDurationMs: args.sttDurationMs,
+      llmTokensIn: args.llmTokensIn,
+      llmTokensOut: args.llmTokensOut,
+      ttsCharacters: args.ttsCharacters,
       ts: args.ts,
       createdAt: now,
     });
@@ -84,5 +104,138 @@ export const listByGroup = query({
     docs.sort((a: any, b: any) => (a.ts ?? 0) - (b.ts ?? 0));
     if (docs.length > lim) return docs.slice(docs.length - lim);
     return docs;
+  },
+});
+
+export const updateSessionCosts = mutation({
+  args: {
+    sessionId: v.string(),
+    sttCostCents: v.optional(v.number()),
+    llmCostCents: v.optional(v.number()),
+    ttsCostCents: v.optional(v.number()),
+    totalCostCents: v.optional(v.number()),
+    interactionCount: v.optional(v.number()),
+    durationMs: v.optional(v.number()),
+    startTime: v.optional(v.number()),
+    endTime: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const nonEmpty = (s: unknown) => typeof s === 'string' && s.trim().length > 0;
+    if (!nonEmpty(args.sessionId)) throw new Error('sessionId required');
+    
+    // Find existing session
+    const session = await ctx.db
+      .query("sessions")
+      .withIndex("by_sessionId", (q: any) => q.eq("sessionId", args.sessionId))
+      .first();
+    
+    if (!session) {
+      throw new Error('Session not found');
+    }
+    
+    // Update session with cost aggregation
+    const now = Date.now();
+    await ctx.db.patch(session._id, {
+      // Cost tracking fields
+      sttCostCents: args.sttCostCents ?? session.sttCostCents,
+      llmCostCents: args.llmCostCents ?? session.llmCostCents,
+      ttsCostCents: args.ttsCostCents ?? session.ttsCostCents,
+      totalCostCents: args.totalCostCents ?? session.totalCostCents,
+      // Session metrics
+      interactionCount: args.interactionCount ?? session.interactionCount,
+      durationMs: args.durationMs ?? session.durationMs,
+      startTime: args.startTime ?? session.startTime,
+      endTime: args.endTime ?? session.endTime,
+      lastActivityAt: now,
+    });
+    
+    return { id: session._id } as const;
+  },
+});
+
+export const getSessionCosts = query({
+  args: {
+    sessionId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const nonEmpty = (s: unknown) => typeof s === 'string' && s.trim().length > 0;
+    if (!nonEmpty(args.sessionId)) throw new Error('sessionId required');
+    
+    // Get session data
+    const session = await ctx.db
+      .query("sessions")
+      .withIndex("by_sessionId", (q: any) => q.eq("sessionId", args.sessionId))
+      .first();
+    
+    if (!session) {
+      return null;
+    }
+    
+    // Get all interactions for this session with cost data
+    const interactions = await ctx.db
+      .query("interactions")
+      .withIndex("by_session", (q: any) => q.eq("sessionId", args.sessionId))
+      .collect();
+    
+    // Calculate aggregated costs from interactions
+    let totalSttCost = 0;
+    let totalLlmCost = 0;
+    let totalTtsCost = 0;
+    let totalCost = 0;
+    let interactionCount = 0;
+    
+    interactions.forEach((interaction: any) => {
+      if (interaction.sttCostCents) totalSttCost += interaction.sttCostCents;
+      if (interaction.llmCostCents) totalLlmCost += interaction.llmCostCents;
+      if (interaction.ttsCostCents) totalTtsCost += interaction.ttsCostCents;
+      if (interaction.totalCostCents) totalCost += interaction.totalCostCents;
+      interactionCount++;
+    });
+    
+    // Calculate session duration
+    const now = Date.now();
+    const startTime = session.startTime || session.createdAt;
+    const endTime = session.endTime || now;
+    const durationMs = endTime - startTime;
+    
+    return {
+      session: {
+        sessionId: session.sessionId,
+        userId: session.userId,
+        startTime: session.startTime || session.createdAt,
+        endTime: session.endTime || now,
+        durationMs,
+        lastActivityAt: session.lastActivityAt,
+      },
+      costs: {
+        sttCostCents: totalSttCost,
+        llmCostCents: totalLlmCost,
+        ttsCostCents: totalTtsCost,
+        totalCostCents: totalCost,
+      },
+      metrics: {
+        interactionCount,
+        durationMs,
+      },
+      interactions: interactions.map((interaction: any) => ({
+        id: interaction._id,
+        role: interaction.role,
+        text: interaction.text,
+        ts: interaction.ts,
+        createdAt: interaction.createdAt,
+        costs: {
+          sttCostCents: interaction.sttCostCents || 0,
+          llmCostCents: interaction.llmCostCents || 0,
+          ttsCostCents: interaction.ttsCostCents || 0,
+          totalCostCents: interaction.totalCostCents || 0,
+        },
+        usage: {
+          sttDurationMs: interaction.sttDurationMs,
+          llmTokensIn: interaction.llmTokensIn,
+          llmTokensOut: interaction.llmTokensOut,
+          ttsCharacters: interaction.ttsCharacters,
+        },
+      })),
+    };
   },
 });

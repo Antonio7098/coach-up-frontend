@@ -5,6 +5,7 @@ import { makeConvex } from "../../lib/convex";
 import * as mockConvex from "../../lib/mockConvex";
 import { sha256Hex } from "../../lib/hash";
 import { requireAuth } from "../../lib/auth";
+import { promMetrics } from "../../lib/metrics";
 
 type InteractionRole = 'user' | 'assistant' | 'system';
 interface InteractionsBody {
@@ -44,6 +45,11 @@ export async function GET(request: Request) {
   const limit = Math.max(1, Math.min(500, Number.isFinite(Number(limitParam)) ? Number(limitParam) : 200));
 
   if (!sessionId.trim() && !groupId.trim()) {
+    try {
+      promMetrics.requestsTotal.labels("interactions", "GET", "400", "error").inc();
+      promMetrics.requestErrorsTotal.labels("interactions", "GET", "400", "error").inc();
+      promMetrics.apiRetryErrorsTotal.labels("interactions", "GET", "validation_error", "400").inc();
+    } catch {}
     return new Response(JSON.stringify({ error: "sessionId or groupId required" }), {
       status: 400,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
@@ -72,12 +78,26 @@ export async function GET(request: Request) {
     } else {
       interactions = await client.query("functions/interactions:listByGroup", { groupId, limit }) as any;
     }
+    // Track successful GET request
+    try {
+      promMetrics.requestsTotal.labels("interactions", "GET", "200", "success").inc();
+      promMetrics.requestDurationSeconds.labels("interactions", "GET", "200", "success").observe(Date.now() / 1000);
+    } catch {}
+
     return new Response(JSON.stringify({ interactions }), {
       status: 200,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
     });
   } catch (err: unknown) {
     try { console.error('[interactions] GET failed', err); } catch {}
+
+    // Track failed GET request
+    try {
+      promMetrics.requestsTotal.labels("interactions", "GET", "502", "error").inc();
+      promMetrics.requestErrorsTotal.labels("interactions", "GET", "502", "error").inc();
+      promMetrics.apiRetryErrorsTotal.labels("interactions", "GET", "server_error", "502").inc();
+    } catch {}
+
     return new Response(JSON.stringify({ error: "Convex query failed" }), {
       status: 502,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
@@ -136,6 +156,14 @@ export async function POST(request: Request) {
   const authRes = await requireAuth(request);
   if (!authRes.ok) {
     try { console.log(JSON.stringify({ level: 'warn', where: 'interactions.POST.auth.fail', requestId, ...urlMeta, hasAuthHeader, hasClerkCookie })); } catch {}
+
+    // Track auth failure
+    try {
+      promMetrics.requestsTotal.labels("interactions", "POST", "401", "error").inc();
+      promMetrics.requestErrorsTotal.labels("interactions", "POST", "401", "error").inc();
+      promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", "auth_error", "401").inc();
+    } catch {}
+
     return new Response(JSON.stringify({ error: "Unauthorized" }), {
       status: 401,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
@@ -147,6 +175,11 @@ export async function POST(request: Request) {
   try {
     json = await request.json();
   } catch {
+    try {
+      promMetrics.requestsTotal.labels("interactions", "POST", "400", "error").inc();
+      promMetrics.requestErrorsTotal.labels("interactions", "POST", "400", "error").inc();
+      promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", "json_error", "400").inc();
+    } catch {}
     return new Response(JSON.stringify({ error: "Invalid JSON" }), {
       status: 400,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
@@ -157,6 +190,11 @@ export async function POST(request: Request) {
   const required = ["sessionId", "messageId", "role", "contentHash", "ts"] as const;
   for (const k of required) {
     if (obj[k] === undefined || obj[k] === null) {
+      try {
+        promMetrics.requestsTotal.labels("interactions", "POST", "400", "error").inc();
+        promMetrics.requestErrorsTotal.labels("interactions", "POST", "400", "error").inc();
+        promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", "validation_error", "400").inc();
+      } catch {}
       return new Response(JSON.stringify({ error: `${k} required` }), {
         status: 400,
         headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
@@ -167,6 +205,11 @@ export async function POST(request: Request) {
   // Runtime validations
   const isNonEmptyString = (v: unknown) => typeof v === 'string' ? v.trim().length > 0 : typeof v === 'number' ? String(v).trim().length > 0 : false;
   if (!isNonEmptyString(obj.sessionId)) {
+    try {
+      promMetrics.requestsTotal.labels("interactions", "POST", "400", "error").inc();
+      promMetrics.requestErrorsTotal.labels("interactions", "POST", "400", "error").inc();
+      promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", "validation_error", "400").inc();
+    } catch {}
     return new Response(JSON.stringify({ error: "sessionId must be a non-empty string" }), {
       status: 400,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
@@ -174,12 +217,22 @@ export async function POST(request: Request) {
   }
   // groupId is optional; if provided, must be a non-empty string
   if (obj.groupId !== undefined && obj.groupId !== null && !isNonEmptyString(obj.groupId)) {
+    try {
+      promMetrics.requestsTotal.labels("interactions", "POST", "400", "error").inc();
+      promMetrics.requestErrorsTotal.labels("interactions", "POST", "400", "error").inc();
+      promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", "validation_error", "400").inc();
+    } catch {}
     return new Response(JSON.stringify({ error: "groupId, if provided, must be a non-empty string" }), {
       status: 400,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
     });
   }
   if (!isNonEmptyString(obj.messageId)) {
+    try {
+      promMetrics.requestsTotal.labels("interactions", "POST", "400", "error").inc();
+      promMetrics.requestErrorsTotal.labels("interactions", "POST", "400", "error").inc();
+      promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", "validation_error", "400").inc();
+    } catch {}
     return new Response(JSON.stringify({ error: "messageId must be a non-empty string" }), {
       status: 400,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
@@ -187,6 +240,11 @@ export async function POST(request: Request) {
   }
   const tsNum = Number(obj.ts);
   if (!Number.isFinite(tsNum) || tsNum <= 0) {
+    try {
+      promMetrics.requestsTotal.labels("interactions", "POST", "400", "error").inc();
+      promMetrics.requestErrorsTotal.labels("interactions", "POST", "400", "error").inc();
+      promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", "validation_error", "400").inc();
+    } catch {}
     return new Response(JSON.stringify({ error: "ts must be a positive number" }), {
       status: 400,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
@@ -199,6 +257,11 @@ export async function POST(request: Request) {
         throw new Error('invalid protocol');
       }
     } catch {
+      try {
+        promMetrics.requestsTotal.labels("interactions", "POST", "400", "error").inc();
+        promMetrics.requestErrorsTotal.labels("interactions", "POST", "400", "error").inc();
+        promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", "validation_error", "400").inc();
+      } catch {}
       return new Response(JSON.stringify({ error: "audioUrl must be a valid http(s) URL" }), {
         status: 400,
         headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
@@ -206,12 +269,22 @@ export async function POST(request: Request) {
     }
   }
   if (obj.text !== undefined && obj.text !== null && typeof obj.text !== 'string') {
+    try {
+      promMetrics.requestsTotal.labels("interactions", "POST", "400", "error").inc();
+      promMetrics.requestErrorsTotal.labels("interactions", "POST", "400", "error").inc();
+      promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", "validation_error", "400").inc();
+    } catch {}
     return new Response(JSON.stringify({ error: "text, if provided, must be a string" }), {
       status: 400,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
     });
   }
   if (obj.userId !== undefined && obj.userId !== null && !isNonEmptyString(obj.userId)) {
+    try {
+      promMetrics.requestsTotal.labels("interactions", "POST", "400", "error").inc();
+      promMetrics.requestErrorsTotal.labels("interactions", "POST", "400", "error").inc();
+      promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", "validation_error", "400").inc();
+    } catch {}
     return new Response(JSON.stringify({ error: "userId, if provided, must be a non-empty string" }), {
       status: 400,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
@@ -222,6 +295,11 @@ export async function POST(request: Request) {
   const isRole = (r: string): r is InteractionRole =>
     r === 'user' || r === 'assistant' || r === 'system';
   if (!isRole(roleStr)) {
+    try {
+      promMetrics.requestsTotal.labels("interactions", "POST", "400", "error").inc();
+      promMetrics.requestErrorsTotal.labels("interactions", "POST", "400", "error").inc();
+      promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", "validation_error", "400").inc();
+    } catch {}
     return new Response(JSON.stringify({ error: "role must be one of 'user' | 'assistant' | 'system'" }), {
       status: 400,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
@@ -311,6 +389,29 @@ export async function POST(request: Request) {
     if (body.role === 'assistant') {
       try {
         const cadence = await client.mutation("functions/summary_state:onAssistantMessage", { sessionId: body.sessionId }) as any;
+
+        // Check if the mutation failed due to concurrent modification
+        if (cadence === null || cadence === undefined) {
+          try {
+            console.warn(`[interactions] Cadence mutation failed (possibly concurrent modification) for session ${body.sessionId}`);
+            promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", "concurrent_modification", "0").inc();
+          } catch {}
+          // Don't proceed with summary generation if cadence update failed
+          return new Response(JSON.stringify({ ok: true, id, warning: "concurrent_modification" }), {
+            status: 200,
+            headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
+          });
+        }
+
+        // Log successful cadence update
+        try {
+          console.log(`[interactions] Cadence updated successfully for session ${body.sessionId}:`, {
+            dueNow: cadence?.dueNow,
+            locked: cadence?.locked,
+            turnsSince: cadence?.turnsSince,
+            assistantMsgSince: cadence?.assistantMsgSince
+          });
+        } catch {}
         await client.mutation("functions/events:logEvent", {
           userId: effectiveUserId,
           sessionId: body.sessionId,
@@ -320,6 +421,15 @@ export async function POST(request: Request) {
           kind: 'summary_cadence_onAssistantMessage',
           payload: { messageId: body.messageId, cadence },
         });
+
+        // Check for concurrent modification errors in the response
+        if (cadence === null || typeof cadence !== 'object') {
+          try {
+            console.warn(`[interactions] Cadence mutation returned invalid result for session ${body.sessionId}:`, cadence);
+            promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", "invalid_cadence_response", "0").inc();
+          } catch {}
+        }
+
         // Orchestrate generation if due and lock acquired
         if (cadence?.dueNow && cadence?.locked) {
           const tokenBudget = 600;
@@ -418,14 +528,48 @@ export async function POST(request: Request) {
             // Best-effort; lock was already cleared in onGenerated
           }
         }
-      } catch {}
+      } catch (cadenceError) {
+        // Handle errors in the cadence update process
+        try {
+          console.error(`[interactions] Cadence update failed for session ${body.sessionId}:`, cadenceError);
+          promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", "cadence_update_error", "0").inc();
+
+          // Check if this is a concurrent modification error
+          const errorMessage = (cadenceError as Error)?.message || String(cadenceError);
+          const isConcurrentError = errorMessage.includes("changed while") ||
+                                   errorMessage.includes("Concurrent modification") ||
+                                   errorMessage.includes("Documents changed");
+
+          if (isConcurrentError) {
+            promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", "concurrent_modification", "0").inc();
+          }
+        } catch {}
+
+        // Still return success for the interaction itself, even if cadence update failed
+        try { console.log(`[interactions] Interaction saved successfully despite cadence error for session ${body.sessionId}`); } catch {}
+      }
     }
+
+    // Track successful interaction
+    try {
+      promMetrics.requestsTotal.labels("interactions", "POST", "200", "success").inc();
+      promMetrics.requestDurationSeconds.labels("interactions", "POST", "200", "success").observe(Date.now() / 1000);
+    } catch {}
 
     return new Response(JSON.stringify({ ok: true, id }), {
       status: 200,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
     });
-  } catch {
+  } catch (error: any) {
+    // Track failed interaction
+    try {
+      const errorType = error?.message?.includes('network') ? 'network_error' : 'server_error';
+      promMetrics.requestsTotal.labels("interactions", "POST", "502", "error").inc();
+      promMetrics.requestDurationSeconds.labels("interactions", "POST", "502", "error").observe(Date.now() / 1000);
+      promMetrics.requestErrorsTotal.labels("interactions", "POST", "502", "error").inc();
+      promMetrics.apiRetryErrorsTotal.labels("interactions", "POST", errorType, "502").inc();
+    } catch {}
+
     return new Response(JSON.stringify({ error: "Convex mutation failed" }), {
       status: 502,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },

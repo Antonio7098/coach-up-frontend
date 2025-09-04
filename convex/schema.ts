@@ -76,12 +76,22 @@ export default defineSchema({
     .index("by_createdAt", ["createdAt"])
     .index("by_session", ["sessionId"]),
 
-  // Sessions — minimal state tracking
+  // Sessions — minimal state tracking with cost aggregation
   sessions: defineTable({
     userId: v.string(),
     sessionId: v.string(),
     state: v.optional(v.any()),
     latestGroupId: v.optional(v.string()),
+    // Cost tracking fields (in cents)
+    totalCostCents: v.optional(v.number()),
+    sttCostCents: v.optional(v.number()),
+    llmCostCents: v.optional(v.number()),
+    ttsCostCents: v.optional(v.number()),
+    // Session metrics
+    interactionCount: v.optional(v.number()),
+    durationMs: v.optional(v.number()),
+    startTime: v.optional(v.number()),
+    endTime: v.optional(v.number()),
     createdAt: v.number(),
     lastActivityAt: v.number(),
   })
@@ -89,7 +99,7 @@ export default defineSchema({
     .index("by_sessionId", ["sessionId"]) 
     .index("by_lastActivityAt", ["lastActivityAt"]),
 
-  // Interactions — per message storage and pointers to blobs
+  // Interactions — per message storage and pointers to blobs with cost tracking
   interactions: defineTable({
     sessionId: v.string(),
     groupId: v.optional(v.string()),
@@ -98,6 +108,16 @@ export default defineSchema({
     contentHash: v.string(),
     text: v.optional(v.string()),
     audioUrl: v.optional(v.string()),
+    // Cost tracking fields (in cents)
+    sttCostCents: v.optional(v.number()),
+    llmCostCents: v.optional(v.number()),
+    ttsCostCents: v.optional(v.number()),
+    totalCostCents: v.optional(v.number()),
+    // Usage tracking fields
+    sttDurationMs: v.optional(v.number()),
+    llmTokensIn: v.optional(v.number()),
+    llmTokensOut: v.optional(v.number()),
+    ttsCharacters: v.optional(v.number()),
     ts: v.number(), // event timestamp (ms since epoch)
     createdAt: v.number(),
   })
@@ -224,6 +244,7 @@ export default defineSchema({
     lockUntil: v.optional(v.number()), // ms since epoch
     createdAt: v.number(),
     updatedAt: v.number(),
+    version: v.optional(v.number()), // optimistic locking version
   })
   .index('by_session', ['sessionId'])
   .index('by_updatedAt', ['updatedAt']),

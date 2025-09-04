@@ -9,6 +9,7 @@ import { makeConvex } from "../../lib/convex";
 import * as mockConvex from "../../lib/mockConvex";
 import { ProviderNotConfiguredError, getSttProvider } from "../../lib/speech/stt";
 import { S3Client, PutObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
+import { CostCalculator } from "../../lib/cost-calculator";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -28,6 +29,8 @@ async function persistInteraction(opts: {
   text?: string | null;
   audioUrl?: string | null;
   objectKey?: string | null;
+  sttCostCents?: number;
+  sttDurationMs?: number;
 }) {
   try {
     const { sessionId, groupId } = opts;
@@ -50,7 +53,18 @@ async function persistInteraction(opts: {
     }
     const convexUrl = process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || "http://127.0.0.1:3210";
     const client = makeConvex(convexUrl);
-    await client.mutation("functions/interactions:appendInteraction", { sessionId, groupId, messageId, role, contentHash, text: opts.text ?? undefined, audioUrl: opts.audioUrl ?? undefined, ts });
+    await client.mutation("functions/interactions:appendInteraction", { 
+      sessionId, 
+      groupId, 
+      messageId, 
+      role, 
+      contentHash, 
+      text: opts.text ?? undefined, 
+      audioUrl: opts.audioUrl ?? undefined, 
+      sttCostCents: opts.sttCostCents,
+      sttDurationMs: opts.sttDurationMs,
+      ts 
+    });
   } catch (e) {
     try { console.error("[stt] persistInteraction failed", e); } catch {}
   }
@@ -62,6 +76,24 @@ function safeUUID(): string {
     return g.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
   } catch {
     return Math.random().toString(36).slice(2);
+  }
+}
+
+async function calculateSTTCost(provider: string, modelId: string | undefined, durationMs: number): Promise<{ costCents: number; durationMs: number }> {
+  try {
+    const result = CostCalculator.calculate({
+      provider,
+      service: 'stt',
+      modelId,
+      durationMs,
+    });
+    return {
+      costCents: result.costCents,
+      durationMs: result.usage.durationMs || durationMs,
+    };
+  } catch (error) {
+    console.error('[stt] Cost calculation failed:', error);
+    return { costCents: 0, durationMs };
   }
 }
 
@@ -190,6 +222,10 @@ export async function POST(request: Request) {
         const dataUrl = `data:${mime};base64,${b64}`;
 
         const result = await provider.transcribe({ audioUrl: dataUrl, objectKey: null, languageHint: languageHint ?? null });
+        
+        // Calculate STT cost based on audio duration
+        const sttCost = await calculateSTTCost(result.provider || mode, result.model, size * 8); // Rough estimate: 8ms per byte
+        
         const payload = {
           provider: result.provider || mode,
           text: result.text,
@@ -201,10 +237,21 @@ export async function POST(request: Request) {
           groupId: groupId ?? null,
           audioUrl: null,
           objectKey: null,
+          sttCostCents: sttCost.costCents,
+          sttDurationMs: sttCost.durationMs,
         } as const;
 
-        // Persist transcript only (no audioUrl/objectKey for privacy)
-        persistInteraction({ sessionId, groupId, requestId, text: result.text ?? null, audioUrl: undefined, objectKey: undefined }).catch(() => {});
+        // Persist transcript with cost data (no audioUrl/objectKey for privacy)
+        persistInteraction({ 
+          sessionId, 
+          groupId, 
+          requestId, 
+          text: result.text ?? null, 
+          audioUrl: undefined, 
+          objectKey: undefined,
+          sttCostCents: sttCost.costCents,
+          sttDurationMs: sttCost.durationMs,
+        }).catch(() => {});
 
         // Metrics: audio bytes in (multipart path)
         try {
@@ -231,6 +278,10 @@ export async function POST(request: Request) {
         return respond(501, { error: "Storage not configured" });
       }
       const result = await provider.transcribe({ audioUrl: null, objectKey: uploaded.objectKey, languageHint: languageHint ?? null });
+      
+      // Calculate STT cost based on audio duration
+      const sttCost = await calculateSTTCost(result.provider || mode, result.model, size * 8); // Rough estimate: 8ms per byte
+      
       const payload = {
         provider: result.provider || mode,
         text: result.text,
@@ -242,10 +293,21 @@ export async function POST(request: Request) {
         groupId: groupId ?? null,
         audioUrl: uploaded.audioUrl ?? null,
         objectKey: uploaded.objectKey ?? null,
+        sttCostCents: sttCost.costCents,
+        sttDurationMs: sttCost.durationMs,
       } as const;
 
-      // Persist with audio metadata when stored
-      persistInteraction({ sessionId, groupId, requestId, text: result.text ?? null, audioUrl: uploaded.audioUrl ?? undefined, objectKey: uploaded.objectKey ?? undefined }).catch(() => {});
+      // Persist with audio metadata and cost data when stored
+      persistInteraction({ 
+        sessionId, 
+        groupId, 
+        requestId, 
+        text: result.text ?? null, 
+        audioUrl: uploaded.audioUrl ?? undefined, 
+        objectKey: uploaded.objectKey ?? undefined,
+        sttCostCents: sttCost.costCents,
+        sttDurationMs: sttCost.durationMs,
+      }).catch(() => {});
 
       // Metrics: audio bytes in (multipart path)
       try {
@@ -303,6 +365,27 @@ export async function POST(request: Request) {
 
   try {
     const result = await provider.transcribe({ audioUrl: audioUrl ?? null, objectKey: objectKey ?? null, languageHint: languageHint ?? null });
+    
+    // Calculate STT cost - estimate duration from file size if not available
+    let estimatedDuration = 60000; // Default 1 minute
+    if (objectKey) {
+      try {
+        const provider = (process.env.STORAGE_PROVIDER || "s3").toLowerCase();
+        const bucket = process.env.S3_BUCKET_AUDIO || "";
+        if (provider === "s3" && bucket) {
+          const region = process.env.S3_REGION || "us-east-1";
+          const endpoint = process.env.S3_ENDPOINT_URL || undefined;
+          const forcePathStyle = process.env.S3_FORCE_PATH_STYLE === "1";
+          const s3 = new S3Client({ region, endpoint, forcePathStyle });
+          const head = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: objectKey } as any));
+          const bytes = Number(head.ContentLength || 0);
+          estimatedDuration = bytes * 8; // Rough estimate: 8ms per byte
+        }
+      } catch {}
+    }
+    
+    const sttCost = await calculateSTTCost(result.provider || mode, result.model, estimatedDuration);
+    
     const payload = {
       provider: result.provider || mode,
       text: result.text,
@@ -314,10 +397,21 @@ export async function POST(request: Request) {
       groupId: groupId ?? null,
       audioUrl: audioUrl ?? null,
       objectKey: objectKey ?? null,
+      sttCostCents: sttCost.costCents,
+      sttDurationMs: sttCost.durationMs,
     } as const;
 
-    // Fire-and-forget persistence of interaction row (user role)
-    persistInteraction({ sessionId, groupId, requestId, text: result.text ?? null, audioUrl: audioUrl ?? undefined, objectKey: objectKey ?? undefined }).catch(() => {});
+    // Fire-and-forget persistence of interaction row with cost data
+    persistInteraction({ 
+      sessionId, 
+      groupId, 
+      requestId, 
+      text: result.text ?? null, 
+      audioUrl: audioUrl ?? undefined, 
+      objectKey: objectKey ?? undefined,
+      sttCostCents: sttCost.costCents,
+      sttDurationMs: sttCost.durationMs,
+    }).catch(() => {});
 
     // Metrics: audio bytes in (best-effort for server-side fetch when objectKey is provided)
     try {
