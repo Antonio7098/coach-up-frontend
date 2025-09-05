@@ -33,18 +33,25 @@ async function persistInteraction(opts: {
     const { sessionId, groupId, text } = opts;
     // Persist when sessionId is present; groupId is optional metadata
     if (!sessionId) return;
+    
+    // Skip empty or meaningless text content
+    const trimmedText = text?.trim();
+    if (!trimmedText || trimmedText.length === 0) {
+      console.log("[tts] Skipping empty interaction - no meaningful text content");
+      return;
+    }
     const messageId = safeUUID();
     const role = "assistant" as const;
     const ts = Date.now();
     let contentHash = "";
     try {
-      contentHash = crypto.createHash("sha256").update(text).digest("hex");
+      contentHash = crypto.createHash("sha256").update(trimmedText).digest("hex");
     } catch {
-      contentHash = String(Math.abs(text.length * 2654435761 % 2 ** 31));
+      contentHash = String(Math.abs(trimmedText.length * 2654435761 % 2 ** 31));
     }
     const useMock = process.env.MOCK_CONVEX === "1";
     if (useMock) {
-      await mockConvex.appendInteraction({ sessionId, groupId, messageId, role, contentHash, audioUrl: opts.audioUrl ?? undefined, ts });
+      await mockConvex.appendInteraction({ sessionId, groupId, messageId, role, contentHash, text: trimmedText, audioUrl: opts.audioUrl ?? undefined, ts });
       return;
     }
     const convexUrl = process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || "http://127.0.0.1:3210";
@@ -55,6 +62,7 @@ async function persistInteraction(opts: {
       messageId, 
       role, 
       contentHash, 
+      text: trimmedText,
       audioUrl: opts.audioUrl ?? undefined, 
       ttsCostCents: opts.ttsCostCents,
       ttsCharacters: opts.ttsCharacters,
@@ -170,14 +178,19 @@ export async function POST(request: Request) {
     } as const;
 
     // Fire-and-forget persistence of assistant interaction row with cost data
-    persistInteraction({ 
-      sessionId, 
-      groupId, 
-      text, 
+    persistInteraction({
+      sessionId,
+      groupId,
+      text,
       audioUrl: result.audioUrl,
       ttsCostCents: ttsCost.costCents,
       ttsCharacters: ttsCost.characters,
     }).catch(() => {});
+
+    // Update session costs and metrics
+    if (sessionId) {
+      // Note: Session cost updates are handled by the Chat API during streaming
+    }
 
     // Metrics: audio bytes out and storage uploaded bytes
     try {

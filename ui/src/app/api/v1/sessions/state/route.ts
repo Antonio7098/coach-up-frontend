@@ -122,7 +122,7 @@ export async function POST(request: Request) {
     }
 
     const client = makeConvex(convexUrl);
-    const result = await client.mutation("sessions:updateSessionState", {
+    const result = await client.mutation("functions/sessions:updateSessionState", {
       userId: effectiveUserId(obj.userId),
       sessionId: String(obj.sessionId),
       state: (obj.state as Record<string, unknown> | undefined) ?? {},

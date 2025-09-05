@@ -17,7 +17,7 @@ export type PromptPreview = {
 
 export type MinimalConversationContextValue = {
   chatToText: (prompt: string, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }) => Promise<string>;
-  chatToTextStreaming: (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }) => Promise<string>;
+  chatToTextStreaming: (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void; sessionId?: string }) => Promise<string>;
   chatToTextStreamingWithHistory: (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }) => Promise<string>;
   getImmediateHistory: () => Array<{ role: "user" | "assistant"; content: string }>;
   getSummaryMeta: () => { ready: boolean; updatedAt?: number; turnsUntilDue: number; thresholdTurns: number };
@@ -40,6 +40,14 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
   const { sessionId } = useMinimalSession();
   const { summary, onTurn, thresholds } = useSessionSummary(sessionId, { autoloadOnMount: false });
   const { getToken } = useAuth();
+
+  // Reset in-memory history when session changes to avoid cross-session mixing
+  React.useEffect(() => {
+    try {
+      // Clear history when a new session starts
+      (historyRef.current as any) = [];
+    } catch {}
+  }, [sessionId]);
 
   const buildAuthHeaders = useCallback(async (base: HeadersInit = {}): Promise<HeadersInit> => {
     try {
@@ -80,8 +88,15 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
   // Deprecated: preview GET is removed; SSE 'prompt' event is source of truth.
   const fetchPromptPreview = useCallback(async (_rid: string) => { return; }, []);
 
-  const chatToTextStreaming = useCallback(async (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }): Promise<string> => {
+  const chatToTextStreaming = useCallback(async (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void; sessionId?: string }): Promise<string> => {
     if (!prompt || !prompt.trim()) return "";
+    // Use sessionId from options parameter first, then fall back to context
+    const currentSessionId = options?.sessionId || sessionId;
+    if (!currentSessionId) {
+      console.warn("chatToTextStreaming: sessionId not available, cannot make request");
+      return "";
+    }
+    console.log("chatToTextStreaming: Starting chat request", { prompt: prompt.substring(0, 50), sessionId: currentSessionId });
     // Build minimal history param from the last 2 messages (excluding this prompt)
     const last2 = historyRef.current.slice(-2).map((m) => ({ role: m.role, content: (m.content || "").slice(0, 240) }));
     const sys = (summary?.text || "").trim();
@@ -127,8 +142,9 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
             modelParam = `&model=${encodeURIComponent(options.model.trim())}`;
           }
 
-          const url = `/api/chat?prompt=${encodeURIComponent(prompt)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""}${histParam}${profileParam}${goalsParam}${systemPromptParam}${modelParam}&rid=${encodeURIComponent(rid)}&debug=1`;
+          const url = `/api/chat?prompt=${encodeURIComponent(prompt)}${currentSessionId ? `&sessionId=${encodeURIComponent(currentSessionId)}` : ""}${histParam}${profileParam}${goalsParam}${systemPromptParam}${modelParam}&rid=${encodeURIComponent(rid)}&debug=1`;
 
+          console.log("chatToTextStreaming: Making EventSource request to", url);
           es = new EventSource(url, { withCredentials: false });
         } catch {}
         if (!es) { reject(new Error("stream failed")); return; }
@@ -174,7 +190,8 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
             }
           } catch {}
         });
-        es.onerror = () => {
+        es.onerror = (error) => {
+          console.error("chatToTextStreaming: EventSource error", error);
           try { es?.close(); } catch {}
           if (acc) resolve(acc); else resolve(null);
         };
@@ -328,7 +345,7 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
 
   const value = useMemo<MinimalConversationContextValue>(() => ({
     chatToText: chatToTextWithHistory,
-    chatToTextStreaming: (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }) => chatToTextStreaming(prompt, onChunk, options),
+    chatToTextStreaming: (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void; sessionId?: string }) => chatToTextStreaming(prompt, onChunk, options),
     chatToTextStreamingWithHistory,
     getImmediateHistory,
     getSummaryMeta,

@@ -22,7 +22,7 @@ export async function OPTIONS() {
   return new Response(null, { status: 204, headers: corsHeaders });
 }
 
-async function persistInteraction(opts: {
+async function persistInteraction(client: any, opts: {
   sessionId?: string;
   groupId?: string;
   requestId: string;
@@ -36,10 +36,17 @@ async function persistInteraction(opts: {
     const { sessionId, groupId } = opts;
     // Persist when sessionId is present; groupId is optional metadata
     if (!sessionId) return;
+
+    // Skip empty or meaningless text content
+    const text = opts.text?.trim();
+    if (!text || text.length === 0) {
+      console.log("[stt] Skipping empty interaction - no meaningful text content");
+      return;
+    }
     const messageId = safeUUID();
     const role = "user" as const;
     const ts = Date.now();
-    const basis = (opts.audioUrl || "") + "|" + (opts.objectKey || "") + "|" + (opts.text || "");
+    const basis = (opts.audioUrl || "") + "|" + (opts.objectKey || "") + "|" + text;
     let contentHash = "";
     try {
       contentHash = crypto.createHash("sha256").update(basis).digest("hex");
@@ -48,22 +55,21 @@ async function persistInteraction(opts: {
     }
     const useMock = process.env.MOCK_CONVEX === "1";
     if (useMock) {
-      await mockConvex.appendInteraction({ sessionId, groupId, messageId, role, contentHash, text: opts.text ?? undefined, audioUrl: opts.audioUrl ?? undefined, ts });
+      await mockConvex.appendInteraction({ sessionId, groupId, messageId, role, contentHash, text: text, audioUrl: opts.audioUrl ?? undefined, ts });
       return;
     }
-    const convexUrl = process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || "http://127.0.0.1:3210";
-    const client = makeConvex(convexUrl);
-    await client.mutation("functions/interactions:appendInteraction", { 
-      sessionId, 
-      groupId, 
-      messageId, 
-      role, 
-      contentHash, 
-      text: opts.text ?? undefined, 
-      audioUrl: opts.audioUrl ?? undefined, 
+
+    await client.mutation("functions/interactions:appendInteraction", {
+      sessionId,
+      groupId,
+      messageId,
+      role,
+      contentHash,
+      text: text,
+      audioUrl: opts.audioUrl ?? undefined,
       sttCostCents: opts.sttCostCents,
       sttDurationMs: opts.sttDurationMs,
-      ts 
+      ts
     });
   } catch (e) {
     try { console.error("[stt] persistInteraction failed", e); } catch {}
@@ -186,7 +192,28 @@ export async function POST(request: Request) {
       const audio = form.get("audio");
       const sessionId = typeof form.get("sessionId") === 'string' ? String(form.get("sessionId")) : undefined;
       const groupId = typeof form.get("groupId") === 'string' ? String(form.get("groupId")) : undefined;
+
       const languageHint = typeof form.get("languageHint") === 'string' ? String(form.get("languageHint")) : undefined;
+
+      // Initialize Convex client
+      const convexUrl = process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || "http://127.0.0.1:3210";
+      const client = makeConvex(convexUrl);
+
+      // Start session ensureActiveSession in parallel to STT for low latency
+      const ensureSessionPromise = (async () => {
+        try {
+          const hint = sessionId || undefined;
+          const res: any = await client.mutation("functions/sessions:ensureActiveSession", {
+            userId: auth.userId,
+            sessionIdHint: hint,
+            nowMs: Date.now(),
+            idleThresholdMs: 10 * 60 * 1000,
+          });
+          return (res && typeof res === 'object' && res.sessionId) ? String(res.sessionId) : hint;
+        } catch {
+          return sessionId || undefined;
+        }
+      })();
       // Optional provider override via form
       if (process.env.ALLOW_PROVIDER_OVERRIDE === '1') {
         const requested = typeof form.get("provider") === 'string' ? String(form.get("provider")) : undefined;
@@ -221,10 +248,13 @@ export async function POST(request: Request) {
         const b64 = Buffer.from(ab).toString('base64');
         const dataUrl = `data:${mime};base64,${b64}`;
 
-        const result = await provider.transcribe({ audioUrl: dataUrl, objectKey: null, languageHint: languageHint ?? null });
+      const [result, effectiveSessionId] = await Promise.all([
+        provider.transcribe({ audioUrl: dataUrl, objectKey: null, languageHint: languageHint ?? null }),
+        ensureSessionPromise,
+      ]);
         
         // Calculate STT cost based on audio duration
-        const sttCost = await calculateSTTCost(result.provider || mode, result.model, size * 8); // Rough estimate: 8ms per byte
+        const sttCost = await calculateSTTCost(result.provider || mode, result.model, Math.max(size * 0.5, 1000)); // Better estimate: 0.5ms per byte, minimum 1 second
         
         const payload = {
           provider: result.provider || mode,
@@ -241,17 +271,32 @@ export async function POST(request: Request) {
           sttDurationMs: sttCost.durationMs,
         } as const;
 
-        // Persist transcript with cost data (no audioUrl/objectKey for privacy)
-        persistInteraction({ 
-          sessionId, 
-          groupId, 
-          requestId, 
-          text: result.text ?? null, 
-          audioUrl: undefined, 
-          objectKey: undefined,
-          sttCostCents: sttCost.costCents,
-          sttDurationMs: sttCost.durationMs,
-        }).catch(() => {});
+      // Persist transcript with cost data (no audioUrl/objectKey for privacy)
+        const sidEff = effectiveSessionId || sessionId;
+        persistInteraction(client, {
+          sessionId: sidEff,
+        groupId,
+        requestId,
+        text: result.text ?? null,
+        audioUrl: undefined,
+        objectKey: undefined,
+        sttCostCents: sttCost.costCents,
+        sttDurationMs: sttCost.durationMs,
+      }).catch(() => {});
+
+      // Update denormalized session metrics (lastActivityAt, interactionCount, costs)
+      try {
+        if (sessionId) {
+          await client.mutation("functions/sessions:updateActivity", {
+            sessionId,
+            lastActivityAt: Date.now(),
+            incInteractionCount: 1,
+            sttCostCentsDelta: sttCost.costCents,
+          });
+        }
+      } catch {}
+
+        // Note: Session cost updates are handled separately by the frontend
 
         // Metrics: audio bytes in (multipart path)
         try {
@@ -277,10 +322,13 @@ export async function POST(request: Request) {
         console.log(JSON.stringify({ level: 'error', route: routePath, requestId, status: 501, mode, msg: 'Storage not configured', latencyMs: Date.now() - started }));
         return respond(501, { error: "Storage not configured" });
       }
-      const result = await provider.transcribe({ audioUrl: null, objectKey: uploaded.objectKey, languageHint: languageHint ?? null });
+      const [result, effectiveSessionId] = await Promise.all([
+        provider.transcribe({ audioUrl: null, objectKey: uploaded.objectKey, languageHint: languageHint ?? null }),
+        ensureSessionPromise,
+      ]);
       
       // Calculate STT cost based on audio duration
-      const sttCost = await calculateSTTCost(result.provider || mode, result.model, size * 8); // Rough estimate: 8ms per byte
+      const sttCost = await calculateSTTCost(result.provider || mode, result.model, Math.max(size * 0.5, 1000)); // Better estimate: 0.5ms per byte, minimum 1 second
       
       const payload = {
         provider: result.provider || mode,
@@ -298,16 +346,31 @@ export async function POST(request: Request) {
       } as const;
 
       // Persist with audio metadata and cost data when stored
-      persistInteraction({ 
-        sessionId, 
-        groupId, 
-        requestId, 
-        text: result.text ?? null, 
-        audioUrl: uploaded.audioUrl ?? undefined, 
+      const sidEff = effectiveSessionId || sessionId;
+      persistInteraction(client, {
+        sessionId: sidEff,
+        groupId,
+        requestId,
+        text: result.text ?? null,
+        audioUrl: uploaded.audioUrl ?? undefined,
         objectKey: uploaded.objectKey ?? undefined,
         sttCostCents: sttCost.costCents,
         sttDurationMs: sttCost.durationMs,
       }).catch(() => {});
+
+      // Update denormalized session metrics (lastActivityAt, interactionCount, costs)
+      try {
+        if (sidEff) {
+          await client.mutation("functions/sessions:updateActivity", {
+            sessionId: sidEff,
+            lastActivityAt: Date.now(),
+            incInteractionCount: 1,
+            sttCostCentsDelta: sttCost.costCents,
+          });
+        }
+      } catch {}
+
+      // Note: Session cost updates are handled by the Chat API during streaming
 
       // Metrics: audio bytes in (multipart path)
       try {
@@ -364,7 +427,26 @@ export async function POST(request: Request) {
   }
 
   try {
-    const result = await provider.transcribe({ audioUrl: audioUrl ?? null, objectKey: objectKey ?? null, languageHint: languageHint ?? null });
+    // Start ensureActiveSession in parallel for JSON path
+    const ensureSessionPromise = (async () => {
+      try {
+        const hint = sessionId || undefined;
+        const res: any = await makeConvex(process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || "http://127.0.0.1:3210").mutation("functions/sessions:ensureActiveSession", {
+          userId: auth.userId,
+          sessionIdHint: hint,
+          nowMs: Date.now(),
+          idleThresholdMs: 10 * 60 * 1000,
+        });
+        return (res && typeof res === 'object' && res.sessionId) ? String(res.sessionId) : hint;
+      } catch {
+        return sessionId || undefined;
+      }
+    })();
+
+    const [result, effectiveSessionId] = await Promise.all([
+      provider.transcribe({ audioUrl: audioUrl ?? null, objectKey: objectKey ?? null, languageHint: languageHint ?? null }),
+      ensureSessionPromise,
+    ]);
     
     // Calculate STT cost - estimate duration from file size if not available
     let estimatedDuration = 60000; // Default 1 minute
@@ -401,17 +483,36 @@ export async function POST(request: Request) {
       sttDurationMs: sttCost.durationMs,
     } as const;
 
+    // Initialize Convex client for persistence
+    const convexUrl = process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || "http://127.0.0.1:3210";
+    const client = makeConvex(convexUrl);
+
     // Fire-and-forget persistence of interaction row with cost data
-    persistInteraction({ 
-      sessionId, 
-      groupId, 
-      requestId, 
-      text: result.text ?? null, 
-      audioUrl: audioUrl ?? undefined, 
+    const sidEff = effectiveSessionId || sessionId;
+    persistInteraction(client, {
+      sessionId: sidEff,
+      groupId,
+      requestId,
+      text: result.text ?? null,
+      audioUrl: audioUrl ?? undefined,
       objectKey: objectKey ?? undefined,
       sttCostCents: sttCost.costCents,
       sttDurationMs: sttCost.durationMs,
     }).catch(() => {});
+
+    // Update denormalized session metrics (lastActivityAt, interactionCount, costs)
+    try {
+      if (sidEff) {
+        await client.mutation("functions/sessions:updateActivity", {
+          sessionId: sidEff,
+          lastActivityAt: Date.now(),
+          incInteractionCount: 1,
+          sttCostCentsDelta: sttCost.costCents,
+        });
+      }
+    } catch {}
+
+    // Note: Session cost updates are handled by the Chat API during streaming
 
     // Metrics: audio bytes in (best-effort for server-side fetch when objectKey is provided)
     try {

@@ -106,9 +106,7 @@ export const onAssistantMessage = mutation({
                                  error?.message?.includes("replace");
 
         if (isConcurrentError && attempt < maxRetries - 1) {
-          // Wait with exponential backoff before retrying
-          const delay = Math.min(100 * Math.pow(2, attempt), 1000);
-          await new Promise(resolve => setTimeout(resolve, delay));
+          // Retry immediately without delay (setTimeout not allowed in mutations)
           continue;
         }
 
@@ -157,8 +155,7 @@ export const onGenerated = mutation({
 
         if (!updateResult) {
           if (attempt < maxRetries - 1) {
-            const delay = Math.min(100 * Math.pow(2, attempt), 1000);
-            await new Promise(resolve => setTimeout(resolve, delay));
+            // Retry immediately without delay (setTimeout not allowed in mutations)
             continue;
           }
           return { ok: false } as const;
@@ -173,7 +170,7 @@ export const onGenerated = mutation({
 
         if (isConcurrentError && attempt < maxRetries - 1) {
           const delay = Math.min(100 * Math.pow(2, attempt), 1000);
-          await new Promise(resolve => setTimeout(resolve, delay));
+          // Retry immediately without delay (setTimeout not allowed in mutations)
           continue;
         }
 
@@ -214,8 +211,7 @@ export const releaseLock = mutation({
 
         if (!updateResult) {
           if (attempt < maxRetries - 1) {
-            const delay = Math.min(100 * Math.pow(2, attempt), 1000);
-            await new Promise(resolve => setTimeout(resolve, delay));
+            // Retry immediately without delay (setTimeout not allowed in mutations)
             continue;
           }
           return { ok: false } as const;
@@ -230,7 +226,7 @@ export const releaseLock = mutation({
 
         if (isConcurrentError && attempt < maxRetries - 1) {
           const delay = Math.min(100 * Math.pow(2, attempt), 1000);
-          await new Promise(resolve => setTimeout(resolve, delay));
+          // Retry immediately without delay (setTimeout not allowed in mutations)
           continue;
         }
 

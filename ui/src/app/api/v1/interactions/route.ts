@@ -324,13 +324,23 @@ export async function POST(request: Request) {
     const authedUserId = authRes.userId && authRes.userId !== 'anonymous' ? authRes.userId : undefined;
     const effectiveUserId = String(authedUserId || body.userId || 'unknown');
     if (process.env.MOCK_CONVEX === '1') {
+      // Skip empty or meaningless text content
+      const text = body.text?.trim();
+      if (!text || text.length === 0) {
+        console.log("[interactions] Skipping empty interaction - no meaningful text content (mock)");
+        return new Response(JSON.stringify({ ok: true, id: null, skipped: "empty_text" }), {
+          status: 200,
+          headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
+        });
+      }
+
       const res = await mockConvex.appendInteraction({
         sessionId: body.sessionId,
         groupId: body.groupId,
         messageId: body.messageId,
         role: body.role,
         contentHash: body.contentHash,
-        text: body.text,
+        text: text,
         audioUrl: body.audioUrl !== undefined && body.audioUrl !== null ? String(body.audioUrl) : undefined,
         ts: body.ts,
       });
@@ -364,6 +374,16 @@ export async function POST(request: Request) {
       });
     }
 
+    // Skip empty or meaningless text content
+    const text = body.text?.trim();
+    if (!text || text.length === 0) {
+      console.log("[interactions] Skipping empty interaction - no meaningful text content");
+      return new Response(JSON.stringify({ ok: true, id: null, skipped: "empty_text" }), {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
+      });
+    }
+
     const client = makeConvex(convexUrl);
     const id = await client.mutation("functions/interactions:appendInteraction", {
       sessionId: body.sessionId,
@@ -371,7 +391,7 @@ export async function POST(request: Request) {
       messageId: body.messageId,
       role: body.role,
       contentHash: body.contentHash,
-      text: body.text,
+      text: text,
       audioUrl: body.audioUrl,
       ts: body.ts,
     });

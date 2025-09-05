@@ -7,7 +7,7 @@ import { useMinimalAudio } from "./MinimalAudioContext";
 export type MinimalVoiceContextValue = {
   enqueueTTSSegment: (text: string) => Promise<void>;
   enqueueTTSChunk: (text: string) => Promise<void>;
-  sttFromBlob: (b: Blob) => Promise<{ text: string }>;
+  sttFromBlob: (b: Blob, sessionId?: string) => Promise<{ text: string }>;
   cancelTTS: () => void;
 };
 
@@ -150,9 +150,13 @@ export function MinimalVoiceProvider({ children }: { children: React.ReactNode }
     void processPendingChunks();
   }, [processPendingChunks]);
 
-  const sttFromBlob = useCallback(async (b: Blob): Promise<{ text: string }> => {
+  const sttFromBlob = useCallback(async (b: Blob, sessionId?: string): Promise<{ text: string }> => {
     const form = new FormData();
     form.set("audio", b, "u.webm");
+    // Add session ID to form data if provided
+    if (sessionId) {
+      form.set("sessionId", sessionId);
+    }
     // Get Clerk session token for authentication
     const token = await getToken();
     const headers: Record<string, string> = {};

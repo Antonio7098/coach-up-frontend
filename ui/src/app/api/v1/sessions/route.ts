@@ -70,13 +70,13 @@ export async function GET(request: Request) {
   try {
     if (mode === 'mock') {
       const doc = await mockConvex.getSessionById?.({ sessionId });
-      const payload = { session: doc ?? null };
+      const payload = { session: doc ?? null, hasSession: !!doc };
       console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, sessionId, mode, hasSession: !!doc, latencyMs: Date.now() - started }));
       return respond(200, payload);
     }
     const client = makeConvex(convexBaseUrl());
     const data: any = await client.query("functions/sessions:getBySessionId", { sessionId });
-    const payload = { session: data ?? null };
+    const payload = { session: data ?? null, hasSession: !!data };
     console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, sessionId, mode, hasSession: !!data, latencyMs: Date.now() - started }));
     return respond(200, payload);
   } catch (err: unknown) {

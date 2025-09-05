@@ -40,7 +40,11 @@ export const appendInteraction = mutation({
     }
     if (args.text !== undefined && args.text !== null) {
       if (typeof args.text !== 'string') throw new Error('text must be a string when provided');
-      // Allow empty string but trim to store consistent formatting
+      // Skip empty or meaningless text content
+      const trimmedText = args.text.trim();
+      if (!trimmedText || trimmedText.length === 0) {
+        throw new Error('text must contain meaningful content - empty text not allowed');
+      }
     }
     const now = Date.now();
     const id = await ctx.db.insert("interactions", {
@@ -49,7 +53,7 @@ export const appendInteraction = mutation({
       messageId: args.messageId,
       role: args.role,
       contentHash: args.contentHash,
-      text: args.text,
+      text: args.text?.trim() || args.text,
       audioUrl: args.audioUrl,
       // Cost tracking fields
       sttCostCents: args.sttCostCents,
@@ -150,6 +154,35 @@ export const updateSessionCosts = mutation({
     });
     
     return { id: session._id } as const;
+  },
+});
+
+export const getLatestInteraction = query({
+  args: { userId: v.string() },
+  handler: async (ctx, { userId }) => {
+    // Get all sessions for this user
+    const userSessions = await ctx.db
+      .query("sessions")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    
+    if (userSessions.length === 0) {
+      return null;
+    }
+    
+    // Get all interactions for these sessions
+    const allInteractions = [];
+    for (const session of userSessions) {
+      const sessionInteractions = await ctx.db
+        .query("interactions")
+        .withIndex("by_session", (q) => q.eq("sessionId", session.sessionId))
+        .collect();
+      allInteractions.push(...sessionInteractions);
+    }
+    
+    // Return the most recent interaction
+    const latest = allInteractions.sort((a, b) => b.ts - a.ts)[0];
+    return latest || null;
   },
 });
 

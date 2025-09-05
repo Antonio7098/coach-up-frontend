@@ -98,6 +98,7 @@ export async function GET(request: Request) {
   const promptParam = url.searchParams.get("prompt") || "";
   const sessionId = url.searchParams.get("sessionId") || "";
   const ridIn = url.searchParams.get("rid") || "";
+  console.log(`[ui/api/chat] Extracted sessionId: ${sessionId}`);
   const debugOn = (process.env.PROMPT_DEBUG === "1") || (url.searchParams.get("debug") === "1");
   const systemPromptParam = url.searchParams.get("systemPrompt") || "";
   try {
@@ -133,6 +134,7 @@ export async function GET(request: Request) {
 
   // Merge in server-side summary to history (as system) when available
   let upstreamUrl = `${aiApiBaseUrl()}/chat/stream${search}`;
+  console.log(`[ui/api/chat] Upstream URL: ${upstreamUrl}`);
 
   // Add custom system prompt parameter if provided
   if (systemPromptParam && systemPromptParam.trim().length > 0) {

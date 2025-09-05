@@ -62,10 +62,10 @@ const PRICING_MODELS = {
     },
   },
   
-  // Deepgram pricing (per minute, converted to cents)
+  // Deepgram pricing (per minute, converted to cents) - Updated 2024 rates
   deepgram: {
     stt: {
-      'nova-2': { perMinute: 0.4 }, // $0.004 per minute
+      'nova-2': { perMinute: 0.43 }, // $0.0043 per minute (2024 rate)
       'nova-2-general': { perMinute: 0.4 }, // $0.004 per minute
       'nova-2-meeting': { perMinute: 0.4 }, // $0.004 per minute
       'nova-2-phonecall': { perMinute: 0.4 }, // $0.004 per minute

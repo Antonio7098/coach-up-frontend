@@ -37,7 +37,7 @@ describe('API: POST /api/v1/sessions/state', () => {
     expect(client).toBeTruthy();
 
     expect(client.mutation).toHaveBeenCalledWith(
-      'sessions:updateSessionState',
+      'functions/sessions:updateSessionState',
       expect.objectContaining({ userId: body.userId, sessionId: body.sessionId, latestGroupId: body.latestGroupId })
     );
 

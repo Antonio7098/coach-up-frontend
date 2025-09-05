@@ -50,7 +50,7 @@ export function MinimalMicProvider({
   const voice = useMinimalVoice();
   const audio = useMinimalAudio();
   const convo = useMinimalConversation();
-  const { sessionId } = useMinimalSession();
+  const { sessionId, ensureFreshSession } = useMinimalSession();
 
 
   const sessionIdRef = useRef<string | null>(null);
@@ -242,6 +242,8 @@ export function MinimalMicProvider({
     if (recording || startingRef.current) return;
     try {
       startingRef.current = true;
+      // Ensure session freshness before starting a new capture/turn
+      try { await ensureFreshSession(); } catch {}
       // Start recording
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
@@ -265,7 +267,7 @@ export function MinimalMicProvider({
           if (blob.size === 0) { return; }
           if (!shouldSkip) {
             setStatus("stt");
-            const { text } = await voice.sttFromBlob(blob);
+            const { text } = await voice.sttFromBlob(blob, sessionIdRef.current || undefined);
             setTranscript(text);
             if (!text || text.trim().length === 0) {
               try { console.warn("MinimalMic: STT returned empty text"); } catch {}
@@ -290,35 +292,8 @@ export function MinimalMicProvider({
             // REMOVED: Non-streaming call that was causing race condition
             // const reply = await convo.chatToText(text, chatOptions);
             // Chat processing complete
-            // Persist interactions to backend to enable server cadence
-            try {
-              const sid = (sessionIdRef.current || '').toString();
-              if (sid) {
-                const now = Date.now();
-                const reqId = Math.random().toString(36).slice(2);
-                const djb2 = (input: string): string => {
-                  const s = (input || '').trim();
-                  if (s.length === 0) return '0';
-                  let h = 5381;
-                  for (let i = 0; i < s.length; i++) { h = ((h << 5) + h) ^ s.charCodeAt(i); }
-                  return (h >>> 0).toString(16);
-                };
-                // user message
-                try { console.log('[ingest] mic → POST user', { sid, len: (text || '').length }); } catch {}
-                void fetchWithRetry('/api/v1/interactions', {
-                  method: 'POST',
-                  headers: { 'content-type': 'application/json', 'x-request-id': reqId },
-                  body: JSON.stringify({ sessionId: sid, messageId: `m_user_${now}`, role: 'user', contentHash: djb2(text || `m_user_${now}`), text, ts: now })
-                }, { maxAttempts: 3, endpoint: 'interactions' }).catch((error) => {
-                  try { console.error('[ingest] mic → POST user failed after retries:', error); } catch {}
-                });
-                // assistant message (slightly later ts) - will be updated after streaming completes
-                // Note: We can't persist here because streamingReply isn't available yet
-                // The persistence will happen after the streaming response is complete
-              } else {
-                try { console.warn('[ingest] mic skip: no sessionId available yet'); } catch {}
-              }
-            } catch {}
+            // Note: User interactions are now handled by STT route, assistant interactions by AI API
+            // No need to persist interactions here to avoid duplicates
             setStatus("tts");
             try { voice.cancelTTS?.(); } catch {}
 
@@ -349,8 +324,21 @@ export function MinimalMicProvider({
 
             // Starting streaming chat with history
 
-            // Use chatToTextStreamingWithHistory to ensure conversation history is properly updated with streaming
-            const streamingReply = await convo.chatToTextStreamingWithHistory(text, onChunk, streamingOptions);
+            // Use chatToTextStreaming to avoid duplicate user interactions (STT route handles user interactions)
+            console.log("MinimalMic: Calling chatToTextStreaming", { text: text.substring(0, 50), sessionId: sessionIdRef.current });
+            const streamingReply = await convo.chatToTextStreaming(text, onChunk, { ...streamingOptions, sessionId: sessionIdRef.current || undefined });
+            console.log("MinimalMic: chatToTextStreaming completed", { reply: streamingReply?.substring(0, 50) });
+
+            // Manually update conversation history since we're not using the "WithHistory" version
+            try {
+              const history = convo.getImmediateHistory();
+              history.push({ role: "user", content: text });
+              history.push({ role: "assistant", content: streamingReply });
+              // Keep only last 2 messages
+              if (history.length > 2) {
+                history.splice(0, history.length - 2);
+              }
+            } catch {}
 
             // Streaming chat completed
 
@@ -361,29 +349,8 @@ export function MinimalMicProvider({
 
             setAssistantText(streamingReply);
 
-            // Persist the assistant message now that we have the streaming reply
-            try {
-              const sid = (sessionIdRef.current || '').toString();
-              if (sid && streamingReply) {
-                const now = Date.now();
-                const reqId = Math.random().toString(36).slice(2);
-                const djb2 = (input: string): string => {
-                  const s = (input || '').trim();
-                  if (s.length === 0) return '0';
-                  let h = 5381;
-                  for (let i = 0; i < s.length; i++) { h = ((h << 5) + h) ^ s.charCodeAt(i); }
-                  return (h >>> 0).toString(16);
-                };
-                try { console.log('[ingest] mic → POST assistant', { sid, len: (streamingReply || '').length }); } catch {}
-                void fetchWithRetry('/api/v1/interactions', {
-                  method: 'POST',
-                  headers: { 'content-type': 'application/json', 'x-request-id': reqId },
-                  body: JSON.stringify({ sessionId: sid, messageId: `m_assistant_${now}`, role: 'assistant', contentHash: djb2((streamingReply || `m_assistant_${now}`)), text: streamingReply, ts: now })
-                }, { maxAttempts: 3, endpoint: 'interactions' }).catch((error) => {
-                  try { console.error('[ingest] mic → POST assistant failed after retries:', error); } catch {}
-                });
-              }
-            } catch {}
+            // Note: Assistant interactions are now handled by AI API service
+            // No need to persist interactions here to avoid duplicates
 
             // Ensure concurrent capture during playback for barge-in
             if (vadLoopRef.current && !recording) { try { void startRecordingInternal(true); } catch {} }

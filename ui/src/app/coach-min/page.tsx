@@ -105,7 +105,7 @@ function Content({
   const mic = useMinimalMic();
   const audio = useMinimalAudio();
   const convo = useMinimalConversation();
-  const { sessionId } = useMinimalSession();
+  const { sessionId, startNewSession } = useMinimalSession();
   const { user } = useUser();
   const { getToken } = useAuth();
 
@@ -148,10 +148,37 @@ function Content({
   const [sessionCostsLoading, setSessionCostsLoading] = React.useState<boolean>(false);
   const [sessionCostsError, setSessionCostsError] = React.useState<string>("");
   
-  // Fetch session costs using Convex
-  const sessionCostsData = useQuery(api.functions.interactions.getSessionCosts, 
-    sessionId ? { sessionId } : "skip"
-  );
+  // Fetch session metrics using the new lightweight endpoint
+  const [sessionMetricsData, setSessionMetricsData] = React.useState<any>(null);
+  const [sessionMetricsLoading, setSessionMetricsLoading] = React.useState<boolean>(false);
+  const [sessionMetricsError, setSessionMetricsError] = React.useState<string>("");
+
+  const fetchSessionMetrics = React.useCallback(async () => {
+    if (!sessionId) return;
+    setSessionMetricsLoading(true);
+    setSessionMetricsError("");
+    try {
+      const reqId = Math.random().toString(36).slice(2);
+      const headers = await buildAuthHeaders({ accept: 'application/json', 'x-request-id': reqId });
+      const res = await fetch(`/api/v1/sessions/metrics?sessionId=${encodeURIComponent(sessionId)}`, {
+        method: 'GET',
+        headers,
+        cache: 'no-store',
+      });
+      const data = await res.json().catch(() => ({})) as { error?: string; sessionId?: string; lastActivityAt?: number; interactionCount?: number; sttCostCents?: number; llmCostCents?: number; ttsCostCents?: number; totalCostCents?: number; startTime?: number };
+      if (!res.ok) throw new Error(data?.error || `session metrics failed: ${res.status}`);
+      setSessionMetricsData(data);
+    } catch (e) {
+      setSessionMetricsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSessionMetricsLoading(false);
+    }
+  }, [sessionId, buildAuthHeaders]);
+
+  // Fetch metrics when sessionId changes
+  React.useEffect(() => {
+    fetchSessionMetrics();
+  }, [fetchSessionMetrics]);
 
   // Tab management for collapsible panel
   const [activeTab, setActiveTab] = React.useState<'status' | 'prompt' | 'summary' | 'transcript' | 'session'>('status');
@@ -849,62 +876,64 @@ function Content({
             </div>
 
             {/* Tab Navigation */}
-            <div className="flex border-b border-gray-200 flex-shrink-0">
-              <button
-                type="button"
-                onClick={() => setActiveTab('status')}
-                className={`px-4 py-2 text-sm font-mono border-b-2 transition-colors ${
-                  activeTab === 'status'
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                STATUS
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab('prompt')}
-                className={`px-4 py-2 text-sm font-mono border-b-2 transition-colors ${
-                  activeTab === 'prompt'
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                LLM_PROMPT
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab('summary')}
-                className={`px-4 py-2 text-sm font-mono border-b-2 transition-colors ${
-                  activeTab === 'summary'
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                SUMMARY
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab('transcript')}
-                className={`px-4 py-2 text-sm font-mono border-b-2 transition-colors ${
-                  activeTab === 'transcript'
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                TRANSCRIPT
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab('session')}
-                className={`px-4 py-2 text-sm font-mono border-b-2 transition-colors ${
-                  activeTab === 'session'
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                SESSION
-              </button>
+            <div className="border-b border-gray-200 flex-shrink-0 overflow-x-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent">
+              <div className="flex min-w-max">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('status')}
+                  className={`px-4 py-2 text-sm font-mono border-b-2 transition-colors whitespace-nowrap ${
+                    activeTab === 'status'
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  STATUS
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('prompt')}
+                  className={`px-4 py-2 text-sm font-mono border-b-2 transition-colors whitespace-nowrap ${
+                    activeTab === 'prompt'
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  LLM_PROMPT
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('summary')}
+                  className={`px-4 py-2 text-sm font-mono border-b-2 transition-colors whitespace-nowrap ${
+                    activeTab === 'summary'
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  SUMMARY
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('transcript')}
+                  className={`px-4 py-2 text-sm font-mono border-b-2 transition-colors whitespace-nowrap ${
+                    activeTab === 'transcript'
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  TRANSCRIPT
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('session')}
+                  className={`px-4 py-2 text-sm font-mono border-b-2 transition-colors whitespace-nowrap ${
+                    activeTab === 'session'
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  SESSION
+                </button>
+              </div>
             </div>
 
             {/* Tab Content */}
@@ -1180,6 +1209,28 @@ function Content({
 
               {activeTab === 'session' && (
                 <div className="space-y-4">
+                  {/* Start New Session Button */}
+                  <div className="border border-gray-200 rounded p-3 bg-blue-50">
+                    <div className="text-sm font-mono text-blue-600 font-semibold mb-2">[SESSION_CONTROLS]</div>
+                    <button
+                      onClick={() => {
+                        if (window.confirm('Start a new session? This will reset all session data and costs.')) {
+                          startNewSession();
+                          // Show success message
+                          setTimeout(() => {
+                            alert('New session started! Session data has been reset.');
+                          }, 100);
+                        }
+                      }}
+                      className="px-4 py-2 bg-blue-600 text-white text-sm font-mono rounded hover:bg-blue-700 transition-colors"
+                    >
+                      Start New Session
+                    </button>
+                    <div className="text-xs text-gray-600 mt-2 font-mono">
+                      Current Session: {sessionId || 'Loading...'}
+                    </div>
+                  </div>
+
                   {/* Session Cost Summary */}
                   <div className="border border-gray-200 rounded p-3 bg-gray-50">
                     <div className="text-sm font-mono text-blue-600 font-semibold mb-2">[SESSION_COST_SUMMARY]</div>
@@ -1274,32 +1325,61 @@ function Content({
 
                   {/* Session Metrics */}
                   <div className="border border-gray-200 rounded p-3 bg-gray-50">
-                    <div className="text-sm font-mono text-blue-600 font-semibold mb-2">[SESSION_METRICS]</div>
-                    {sessionCostsData ? (
+                    <div className="flex justify-between items-center mb-2">
+                      <div className="text-sm font-mono text-blue-600 font-semibold">[SESSION_METRICS]</div>
+                      <button
+                        onClick={fetchSessionMetrics}
+                        disabled={sessionMetricsLoading}
+                        className="text-xs px-2 py-1 bg-blue-100 hover:bg-blue-200 disabled:bg-gray-100 text-blue-700 rounded border border-blue-300 disabled:text-gray-500"
+                      >
+                        {sessionMetricsLoading ? '...' : '↻'}
+                      </button>
+                    </div>
+                    {sessionMetricsLoading ? (
+                      <div className="text-xs text-gray-500 font-mono">Loading session metrics...</div>
+                    ) : sessionMetricsError ? (
+                      <div className="text-xs text-red-500 font-mono">Error: {sessionMetricsError}</div>
+                    ) : sessionMetricsData ? (
                       <div className="text-xs space-y-1 font-mono">
                         <div className="flex justify-between">
                           <span className="text-gray-600">Session ID:</span>
-                          <span className="text-gray-800 font-mono">{sessionCostsData.session.sessionId}</span>
+                          <span className="text-gray-800 font-mono">{sessionMetricsData.sessionId}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-gray-600">Start Time:</span>
                           <span className="text-gray-800">
-                            {new Date(sessionCostsData.session.startTime).toLocaleTimeString()}
+                            {sessionMetricsData.startTime ? new Date(sessionMetricsData.startTime).toLocaleTimeString() : 'N/A'}
                           </span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-gray-600">Last Activity:</span>
                           <span className="text-gray-800">
-                            {new Date(sessionCostsData.session.lastActivityAt).toLocaleTimeString()}
+                            {sessionMetricsData.lastActivityAt ? new Date(sessionMetricsData.lastActivityAt).toLocaleTimeString() : 'N/A'}
                           </span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-gray-600">Status:</span>
-                          <span className="text-gray-800">Active</span>
+                          <span className="text-gray-600">Interactions:</span>
+                          <span className="text-gray-800">{sessionMetricsData.interactionCount || 0}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Total Cost:</span>
+                          <span className="text-gray-800">${((sessionMetricsData.totalCostCents || 0) / 100).toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">STT Cost:</span>
+                          <span className="text-gray-800">${((sessionMetricsData.sttCostCents || 0) / 100).toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">LLM Cost:</span>
+                          <span className="text-gray-800">${((sessionMetricsData.llmCostCents || 0) / 100).toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">TTS Cost:</span>
+                          <span className="text-gray-800">${((sessionMetricsData.ttsCostCents || 0) / 100).toFixed(2)}</span>
                         </div>
                       </div>
                     ) : (
-                      <div className="text-xs text-gray-500 font-mono">Loading session metrics...</div>
+                      <div className="text-xs text-gray-500 font-mono">No session data available</div>
                     )}
                   </div>
                 </div>
