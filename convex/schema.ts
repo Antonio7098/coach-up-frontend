@@ -108,6 +108,16 @@ export default defineSchema({
     contentHash: v.string(),
     text: v.optional(v.string()),
     audioUrl: v.optional(v.string()),
+    // Triage metadata (optional; populated by triage pipeline)
+    assessmentType: v.optional(
+      v.union(
+        v.literal("single_qa_pair"),
+        v.literal("roleplay_scenario"),
+        v.literal("general_chatter"),
+        v.literal("unknown"),
+      )
+    ),
+    triageProcessedAt: v.optional(v.number()), // ms since epoch
     // Cost tracking fields (in cents)
     sttCostCents: v.optional(v.number()),
     llmCostCents: v.optional(v.number()),
@@ -123,7 +133,9 @@ export default defineSchema({
   })
     .index("by_session", ["sessionId"]) 
     .index("by_group", ["groupId"]) 
-    .index("by_session_ts", ["sessionId", "ts"]),
+    .index("by_session_ts", ["sessionId", "ts"]) 
+    // Index to efficiently query assessable interactions by session/type/time
+    .index("by_session_assess_type_ts", ["sessionId", "assessmentType", "ts"]),
 
   // Events — observability and state transitions
   events: defineTable({
