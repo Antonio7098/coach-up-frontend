@@ -23,10 +23,6 @@ interface InteractionsBody {
 export async function GET(request: Request) {
   const headersIn = new Headers(request.headers);
   const requestId = headersIn.get("x-request-id") || safeUUID();
-  const urlMeta = { path: new URL(request.url).pathname, host: headersIn.get("host") };
-  const hasAuthHeader = !!(headersIn.get("authorization") || headersIn.get("Authorization"));
-  const cookieHeader = headersIn.get("cookie") || "";
-  const hasClerkCookie = /(__session|Clerk)/i.test(cookieHeader);
   const authRes = await requireAuth(request);
   if (!authRes.ok) {
     return new Response(JSON.stringify({ error: "Unauthorized" }), {
@@ -38,6 +34,7 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const sessionId = url.searchParams.get("sessionId") || "";
   const groupId = url.searchParams.get("groupId") || "";
+  const sinceId = url.searchParams.get("sinceId") || "";
   const limitParam = url.searchParams.get("limit");
   const limit = Math.max(1, Math.min(500, Number.isFinite(Number(limitParam)) ? Number(limitParam) : 200));
 
@@ -62,9 +59,42 @@ export async function GET(request: Request) {
       } else {
         interactions = await mockConvex.listInteractionsByGroup({ groupId, limit });
       }
-      return new Response(JSON.stringify({ interactions }), {
+
+      // Handle incremental fetching if sinceId is provided
+      if (sinceId && interactions.length > 0) {
+        const sinceIndex = interactions.findIndex((interaction: any) =>
+          String(interaction?.messageId || "") === sinceId
+        );
+        if (sinceIndex >= 0) {
+          interactions = interactions.slice(sinceIndex + 1);
+        }
+      }
+
+      // Generate ETag for caching
+      const etagComponents = [sessionId || groupId, String(interactions.length), String(limit)];
+      if (sinceId) etagComponents.push(sinceId);
+      const etag = crypto.createHash('md5').update(etagComponents.join(':')).digest('hex');
+
+      // Get latest ID for cache management
+      const latestId = interactions.length > 0 ?
+        String(interactions[interactions.length - 1]?.messageId || "") : null;
+
+      const headers = {
+        "content-type": "application/json; charset=utf-8",
+        "X-Request-Id": requestId,
+        "ETag": etag,
+        ...corsHeaders
+      };
+      if (latestId) headers["X-Latest-Id"] = latestId;
+
+      return new Response(JSON.stringify({
+        interactions,
+        latestId,
+        count: interactions.length,
+        hasMore: interactions.length >= limit
+      }), {
         status: 200,
-        headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
+        headers,
       });
     }
 
@@ -75,15 +105,47 @@ export async function GET(request: Request) {
     } else {
       interactions = await client.query("functions/interactions:listByGroup", { groupId, limit }) as any;
     }
+
+    // Handle incremental fetching if sinceId is provided
+    if (sinceId && interactions.length > 0) {
+      const sinceIndex = interactions.findIndex((interaction: any) =>
+        String(interaction?.messageId || "") === sinceId
+      );
+      if (sinceIndex >= 0) {
+        interactions = interactions.slice(sinceIndex + 1);
+      }
+    }
+
+    // Generate ETag for caching
+    const etagComponents = [sessionId || groupId, String(interactions.length), String(limit)];
+    if (sinceId) etagComponents.push(sinceId);
+    const etag = crypto.createHash('md5').update(etagComponents.join(':')).digest('hex');
+
+    // Get latest ID for cache management
+    const latestId = interactions.length > 0 ?
+      String(interactions[interactions.length - 1]?.messageId || "") : null;
     // Track successful GET request
     try {
       promMetrics.requestsTotal.labels("interactions", "GET", "200", "success").inc();
       promMetrics.requestDurationSeconds.labels("interactions", "GET", "200", "success").observe(Date.now() / 1000);
     } catch {}
 
-    return new Response(JSON.stringify({ interactions }), {
+    const headers = {
+      "content-type": "application/json; charset=utf-8",
+      "X-Request-Id": requestId,
+      "ETag": etag,
+      ...corsHeaders
+    };
+    if (latestId) headers["X-Latest-Id"] = latestId;
+
+    return new Response(JSON.stringify({
+      interactions,
+      latestId,
+      count: interactions.length,
+      hasMore: interactions.length >= limit
+    }), {
       status: 200,
-      headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
+      headers,
     });
   } catch (err: unknown) {
     try { console.error('[interactions] GET failed', err); } catch {}
@@ -106,7 +168,7 @@ const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, X-Request-Id, X-Tracked-Skill-Id, Authorization",
-  "Access-Control-Expose-Headers": "X-Request-Id",
+  "Access-Control-Expose-Headers": "X-Request-Id, ETag, X-Latest-Id",
 };
 
 export async function OPTIONS() {
@@ -143,10 +205,6 @@ export async function POST(request: Request) {
   const requestId = headersIn.get("x-request-id") || safeUUID();
   const trackedSkillId = headersIn.get("x-tracked-skill-id") || undefined;
   const trackedSkillIdHash = trackedSkillId ? sha256Hex(trackedSkillId) : undefined;
-  const urlMeta = { path: new URL(request.url).pathname, host: headersIn.get("host") };
-  const hasAuthHeader = !!(headersIn.get("authorization") || headersIn.get("Authorization"));
-  const cookieHeader = headersIn.get("cookie") || "";
-  const hasClerkCookie = /(__session|Clerk)/i.test(cookieHeader);
 
   // Optional Clerk gating (enabled when CLERK_ENABLED=1)
   const authRes = await requireAuth(request);

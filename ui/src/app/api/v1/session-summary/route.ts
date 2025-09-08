@@ -42,7 +42,10 @@ function aiApiBaseUrl() {
   );
 }
 
+// Compact lite endpoint for frequent polling
 export async function GET(request: Request) {
+  const url = new URL(request.url);
+  const isLite = url.pathname.endsWith('/lite') || url.searchParams.get('lite') === 'true';
   const headersIn = new Headers(request.headers);
   const requestId = headersIn.get("x-request-id") || safeUUID();
   const idempotencyKey = headersIn.get("idempotency-key") || headersIn.get("Idempotency-Key") || "";
@@ -124,6 +127,32 @@ export async function GET(request: Request) {
       }
     } catch {}
 
+    // Return compact payload for lite mode (frequent polling)
+    if (isLite) {
+      const litePayload = {
+        sessionId,
+        due: typeof status?.assistantSince === 'number' && typeof status?.thresholdTurns === 'number'
+          ? status.assistantSince >= status.thresholdTurns : false,
+        lastSummary: last ? {
+          version: typeof last.version === 'number' ? last.version : 0,
+          cutoffIndex: typeof last.cutoffIndex === 'number' ? last.cutoffIndex : undefined,
+          updatedAt,
+          preview: String(last.text || "").substring(0, 100) + (String(last.text || "").length > 100 ? "..." : "")
+        } : null,
+        reservation: {
+          inProgress: latest?.inProgress === true,
+          lastJobAt: typeof status?.lastJobAt === 'number' ? status.lastJobAt : undefined
+        },
+        turnsSince: typeof status?.assistantSince === 'number' ? status.assistantSince : 0
+      };
+      return respond(200, litePayload, {
+        "X-RateLimit-Limit": String(rl.limit),
+        "X-RateLimit-Remaining": String(rl.remaining),
+        "X-RateLimit-Reset": String(rl.resetSec)
+      });
+    }
+
+    // Full payload for regular requests
     const payload = {
       sessionId,
       text: String(last?.text || ""),
