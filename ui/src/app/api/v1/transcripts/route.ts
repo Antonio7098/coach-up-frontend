@@ -102,6 +102,9 @@ export async function GET(request: Request) {
       role: d.role ?? null,
       text: d.text ?? null,
       audioUrl: d.audioUrl ?? null,
+      // Surface triage metadata when present
+      assessmentType: d.assessmentType ?? undefined,
+      triageProcessedAt: typeof d.triageProcessedAt === 'number' ? d.triageProcessedAt : undefined,
       createdAt: d.createdAt ?? d.ts ?? Date.now(),
     }));
 

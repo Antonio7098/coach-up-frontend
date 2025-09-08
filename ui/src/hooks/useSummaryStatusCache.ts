@@ -184,3 +184,4 @@ const data = await response.json();
     lastSummaryVersion: cache.status?.lastSummary?.version ?? 0
   };
 }
+

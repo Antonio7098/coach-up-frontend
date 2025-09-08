@@ -56,7 +56,7 @@ export async function GET(request: Request) {
 
   // Rate limit per client (best-effort; in-memory only) - more lenient for lite endpoint
   const rlKey = clientKeyFromHeaders(headersIn);
-  const rl = rateLimit(`session-summary-lite:${rlKey}`, { windowMs: 10000, maxRequests: 20 }); // 20 requests per 10 seconds
+  const rl = rateLimit(`session-summary-lite:${rlKey}`); // Uses global rate limit config
   if (!rl.ok) {
     const labels = { route: routePath, method, status: '429', mode } as const;
     promMetrics.rateLimitedTotal.labels(labels.route, labels.method, labels.status, labels.mode).inc();
@@ -127,3 +127,4 @@ export async function GET(request: Request) {
     return respond(502, { error: "Backend query failed" });
   }
 }
+
