@@ -10,6 +10,29 @@
 
 This document tracks the implementation of performance optimizations based on the comprehensive analysis provided. The approach is incremental with manual testing validation at each checkpoint to ensure stability and measure impact.
 
+### Live Status Update (2025-09-08)
+- Concern: Delay between chat response and TTS start on coach-min.
+- Finding: SSE is functioning, but provider chunking is coarse (sentence-level), so the first onmessage delivers a whole sentence instead of word-level deltas. The UI only has something to speak once the first chunk arrives (often a full sentence).
+- Evidence (curl):
+  - /api/chat (UI proxy) and /chat/stream (AI API) both returned a small number of data: events, each containing entire sentences, followed by [DONE].
+  - With explicit model override model=google/gemini-2.5-flash, multiple chunks arrived but still sentence-sized; not word-by-word.
+- Root cause: Model behavior changed vs prior expectations. gemini-2.5-flash(-lite) streams larger parts. Previously observed word-level deltas likely came from a different model/provider.
+- Impact: TTS cannot begin until the first sentence-sized chunk is received, causing audible start delay even when punctuation is present.
+- Next steps (options):
+  1) Switch to a model/provider that emits fine-grained deltas (e.g., OpenRouter openai/gpt-4o-mini, or try gemini-1.5-pro). Validate with curl.
+  2) Add a provider-side splitter in AI API (Google provider): when receiving a longer text part in a streamed line, split by whitespace and yield smaller SSE data events (word-level). This preserves streaming semantics downstream and starts TTS earlier.
+  3) Minor UI tuning (optional): reduce idle debounce (e.g., 200ms → 120ms) and first-segment threshold (12 → 8 chars) for faster initial flush when small chunks arrive.
+- Decision needed: Choose (1) model change or (2) provider-side splitter implementation. UI tuning can be applied regardless.
+- Status: Pending decision. No code changes applied yet; behavior confirmed with live curl tests.
+
+#### Repro commands (for future reference)
+- UI proxy with model override:
+  curl -sS -N -H 'Accept: text/event-stream' \
+    'http://localhost:3000/api/chat?prompt=Hello.&sessionId=f5406632-adb9-4a25-80d9-428fb944c078&userProfile=eyJfY3JlYXRpb25UaW1lIjoxNzU2ODA3MDU0MDE0LjA4MzUsIl9pZCI6ImtkNzV4NDlrbXh0MXoyZ3k1czdkZXJwdGs5N3B2bW5wIiwiYmlvIjoiSSBhbSBhIHNhbGVzbWFuIiwiY3JlYXRlZEF0IjoxNzU2ODA3MDU0MDE3LCJkaXNwbGF5TmFtZSI6IkFudG9uaW8gUmVlcyIsInVwZGF0ZWRBdCI6MTc1NjgwNzA1NDAxNywidXNlcklkIjoidXNlcl8zMjZZRktCblE4VENDdURUa1BMWnlrRmZ3akEifQ&userGoals=W3siX2NyZWF0aW9uVGltZSI6MTc1NjgwNzA3MDM5My42OTQzLCJfaWQiOiJrOTc3YmdnODc3NmM1N2NkdzV6eW1zbms1ZDdwdHJqbiIsImNyZWF0ZWRBdCI6MTc1NjgwNzA3MDM5NywiZGVzY3JpcHRpb24iOiJSZWR1Y2UgZmlsbGVyIHdvcmRzICh1bSwgYWgpIiwiZ29hbElkIjoiZ29hbF8xNzU2ODA3MDY5NDk3X3J6ZW5zZmN0a2YiLCJzdGF0dXMiOiJhY3RpdmUiLCJ0YWdzIjpbXSwidGl0bGUiOiJGaWxsZXIgd29yZHMiLCJ1cGRhdGVkQXQiOjE3NTY4MDcwNzAzOTcsInVzZXJJZCI6InVzZXJfMzI2WUZLQm5ROFRDQ3VEVGtQTFp5a0Zmd2pBIn1d&model=google/gemini-2.5-flash&rid=43b3jif5nf2&debug=1' | sed -n '1,120p'
+- AI API direct with model override:
+  curl -sS -N -H 'Accept: text/event-stream' \
+    'http://127.0.0.1:8000/chat/stream?prompt=Hello.&sessionId=f5406632-adb9-4a25-80d9-428fb944c078&userProfile=eyJfY3JlYXRpb25UaW1lIjoxNzU2ODA3MDU0MDE0LjA4MzUsIl9pZCI6ImtkNzV4NDlrbXh0MXoyZ3k1czdkZXJwdGs5N3B2bW5wIiwiYmlvIjoiSSBhbSBhIHNhbGVzbWFuIiwiY3JlYXRlZEF0IjoxNzU2ODA3MDU0MDE3LCJkaXNwbGF5TmFtZSI6IkFudG9uaW8gUmVlcyIsInVwZGF0ZWRBdCI6MTc1NjgwNzA1NDAxNywidXNlcklkIjoidXNlcl8zMjZZRktCblE4VENDdURUa1BMWnlrRmZ3akEifQ&userGoals=W3siX2NyZWF0aW9uVGltZSI6MTc1NjgwNzA3MDM5My42OTQzLCJfaWQiOiJrOTc3YmdnODc3NmM1N2NkdzV6eW1zbms1ZDdwdHJqbiIsImNyZWF0ZWRBdCI6MTc1NjgwNzA3MDM5NywiZGVzY3JpcHRpb24iOiJSZWR1Y2UgZmlsbGVyIHdvcmRzICh1bSwgYWgpIiwiZ29hbElkIjoiZ29hbF8xNzU2ODA3MDY5NDk3X3J6ZW5zZmN0a2YiLCJzdGF0dXMiOiJhY3RpdmUiLCJ0YWdzIjpbXSwidGl0bGUiOiJGaWxsZXIgd29yZHMiLCJ1cGRhdGVkQXQiOjE3NTY4MDcwNzAzOTcsInVzZXJJZCI6InVzZXJfMzI2WUZLQm5ROFRDQ3VEVGtQTFp5a0Zmd2pBIn1d&model=google/gemini-2.5-flash' | sed -n '1,120p'
+
 ### Current Baseline (from existing benchmarks)
 - **E2E Time**: p50=5.1s, p95=5.9s
 - **Backend Processing**: p50=4.5s, p95=5.3s  
@@ -25,7 +48,7 @@ Progress update (2025-09-08):
 - Implemented turn-only cadence for summaries (removed time-based threshold). This stabilizes "turns until due" and prevents time-based jitter.
 - Added lightweight summary status endpoint already in use: `/api/v1/session-summary/lite` with `version`, `due`, `reservation.inProgress` (client cache consumes it at 3s staleTime).
 - Integrated trailer events on assistant stream; client updates interactions and summary status caches immediately on trailer receipt.
-- Interactions API supports ETag/304 and limit; since-cursor remains TODO.
+- Interactions API supports since-cursor, ETag, 304, and limit; client cache performs incremental fetch with fallback on 304-empty.
 
 Impact observed:
 - Fewer summary ensures per minute (no time gate), cleaner logs, and reduced UI flicker on due state.
@@ -45,10 +68,10 @@ Impact observed:
   - Debounce prefetch triggers to avoid network spam
 
 **Manual Verification Checkpoint**:
-- [ ] Test incremental fetch with 10+ interactions in session
-- [x] Verify 304 responses work correctly
+- [x] Test incremental fetch with 10+ interactions in session (counts increased 22→24→26 with incremental appends)
+- [x] Verify 304 responses work correctly (handled with no-store and fallback refetch when local cache empty)
 - [x] Confirm cache hit/miss behavior in browser dev tools
-- [x] Measure payload size reduction vs full history fetch
+- [ ] Measure payload size reduction vs full history fetch
 
 **Expected Impact**: 20-30% reduction in chat payload size, faster prompt assembly
 
@@ -88,9 +111,9 @@ Impact observed:
 - [x] **Frontend**: Implement summary status cache with 3-5s staleTime
 
 **Manual Verification Checkpoint**:
-- [ ] Test both full and lite endpoints return correct data
-- [ ] Verify cache behavior with rapid UI transitions
-- [ ] Confirm due/not-due status updates correctly
+- [x] Test both full and lite endpoints return correct data
+- [x] Verify cache behavior with rapid UI transitions (3s stale window; polling confirmed)
+- [x] Confirm due/not-due status updates correctly (turn-only cadence active)
 - [ ] Measure response size difference (full vs lite)
 
 **Expected Impact**: 50-70% reduction in summary status payload, faster UI updates
@@ -119,9 +142,9 @@ Impact observed:
 - [x] **Frontend**: Remove separate summary status fetch after assistant completion
 
 **Manual Verification Checkpoint**:
-- [ ] Verify trailer events arrive after assistant stream completion
-- [ ] Confirm cache updates immediately on trailer receipt
-- [ ] Test that separate summary fetch is no longer needed
+- [x] Verify trailer events arrive after assistant stream completion
+- [x] Confirm cache updates immediately on trailer receipt
+- [ ] Test that separate summary fetch is no longer needed (server-side fetch still kept as safety; can be skipped when client includes summary)
 - [ ] Measure reduction in network requests per conversation turn
 
 **Expected Impact**: Eliminate 1 network round-trip per assistant response
@@ -130,31 +153,32 @@ Impact observed:
 
 ## Phase 2: Prefetching Strategy (Week 2)
 
-Status (started 2025-09-08):
-- 2.2 post-stream prefetch is effectively covered via trailer-triggered cache refresh and fire-and-forget refreshes in the conversation context.
-- 2.3 STT finalization prompt assembly from cache is implemented; user turn submission does not wait for summary fetch.
-- 2.1 stream-start prefetch TBD; we will add a guarded prefetch at SSE open.
+Status (updated 2025-09-08):
+- 2.1 stream-start prefetch implemented in MinimalConversationContext: guarded by a 1.5s cooldown; prefetches interactions and summary-status-lite on SSE open; respects cache staleTime/de-dup.
+- 2.2 post-stream prefetch covered via trailer-triggered refresh and fire-and-forget refreshes.
+- 2.3 STT finalization prompt assembly from cache implemented; user turn submission does not wait for summary fetch.
+- Telemetry and UI indicators added: last prefetch/refresh timestamps surfaced in STATUS tab for visibility.
+- Server chat route optimization: skips server-side summary fetch when client already provides a system summary; otherwise retries briefly on 404.
 
 Next actions for Phase 2:
-- Implement stream-start prefetch hook in MinimalConversationContext: when SSE connects, prefetch interactions since latestId and summary getStatus in background (ensure de-dup and staleTime respected).
-- Add prefetch telemetry: capture start/end, hit/miss, and errors.
-- Expose cache freshness indicators in UI panel for debugging (optional).
+- Measure prefetch efficacy (cache hit rate and timing) and adjust cooldown.
+- Add optional prefetch outcome metrics (hit/miss counts) to STATUS.
 
 ### 2.1 Assistant Stream Start Prefetching
 **Goal**: Warm cache before user needs the data, reducing perceived latency.
 
 **Tasks**:
-- [ ] **Frontend**: On assistant stream start, kick off background fetches:
+- [x] **Frontend**: On assistant stream start (SSE open), kick off background fetches:
   - Recent interactions since last known message ID
-  - Summary status (getStatus)
-- [ ] **Frontend**: Implement prefetch coordination to avoid duplicate requests
-- [ ] **Frontend**: Add prefetch success/failure telemetry
+  - Summary status (lite)
+- [x] **Frontend**: Implement prefetch coordination (1.5s cooldown) to avoid duplicate requests
+- [x] **Frontend**: Add prefetch telemetry (console) and expose last prefetch/refresh times in UI STATUS
 
 **Manual Verification Checkpoint**:
-- [ ] Monitor network tab during assistant streaming
-- [ ] Verify prefetch requests start immediately when assistant begins
-- [ ] Confirm no duplicate requests for same data
-- [ ] Test prefetch behavior with rapid conversation turns
+- [x] Monitor network tab during assistant streaming (prefetch seen on SSE open)
+- [x] Verify prefetch requests start immediately when assistant begins
+- [x] Confirm no duplicate requests for same data (cooldown respected)
+- [x] Test prefetch behavior with rapid conversation turns (no spam observed)
 
 **Expected Impact**: Cache warmed for next user interaction
 
@@ -168,7 +192,7 @@ Next actions for Phase 2:
   - Recent interactions (to capture persisted assistant turn)
   - Summary status (to capture any summary reservation/completion)
 - [x] **Frontend**: Implement fire-and-forget refresh after sending user turn
-- [ ] **Frontend**: Add cache freshness indicators in UI
+- [x] **Frontend**: Add cache freshness indicators in UI (STATUS shows last prefetch/refresh)
 
 **Manual Verification Checkpoint**:
 - [ ] Verify cache refreshes after assistant completion
@@ -186,7 +210,7 @@ Next actions for Phase 2:
 **Tasks**:
 - [x] **Frontend**: When STT finalizes, assemble prompt from cache immediately
 - [x] **Frontend**: Submit user turn without waiting for network
-- [ ] **Frontend**: Fire-and-forget background refresh after sending
+- [x] **Frontend**: Fire-and-forget background refresh after sending
 - [ ] **Frontend**: Add prompt assembly timing telemetry
 
 **Manual Verification Checkpoint**:
@@ -200,6 +224,17 @@ Next actions for Phase 2:
 ---
 
 ## Phase 3: Robustness & Concurrency (Week 3)
+
+### 3.0 Frontend Concurrency Hygiene (implemented 2025-09-08)
+**Goal**: Prevent out-of-order playback and UI mismatch by enforcing latest-wins semantics and session consistency.
+
+**Changes**:
+- [x] Single in-flight SSE per session with request sequencing (latest-wins). Older streams are closed and their events ignored.
+- [x] Canonical session enforcement before dispatching chat/STT/TTs (avoid temporary `sess_...` IDs causing duplicate streams).
+- [x] Debounced mic stop to prevent duplicate stopRecording firing.
+- [x] TTS gating to latest turn: streaming chunks carry a turn sequence and stale chunks are ignored.
+
+**Expected Impact**: Eliminates cases where TTS reads a prior reply while the STATUS panel shows a different message; stabilizes stream/tts behavior under rapid interactions.
 
 ### 3.1 Idempotency & Retry Logic
 **Goal**: Handle network failures and race conditions gracefully.
@@ -474,16 +509,24 @@ Next actions for Phase 2:
 
 ## Changelog
 
-### 2025-01-XX - Phase 1: Frontend Caching & Prefetching
-- [ ] Added interactions since-cursor endpoint
-- [ ] Implemented compact summary status endpoint
-- [ ] Integrated assistant stream trailer events
-- [ ] Added client-side caching for interactions and summary status
+### 2025-09-08 - Phase 1: Frontend Caching & Prefetching
+- [x] Added interactions since-cursor endpoint with ETag + 304 support
+- [x] Implemented compact and lite summary status endpoints
+- [x] Integrated assistant stream trailer events with cache updates
+- [x] Added client-side caching for interactions and summary status
 
-### 2025-01-XX - Phase 2: Prefetching Strategy
-- [ ] Implemented assistant stream start prefetching
-- [ ] Added assistant stream end prefetching
-- [ ] Optimized STT finalization with cache assembly
+### 2025-09-08 - Phase 2: Prefetching Strategy (in progress)
+- [x] Implemented assistant stream start prefetching (cooldown + telemetry)
+- [x] Added assistant stream end prefetching (via trailer-triggered refresh)
+- [x] Optimized STT finalization with cache assembly
+- [x] UI STATUS shows last prefetch/refresh times
+- [x] Chat API route skips server-side summary fetch when client provides system summary; retries briefly on 404 otherwise
+
+### 2025-09-08 - Phase 3: Frontend Concurrency Hygiene
+- [x] Latest-wins SSE with request sequencing; stale events ignored
+- [x] Enforced canonical sessionId before chat/STT/TTs to avoid `sess_...` races
+- [x] Debounced mic stopRecording to prevent duplicate sends
+- [x] TTS playback gated to the current turn (stale chunks dropped)
 
 ### 2025-01-XX - Phase 3: Robustness & Concurrency
 - [ ] Added idempotency and retry logic

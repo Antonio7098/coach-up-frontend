@@ -404,14 +404,34 @@ function Content({
       // Save debug prompt details for the panel
       try { setDbgPrompt({ prevSummary: prev, messages: recentMessages }); } catch {}
       try { console.log("[fresh] POST start", { sessionId, prevLen: prev.length, msgs: recentMessages.length }); } catch {}
-      const headers = await buildAuthHeaders({ 'content-type': 'application/json' });
-      const res = await fetch(`/api/v1/session-summary`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ sessionId, prevSummary: prev, messages: recentMessages, tokenBudget: 600 }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || `generate failed: ${res.status}`);
+      const baseHeaders = await buildAuthHeaders({ 'content-type': 'application/json' });
+      const idemKey = `ss:${sessionId}:${Math.floor(Date.now()/2000)}`; // 2s bucket
+      const headers = { ...baseHeaders, 'Idempotency-Key': idemKey } as any;
+
+      // Tiny retry with jitter for transient errors
+      const attempt = async () => {
+        const res = await fetch(`/api/v1/session-summary`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ sessionId, prevSummary: prev, messages: recentMessages, tokenBudget: 600 }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.error || `generate failed: ${res.status}`);
+        return data;
+      };
+
+      let data: any = null;
+      for (let i = 0; i < 3; i++) {
+        try {
+          data = await attempt();
+          break;
+        } catch (e) {
+          if (i === 2) throw e;
+          const jitter = 50 + Math.floor(Math.random()*150);
+          await new Promise(r => setTimeout(r, jitter));
+        }
+      }
+
       // After ack, refresh to fetch latest text/version and transcript for diff
       await Promise.all([
         refreshFresh(),
@@ -1073,6 +1093,12 @@ function Content({
                       const cacheSize = status.cacheSize ?? c.interactionsCount ?? undefined;
                       const lastEtag = status.lastEtag ?? c.lastEtag ?? null;
                       const isLoading = status.isLoading ?? c.isInteractionsLoading ?? false;
+                      // Prefetch and cache freshness indicators
+                      const lastPrefetchAt = status.lastPrefetchAt ?? c.lastPrefetchAt ?? null;
+                      const lastInteractionsRefreshAt = status.lastInteractionsRefreshAt ?? c.lastInteractionsRefreshAt ?? null;
+                      const lastSummaryStatusRefreshAt = status.lastSummaryStatusRefreshAt ?? c.lastSummaryStatusRefreshAt ?? null;
+                      const fmt = (ts: number | null) => ts ? new Date(ts).toLocaleTimeString() : '-';
+                      const age = (ts: number | null) => ts ? Math.max(0, Math.floor((Date.now() - ts)/1000)) + 's' : '-';
                       return (
                         <div className="grid grid-cols-2 gap-1 text-[11px] text-gray-700">
                           <div>sinceModeActive: <span className="font-semibold">{String(sinceModeActive)}</span></div>
@@ -1082,6 +1108,10 @@ function Content({
                           <div>cacheSize: <span className="font-semibold">{typeof cacheSize === 'number' ? cacheSize : '-'}</span></div>
                           <div>etag: <span className="font-semibold">{lastEtag ? String(lastEtag) : 'null'}</span></div>
                           <div>loading: <span className="font-semibold">{String(isLoading)}</span></div>
+                          <div className="col-span-2 mt-1 border-t border-gray-200"></div>
+                          <div>lastPrefetchAt: <span className="font-semibold">{fmt(lastPrefetchAt)}</span> <span className="text-gray-500">({age(lastPrefetchAt)})</span></div>
+                          <div>lastInteractionsRefresh: <span className="font-semibold">{fmt(lastInteractionsRefreshAt)}</span> <span className="text-gray-500">({age(lastInteractionsRefreshAt)})</span></div>
+                          <div>lastSummaryStatusRefresh: <span className="font-semibold">{fmt(lastSummaryStatusRefreshAt)}</span> <span className="text-gray-500">({age(lastSummaryStatusRefreshAt)})</span></div>
                         </div>
                       );
                     })()}

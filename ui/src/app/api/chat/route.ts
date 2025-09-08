@@ -129,7 +129,12 @@ try {
     }
     // Prepend summary as system if sessionId provided and summary exists
     let systemItem: { role: string; content: string } | null = null;
-    if (sessionId) {
+    // Phase 2: if client already included a system summary, skip server fetch
+    const clientSystem = historyItems.find((it) => it && it.role === 'system' && typeof it.content === 'string' && it.content.trim().length > 0);
+    if (clientSystem) {
+      try { console.log('[api/chat] client provided system summary; skip server fetch'); } catch {}
+      systemItem = { role: 'system', content: clientSystem.content };
+    } else if (sessionId) {
       try {
         // Use our new session-summary endpoint instead of direct Convex call
         const attemptFetch = async (): Promise<Response | null> => {
