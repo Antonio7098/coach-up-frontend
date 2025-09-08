@@ -39,7 +39,8 @@ export function useMinimalConversation() {
 
 export function MinimalConversationProvider({ children }: { children: React.ReactNode }) {
   const { sessionId } = useMinimalSession();
-  const { summary, onTurn, thresholds } = useSessionSummary(sessionId, { autoloadOnMount: false });
+  // Autoload summary so the first turn can include it in history/system
+  const { summary, onTurn, thresholds } = useSessionSummary(sessionId, { autoloadOnMount: true });
   const { getToken } = useAuth();
 
   // Use the new interactions cache system
@@ -48,7 +49,11 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     latestId,
     isLoading: interactionsLoading,
     refresh: refreshInteractions,
-    getRecentInteractions
+    getRecentInteractions,
+    sinceModeActive,
+    lastFetchWasIncremental,
+    lastFetchWas304,
+    lastEtag,
   } = useInteractionsCache({
     sessionId: sessionId || '',
     staleTime: 5000, // 5 seconds
@@ -160,7 +165,43 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     }));
 
     const historyToUse = recent.length > 0 ? recent : fallbackHistory;
-    const sys = (summary?.text || "").trim();
+    // Ensure we have the freshest system summary:
+    // 1) If we have a local summary, check the lite endpoint for a newer version.
+    // 2) If newer, fetch the full summary text and use it.
+    // 3) If no local summary text, do a one-shot full fetch as a fallback.
+    let sys = (summary?.text || "").trim();
+    let sysVersion = Number(summary?.version || 0);
+    if (currentSessionId) {
+      try {
+        // Preflight: check lite for newer version
+        const liteHeaders = await buildAuthHeaders({ accept: 'application/json', 'x-request-id': Math.random().toString(36).slice(2) });
+        const liteRes = await fetch(`/api/v1/session-summary/lite?sessionId=${encodeURIComponent(currentSessionId)}`, { method: 'GET', headers: liteHeaders, cache: 'no-store' });
+        const lite = await liteRes.json().catch(() => ({} as any));
+        const liteVer = Number(lite?.lastSummary?.version || 0);
+        if (liteRes.ok && Number.isFinite(liteVer) && liteVer > sysVersion) {
+          // Fetch full for newest text
+          const fullHeaders = await buildAuthHeaders({ accept: 'application/json', 'x-request-id': Math.random().toString(36).slice(2) });
+          const fullRes = await fetch(`/api/v1/session-summary?sessionId=${encodeURIComponent(currentSessionId)}`, { method: 'GET', headers: fullHeaders, cache: 'no-store' });
+          const full = await fullRes.json().catch(() => ({} as any));
+          if (fullRes.ok) {
+            const txt = String(full?.text || full?.summary?.text || '').trim();
+            if (txt) {
+              sys = txt;
+              sysVersion = liteVer;
+            }
+          }
+        }
+      } catch {}
+    }
+    // Fallback: if still empty, try one-shot full fetch
+    if (!sys && currentSessionId) {
+      try {
+        const headers = await buildAuthHeaders({ accept: "application/json", 'x-request-id': Math.random().toString(36).slice(2) });
+        const res = await fetch(`/api/v1/session-summary?sessionId=${encodeURIComponent(currentSessionId)}`, { method: 'GET', headers, cache: 'no-store' });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) sys = String(data?.text || data?.summary?.text || "").trim();
+      } catch {}
+    }
     const items = sys ? ([{ role: "system", content: sys.slice(0, 480) }] as const).concat(historyToUse as any) : historyToUse;
     
     // Debug logging
@@ -227,16 +268,19 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
         if (!es) { reject(new Error("stream failed")); return; }
         let acc = "";
         let chunkCount = 0;
-        es.onmessage = (evt) => {
+es.onmessage = (evt) => {
           if (evt.data === "[DONE]") {
             try {
-              // Streaming complete
+              console.log('[SSE] done', { rid, chunks: chunkCount, totalLen: acc.length });
               es?.close();
             } catch {};
             resolve(acc);
           } else {
             acc += evt.data;
             chunkCount++;
+            if (chunkCount === 1) {
+              try { console.log('[SSE] first-chunk', { rid, firstLen: evt.data.length }); } catch {}
+            }
             // Stream chunk received
             // Call the chunk callback for streaming TTS
             if (onChunk && evt.data) {
@@ -244,9 +288,10 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
             }
           }
         };
-        es.addEventListener('prompt', (evt: MessageEvent) => {
+es.addEventListener('prompt', (evt: MessageEvent) => {
           try {
             const data = JSON.parse(evt.data || '{}');
+            try { console.log('[SSE] prompt event', { rid, hasRendered: !!data?.rendered, sysLen: (data?.system || '').length }); } catch {}
             setPromptPreview({
               system: typeof data?.system === 'string' ? data.system : '',
               summary: undefined,
@@ -317,11 +362,12 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
             console.warn("Failed to parse trailer event:", e);
           }
         });
-        es.onerror = (error) => {
+es.onerror = (error) => {
           console.error("chatToTextStreaming: EventSource error", error);
           try { es?.close(); } catch {}
           if (acc) resolve(acc); else resolve(null);
         };
+        es.onopen = () => { try { console.log('[SSE] open', { rid }); } catch {} };
       } catch (e: any) {
         reject(new Error(e?.message || "stream failed"));
       }
@@ -529,8 +575,12 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     interactionsCount: interactions.length,
     latestId,
     isLoading: interactionsLoading,
-    cacheSize: interactions.length
-  }), [interactions.length, latestId, interactionsLoading]);
+    cacheSize: interactions.length,
+    sinceModeActive,
+    lastFetchWasIncremental,
+    lastFetchWas304,
+    lastEtag,
+  }), [interactions.length, latestId, interactionsLoading, sinceModeActive, lastFetchWasIncremental, lastFetchWas304, lastEtag]);
 
   // Store refresh functions in ref for trailer event access
   React.useEffect(() => {
@@ -563,6 +613,11 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     isInProgress,
     turnsSince,
     lastSummaryVersion,
+    // Interactions cache debug flags
+    sinceModeActive,
+    lastFetchWasIncremental,
+    lastFetchWas304,
+    lastEtag,
   } as MinimalConversationContextValue & {
     refreshInteractionsCache: () => Promise<void>;
     getCacheStatus: () => any;
@@ -575,6 +630,10 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     isInProgress: boolean;
     turnsSince: number;
     lastSummaryVersion: number;
+    sinceModeActive: boolean;
+    lastFetchWasIncremental: boolean;
+    lastFetchWas304: boolean;
+    lastEtag: string | null;
   }), [
     chatToTextWithHistory,
     chatToTextStreaming,
@@ -593,7 +652,11 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     isDue,
     isInProgress,
     turnsSince,
-    lastSummaryVersion
+    lastSummaryVersion,
+    sinceModeActive,
+    lastFetchWasIncremental,
+    lastFetchWas304,
+    lastEtag
   ]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

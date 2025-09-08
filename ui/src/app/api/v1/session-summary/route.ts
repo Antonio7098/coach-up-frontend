@@ -44,8 +44,8 @@ function aiApiBaseUrl() {
 
 // Compact lite endpoint for frequent polling
 export async function GET(request: Request) {
-  const url = new URL(request.url);
-  const isLite = url.pathname.endsWith('/lite') || url.searchParams.get('lite') === 'true';
+  const urlObj = new URL(request.url);
+  const isLite = urlObj.pathname.endsWith('/lite') || urlObj.searchParams.get('lite') === 'true';
   const headersIn = new Headers(request.headers);
   const requestId = headersIn.get("x-request-id") || safeUUID();
   const idempotencyKey = headersIn.get("idempotency-key") || headersIn.get("Idempotency-Key") || "";
@@ -74,7 +74,7 @@ export async function GET(request: Request) {
   if (!rl.ok) {
     const labels = { route: routePath, method, status: '429', mode } as const;
     promMetrics.rateLimitedTotal.labels(labels.route, labels.method, labels.status, labels.mode).inc();
-    return respond(429, { error: "Rate limit exceeded" }, { "Retry-After": String(rl.retryAfterSec), "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) });
+    return respond(429, { error: "Rate limit exceeded" }, { "Retry-After": String((rl as any).retryAfterSec), "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) });
   }
 
   // Optional auth gating via CLERK_ENABLED
@@ -83,8 +83,7 @@ export async function GET(request: Request) {
     return respond(401, { error: "Unauthorized" }, { "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) });
   }
 
-  const url = new URL(request.url);
-  const sessionId = url.searchParams.get("sessionId") || "";
+  const sessionId = urlObj.searchParams.get("sessionId") || "";
   if (!sessionId) {
     return respond(400, { error: "sessionId is required" }, { "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) });
   }

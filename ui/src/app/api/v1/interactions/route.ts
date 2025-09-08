@@ -6,6 +6,7 @@ import * as mockConvex from "../../lib/mockConvex";
 import { sha256Hex } from "../../lib/hash";
 import { requireAuth } from "../../lib/auth";
 import { promMetrics } from "../../lib/metrics";
+import { createHash } from "crypto";
 
 type InteractionRole = 'user' | 'assistant' | 'system';
 interface InteractionsBody {
@@ -73,7 +74,15 @@ export async function GET(request: Request) {
       // Generate ETag for caching
       const etagComponents = [sessionId || groupId, String(interactions.length), String(limit)];
       if (sinceId) etagComponents.push(sinceId);
-      const etag = crypto.createHash('md5').update(etagComponents.join(':')).digest('hex');
+      const etag = createHash('md5').update(etagComponents.join(':')).digest('hex');
+
+      // If client cache matches, 304 Not Modified
+      const inm = headersIn.get('if-none-match');
+      if (inm && inm === etag) {
+        const hdrs304 = { "X-Request-Id": requestId, "ETag": etag, "X-Cache": "HIT-304", "X-Mode": sinceId ? "since" : "full", ...corsHeaders } as Record<string, string>;
+        try { console.log(JSON.stringify({ level: 'info', where: 'interactions.get.304', sessionId, groupId, sinceId: sinceId || null, etag })); } catch {}
+        return new Response(null, { status: 304, headers: hdrs304 });
+      }
 
       // Get latest ID for cache management
       const latestId = interactions.length > 0 ?
@@ -83,9 +92,12 @@ export async function GET(request: Request) {
         "content-type": "application/json; charset=utf-8",
         "X-Request-Id": requestId,
         "ETag": etag,
+        "X-Mode": sinceId ? "since" : "full",
+        "X-Cache": "MISS",
         ...corsHeaders
-      };
+      } as Record<string, string>;
       if (latestId) headers["X-Latest-Id"] = latestId;
+      try { console.log(JSON.stringify({ level: 'info', where: 'interactions.get.200', sessionId, groupId, sinceId: sinceId || null, count: interactions.length, mode: sinceId ? 'since' : 'full' })); } catch {}
 
       return new Response(JSON.stringify({
         interactions,
@@ -119,7 +131,15 @@ export async function GET(request: Request) {
     // Generate ETag for caching
     const etagComponents = [sessionId || groupId, String(interactions.length), String(limit)];
     if (sinceId) etagComponents.push(sinceId);
-    const etag = crypto.createHash('md5').update(etagComponents.join(':')).digest('hex');
+    const etag = createHash('md5').update(etagComponents.join(':')).digest('hex');
+
+    // If client cache matches, 304 Not Modified
+    const inm = headersIn.get('if-none-match');
+    if (inm && inm === etag) {
+      const hdrs304 = { "X-Request-Id": requestId, "ETag": etag, "X-Cache": "HIT-304", "X-Mode": sinceId ? "since" : "full", ...corsHeaders } as Record<string, string>;
+      try { console.log(JSON.stringify({ level: 'info', where: 'interactions.get.304', sessionId, groupId, sinceId: sinceId || null, etag })); } catch {}
+      return new Response(null, { status: 304, headers: hdrs304 });
+    }
 
     // Get latest ID for cache management
     const latestId = interactions.length > 0 ?
@@ -134,9 +154,12 @@ export async function GET(request: Request) {
       "content-type": "application/json; charset=utf-8",
       "X-Request-Id": requestId,
       "ETag": etag,
+      "X-Mode": sinceId ? "since" : "full",
+      "X-Cache": "MISS",
       ...corsHeaders
-    };
+    } as Record<string, string>;
     if (latestId) headers["X-Latest-Id"] = latestId;
+    try { console.log(JSON.stringify({ level: 'info', where: 'interactions.get.200', sessionId, groupId, sinceId: sinceId || null, count: interactions.length, mode: sinceId ? 'since' : 'full' })); } catch {}
 
     return new Response(JSON.stringify({
       interactions,
@@ -149,6 +172,22 @@ export async function GET(request: Request) {
     });
   } catch (err: unknown) {
     try { console.error('[interactions] GET failed', err); } catch {}
+
+    // Soft-fallback: return an empty interactions payload to avoid breaking the UI when backend is down
+    try {
+      const empty = [] as any[];
+      const baseKey = sessionId || groupId || 'none';
+      // Lightweight ETag for empty payload
+      let etag = 'empty';
+      try { const { createHash } = await import('crypto'); etag = createHash('md5').update(`${baseKey}:0:${limit}:${sinceId || ''}`).digest('hex'); } catch {}
+      const headers = {
+        "content-type": "application/json; charset=utf-8",
+        "X-Request-Id": requestId,
+        "ETag": etag,
+        ...corsHeaders,
+      } as Record<string, string>;
+      return new Response(JSON.stringify({ interactions: empty, latestId: null, count: 0, hasMore: false }), { status: 200, headers });
+    } catch {}
 
     // Track failed GET request
     try {

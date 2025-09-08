@@ -31,6 +31,11 @@ export interface UseInteractionsOptions {
 export function useInteractionsCache(options: UseInteractionsOptions) {
   const { sessionId, staleTime = 5000, revalidateOnFocus = true, debounceMs = 300 } = options;
   const { getToken } = useAuth();
+  
+  // DEBUG: lifecycle
+  try {
+    console.debug('[interactions.cache] init', { sessionId, staleTime, revalidateOnFocus, debounceMs });
+  } catch {}
 
   const [cache, setCache] = useState<InteractionsCache>({
     interactions: [],
@@ -42,6 +47,8 @@ export function useInteractionsCache(options: UseInteractionsOptions) {
 
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
+  const [lastFetchWasIncremental, setLastFetchWasIncremental] = useState<boolean>(false);
+  const [lastFetchWas304, setLastFetchWas304] = useState<boolean>(false);
 
   // Refs for managing async operations and debouncing
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -72,10 +79,18 @@ export function useInteractionsCache(options: UseInteractionsOptions) {
     return base;
   }, [getToken]);
 
-  const fetchInteractions = useCallback(async (sinceId?: string, force = false) => {
-    if (!sessionId || (!force && !cache.isStale && Date.now() - cache.lastFetched < staleTime)) {
+const fetchInteractions = useCallback(async (sinceId?: string, force = false) => {
+    // If we don't have a sessionId yet, ensure we don't get stuck in loading state
+    if (!sessionId) {
+      try { console.debug('[interactions.cache] skip fetch', { reason: 'no-session', sessionId }); } catch {}
+      setIsLoading(false);
       return;
     }
+    if (!force && !cache.isStale && Date.now() - cache.lastFetched < staleTime) {
+      try { console.debug('[interactions.cache] skip fetch', { reason: 'fresh', sessionId, force, isStale: cache.isStale, ageMs: Date.now() - cache.lastFetched, staleTime }); } catch {}
+      return;
+    }
+    try { console.debug('[interactions.cache] fetch start', { sessionId, sinceId, force, lastFetched: cache.lastFetched, etag: cache.etag, latestId: cache.latestId }); } catch {}
 
     // Cancel any ongoing request
     if (abortControllerRef.current) {
@@ -88,47 +103,94 @@ export function useInteractionsCache(options: UseInteractionsOptions) {
       setIsLoading(true);
       setError(null);
 
+      // Prefer incremental fetch when we have a latestId and caller didn't override
+      const effectiveSinceId = sinceId ?? (cache.latestId && !force ? cache.latestId : undefined);
+
       const headers = await buildAuthHeaders({
         'content-type': 'application/json',
-        'x-request-id': Math.random().toString(36).slice(2)
+        'x-request-id': Math.random().toString(36).slice(2),
+        // Send ETag for 304 handling only on non-forced fetches
+        ...(cache.etag && !force ? { 'if-none-match': cache.etag } : {}),
       });
 
       let url = `/api/v1/interactions?sessionId=${encodeURIComponent(sessionId)}&limit=50`;
-      if (sinceId) {
-        url += `&sinceId=${encodeURIComponent(sinceId)}`;
+      if (effectiveSinceId) {
+        url += `&sinceId=${encodeURIComponent(effectiveSinceId)}`;
       }
 
       const response = await fetch(url, {
         method: 'GET',
         headers,
-        signal: abortControllerRef.current.signal
+        signal: abortControllerRef.current.signal,
+        cache: 'no-store',
       });
+
+// Handle 304 Not Modified
+      if (response.status === 304) {
+        try { console.debug('[interactions.cache] fetch 304', { sessionId, effectiveSinceId, hadCache: (cache.interactions?.length || 0) > 0 }); } catch {}
+        if (!isMountedRef.current) return;
+        setCache(prevCache => ({ ...prevCache, lastFetched: Date.now(), isStale: false }));
+        setLastFetchWas304(true);
+        setLastFetchWasIncremental(!!effectiveSinceId);
+        // Fallback: if cache is empty but server returned 304 (likely browser cache), refetch without ETag
+        if ((cache.interactions?.length || 0) === 0) {
+          try {
+            console.warn('[interactions.cache] 304 with empty cache -> refetching without ETag');
+            await fetchInteractions(undefined, true);
+          } catch (e) {
+            try { console.error('[interactions.cache] fallback refetch failed', e); } catch {}
+          }
+        }
+        return;
+      }
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
-      const data = await response.json();
+const data = await response.json();
       const newEtag = response.headers.get('etag');
       const latestId = response.headers.get('x-latest-id') || data.latestId;
+      try {
+        console.debug('[interactions.cache] fetch ok', {
+          sessionId,
+          count: (data?.interactions || []).length,
+          incremental: !!effectiveSinceId,
+          newEtag,
+          latestId
+        });
+      } catch {}
 
       if (!isMountedRef.current) return;
 
-      setCache(prevCache => {
-        // If we got new data via sinceId, append to existing interactions
+setCache(prevCache => {
+        // If we fetched incrementally, append to existing interactions
+        const usedSince = effectiveSinceId;
         let newInteractions = data.interactions || [];
-        if (sinceId && prevCache.interactions.length > 0) {
+        if (usedSince && prevCache.interactions.length > 0) {
           newInteractions = [...prevCache.interactions, ...newInteractions];
         }
 
-        return {
+        const next = {
           interactions: newInteractions,
           latestId: latestId || prevCache.latestId,
           lastFetched: Date.now(),
           etag: newEtag || prevCache.etag,
           isStale: false
-        };
+        } as InteractionsCache;
+        try {
+          console.debug('[interactions.cache] state updated', {
+            size: next.interactions.length,
+            latestId: next.latestId,
+            etag: next.etag,
+            incremental: !!usedSince
+          });
+        } catch {}
+        return next;
       });
+
+      setLastFetchWas304(false);
+      setLastFetchWasIncremental(!!effectiveSinceId);
 
     } catch (err) {
       if (!isMountedRef.current) return;
@@ -156,10 +218,14 @@ export function useInteractionsCache(options: UseInteractionsOptions) {
     }, debounceMs);
   }, [fetchInteractions, debounceMs]);
 
-  // Initial fetch when sessionId changes
+// Initial fetch when sessionId changes
   useEffect(() => {
     if (sessionId) {
+      try { console.debug('[interactions.cache] sessionId changed -> initial fetch', { sessionId }); } catch {}
       void fetchInteractions(undefined, true);
+    } else {
+      // No session yet: make sure loading isn't stuck
+      setIsLoading(false);
     }
   }, [sessionId]);
 
@@ -177,16 +243,18 @@ export function useInteractionsCache(options: UseInteractionsOptions) {
     return () => window.removeEventListener('focus', handleFocus);
   }, [revalidateOnFocus, cache.isStale, cache.lastFetched, staleTime, fetchInteractions]);
 
-  // Manual refresh function
+// Manual refresh function
   const refresh = useCallback(() => {
+    try { console.debug('[interactions.cache] manual refresh'); } catch {}
     return fetchInteractions(undefined, true);
   }, [fetchInteractions]);
 
-  // Get latest interactions since a specific ID
+// Get interactions since a specific ID
   const getInteractionsSince = useCallback((sinceId: string) => {
     const sinceIndex = cache.interactions.findIndex(interaction =>
       interaction.messageId === sinceId
     );
+    try { console.debug('[interactions.cache] getSince', { sinceId, found: sinceIndex >= 0, cacheSize: cache.interactions.length }); } catch {}
 
     if (sinceIndex >= 0) {
       return cache.interactions.slice(sinceIndex + 1);
@@ -212,6 +280,11 @@ export function useInteractionsCache(options: UseInteractionsOptions) {
     prefetch,
     getInteractionsSince,
     getRecentInteractions,
-    cacheKey
+    cacheKey,
+    // Debug/telemetry helpers
+    sinceModeActive: !!cache.latestId,
+    lastFetchWasIncremental,
+    lastFetchWas304,
+    lastEtag: cache.etag,
   };
 }

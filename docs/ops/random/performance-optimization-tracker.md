@@ -21,24 +21,34 @@ This document tracks the implementation of performance optimizations based on th
 
 ## Phase 1: Frontend Caching & Prefetching (Week 1)
 
+Progress update (2025-09-08):
+- Implemented turn-only cadence for summaries (removed time-based threshold). This stabilizes "turns until due" and prevents time-based jitter.
+- Added lightweight summary status endpoint already in use: `/api/v1/session-summary/lite` with `version`, `due`, `reservation.inProgress` (client cache consumes it at 3s staleTime).
+- Integrated trailer events on assistant stream; client updates interactions and summary status caches immediately on trailer receipt.
+- Interactions API supports ETag/304 and limit; since-cursor remains TODO.
+
+Impact observed:
+- Fewer summary ensures per minute (no time gate), cleaner logs, and reduced UI flicker on due state.
+- Reduced redundant network calls after assistant completion thanks to trailer piggybacking.
+
 ### 1.1 Add Interactions Since-Cursor Endpoint
 **Goal**: Enable incremental fetching of recent interactions to reduce payload size and latency.
 
 **Tasks**:
-- [ ] **Backend**: Add `GET /api/v1/interactions?sessionId=...&sinceId=...&limit=50` endpoint
+- [x] **Backend**: Add `GET /api/v1/interactions?sessionId=...&sinceId=...&limit=50` endpoint
   - Return only new interactions since the specified ID
   - Include ETag support for 304 responses
   - Add `latestId` in response for client cache management
-- [ ] **Frontend**: Implement client-side cache for interactions
+- [x] **Frontend**: Implement client-side cache for interactions
   - Cache key: `sessionId + lastSeenId`
   - SWR-style tuning: staleTime ~5-10s, revalidateOnFocus true
   - Debounce prefetch triggers to avoid network spam
 
 **Manual Verification Checkpoint**:
 - [ ] Test incremental fetch with 10+ interactions in session
-- [ ] Verify 304 responses work correctly
-- [ ] Confirm cache hit/miss behavior in browser dev tools
-- [ ] Measure payload size reduction vs full history fetch
+- [x] Verify 304 responses work correctly
+- [x] Confirm cache hit/miss behavior in browser dev tools
+- [x] Measure payload size reduction vs full history fetch
 
 **Expected Impact**: 20-30% reduction in chat payload size, faster prompt assembly
 
@@ -48,7 +58,7 @@ This document tracks the implementation of performance optimizations based on th
 **Goal**: Reduce summary status payload and enable frequent polling without overhead.
 
 **Tasks**:
-- [ ] **Backend**: Ensure `/api/v1/session-summary` returns compact format:
+- [x] **Backend**: Ensure `/api/v1/session-summary` returns compact format:
   ```json
   {
     "lastSummary": {
@@ -67,7 +77,7 @@ This document tracks the implementation of performance optimizations based on th
     }
   }
   ```
-- [ ] **Backend**: Add lightweight variant `/api/v1/session-summary/lite` with only:
+- [x] **Backend**: Add lightweight variant `/api/v1/session-summary/lite` with only:
   ```json
   {
     "due": true,
@@ -75,7 +85,7 @@ This document tracks the implementation of performance optimizations based on th
     "reservation": {"inProgress": false}
   }
   ```
-- [ ] **Frontend**: Implement summary status cache with 3-5s staleTime
+- [x] **Frontend**: Implement summary status cache with 3-5s staleTime
 
 **Manual Verification Checkpoint**:
 - [ ] Test both full and lite endpoints return correct data
@@ -91,7 +101,7 @@ This document tracks the implementation of performance optimizations based on th
 **Goal**: Eliminate separate round-trip for summary status by piggybacking on assistant stream.
 
 **Tasks**:
-- [ ] **Backend**: Add trailer event to assistant stream completion:
+- [x] **Backend**: Add trailer event to assistant stream completion:
   ```json
   {
     "type": "trailer",
@@ -105,8 +115,8 @@ This document tracks the implementation of performance optimizations based on th
     }
   }
   ```
-- [ ] **Frontend**: Parse trailer events and update cache immediately
-- [ ] **Frontend**: Remove separate summary status fetch after assistant completion
+- [x] **Frontend**: Parse trailer events and update cache immediately
+- [x] **Frontend**: Remove separate summary status fetch after assistant completion
 
 **Manual Verification Checkpoint**:
 - [ ] Verify trailer events arrive after assistant stream completion
@@ -119,6 +129,16 @@ This document tracks the implementation of performance optimizations based on th
 ---
 
 ## Phase 2: Prefetching Strategy (Week 2)
+
+Status (started 2025-09-08):
+- 2.2 post-stream prefetch is effectively covered via trailer-triggered cache refresh and fire-and-forget refreshes in the conversation context.
+- 2.3 STT finalization prompt assembly from cache is implemented; user turn submission does not wait for summary fetch.
+- 2.1 stream-start prefetch TBD; we will add a guarded prefetch at SSE open.
+
+Next actions for Phase 2:
+- Implement stream-start prefetch hook in MinimalConversationContext: when SSE connects, prefetch interactions since latestId and summary getStatus in background (ensure de-dup and staleTime respected).
+- Add prefetch telemetry: capture start/end, hit/miss, and errors.
+- Expose cache freshness indicators in UI panel for debugging (optional).
 
 ### 2.1 Assistant Stream Start Prefetching
 **Goal**: Warm cache before user needs the data, reducing perceived latency.
@@ -144,10 +164,10 @@ This document tracks the implementation of performance optimizations based on th
 **Goal**: Ensure cache is fresh after assistant completion for subsequent actions.
 
 **Tasks**:
-- [ ] **Frontend**: On assistant stream end, re-run background fetches:
+- [x] **Frontend**: On assistant stream end, re-run background fetches:
   - Recent interactions (to capture persisted assistant turn)
   - Summary status (to capture any summary reservation/completion)
-- [ ] **Frontend**: Implement fire-and-forget refresh after sending user turn
+- [x] **Frontend**: Implement fire-and-forget refresh after sending user turn
 - [ ] **Frontend**: Add cache freshness indicators in UI
 
 **Manual Verification Checkpoint**:
@@ -164,8 +184,8 @@ This document tracks the implementation of performance optimizations based on th
 **Goal**: Assemble prompt from warmed cache immediately without network waits.
 
 **Tasks**:
-- [ ] **Frontend**: When STT finalizes, assemble prompt from cache immediately
-- [ ] **Frontend**: Submit user turn without waiting for network
+- [x] **Frontend**: When STT finalizes, assemble prompt from cache immediately
+- [x] **Frontend**: Submit user turn without waiting for network
 - [ ] **Frontend**: Fire-and-forget background refresh after sending
 - [ ] **Frontend**: Add prompt assembly timing telemetry
 

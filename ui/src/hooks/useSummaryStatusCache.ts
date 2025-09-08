@@ -35,6 +35,7 @@ export interface UseSummaryStatusOptions {
 export function useSummaryStatusCache(options: UseSummaryStatusOptions) {
   const { sessionId, staleTime = 3000, revalidateOnFocus = true, useLiteEndpoint = true } = options;
   const { getToken } = useAuth();
+  try { console.debug('[summary.status] init', { sessionId, staleTime, revalidateOnFocus, useLiteEndpoint }); } catch {}
 
   const [cache, setCache] = useState<SummaryStatusCache>({
     status: null,
@@ -68,10 +69,12 @@ export function useSummaryStatusCache(options: UseSummaryStatusOptions) {
     return base;
   }, [getToken]);
 
-  const fetchSummaryStatus = useCallback(async (force = false) => {
+const fetchSummaryStatus = useCallback(async (force = false) => {
     if (!sessionId || (!force && !cache.isStale && Date.now() - cache.lastFetched < staleTime)) {
+      try { console.debug('[summary.status] skip fetch', { reason: 'fresh', sessionId, force, isStale: cache.isStale, ageMs: Date.now() - cache.lastFetched, staleTime }); } catch {}
       return;
     }
+    try { console.debug('[summary.status] fetch start', { sessionId, force }); } catch {}
 
     // Cancel any ongoing request
     if (abortControllerRef.current) {
@@ -103,8 +106,9 @@ export function useSummaryStatusCache(options: UseSummaryStatusOptions) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
-      const data = await response.json();
+const data = await response.json();
       const newEtag = response.headers.get('etag');
+      try { console.debug('[summary.status] fetch ok', { sessionId, version: (data?.lastSummary?.version ?? null), updatedAt: (data?.lastSummary?.updatedAt ?? null), turnsSince: (data?.turnsSince ?? null) }); } catch {}
 
       if (!isMountedRef.current) return;
 
@@ -130,9 +134,10 @@ export function useSummaryStatusCache(options: UseSummaryStatusOptions) {
     }
   }, [sessionId, cache.isStale, cache.lastFetched, staleTime, buildAuthHeaders, useLiteEndpoint]);
 
-  // Initial fetch when sessionId changes
+// Initial fetch when sessionId changes
   useEffect(() => {
     if (sessionId) {
+      try { console.debug('[summary.status] sessionId changed -> initial fetch', { sessionId }); } catch {}
       void fetchSummaryStatus(true);
     }
   }, [sessionId]);
