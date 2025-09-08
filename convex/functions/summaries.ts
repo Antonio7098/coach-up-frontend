@@ -34,7 +34,6 @@ export const getStatus = query({
     const sid = args.sessionId;
     const nowMs = Date.now();
     const thresholdTurns = Number(process.env.SUMMARY_GENERATE_ASSISTANT_EVERY_N || 4);
-    const thresholdSeconds = Number(process.env.SUMMARY_GENERATE_SECONDS || 120);
 
     const rows = await ctx.db
       .query("session_summaries")
@@ -59,9 +58,9 @@ export const getStatus = query({
       if (ts > lastUpdatedAt && String(d?.role) === 'assistant') assistantSince++;
     }
 
-    const ageSec = lastUpdatedAt > 0 ? Math.floor((nowMs - lastUpdatedAt) / 1000) : Number.MAX_SAFE_INTEGER;
-    const dueNow = assistantSince >= thresholdTurns || ageSec >= thresholdSeconds;
-    const dueReason = assistantSince >= thresholdTurns ? 'turns' : (ageSec >= thresholdSeconds ? 'time' : null);
+    // Turn-based only: no time-based triggering
+    const dueNow = assistantSince >= thresholdTurns;
+    const dueReason = dueNow ? 'turns' : null;
 
     return {
       sessionId: sid,
@@ -74,9 +73,7 @@ export const getStatus = query({
       latest: latest ? { version: latest.version, inProgress: !!latest.inProgress } : null,
       assistantSince,
       transcriptCount,
-      ageSec,
       thresholdTurns,
-      thresholdSeconds,
       dueNow,
       dueReason,
     } as const;
@@ -120,14 +117,12 @@ export const ensureJob = mutation({
     sessionId: v.string(),
     nowMs: v.number(),
     thresholdTurns: v.optional(v.number()),
-    thresholdSeconds: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    console.log(JSON.stringify({ level: 'info', where: 'summaries.ensureJob.start', sessionId: args.sessionId, nowMs: args.nowMs, thresholdTurns: args.thresholdTurns ?? null, thresholdSeconds: args.thresholdSeconds ?? null }));
+    console.log(JSON.stringify({ level: 'info', where: 'summaries.ensureJob.start', sessionId: args.sessionId, nowMs: args.nowMs, thresholdTurns: args.thresholdTurns ?? null }));
     const sid = args.sessionId;
     const nowMs = args.nowMs;
     const thresholdTurns = args.thresholdTurns ?? Number(process.env.SUMMARY_GENERATE_ASSISTANT_EVERY_N || 4);
-    const thresholdSeconds = args.thresholdSeconds ?? Number(process.env.SUMMARY_GENERATE_SECONDS || 120);
 
     // Get latest summary (any row)
     const latestRows = await ctx.db
@@ -170,11 +165,10 @@ export const ensureJob = mutation({
       if (ts > lastUpdatedAt && String(d?.role) === 'assistant') assistantSince++;
     }
 
-    const ageSec = lastUpdatedAt > 0 ? Math.floor((nowMs - lastUpdatedAt) / 1000) : Number.MAX_SAFE_INTEGER;
+    // Turn-based only: no time-based triggering
     const turnsDue = assistantSince >= thresholdTurns;
-    const timeDue = ageSec >= thresholdSeconds;
-    if (!turnsDue && !timeDue) {
-      console.log(JSON.stringify({ level: 'info', where: 'summaries.ensureJob.notDue', sessionId: sid, assistantSince, ageSec, thresholdTurns, thresholdSeconds }));
+    if (!turnsDue) {
+      console.log(JSON.stringify({ level: 'info', where: 'summaries.ensureJob.notDue', sessionId: sid, assistantSince, thresholdTurns }));
       return { accepted: false, reason: "not_due" } as const;
     }
 
@@ -189,14 +183,13 @@ export const ensureJob = mutation({
       cutoffIndex,
       inProgress: true,
       thresholdTurns,
-      thresholdSeconds,
       lastJobAt: nowMs,
       createdAt: nowMs,
       updatedAt: nowMs,
     });
 
-    console.log(JSON.stringify({ level: 'info', where: 'summaries.ensureJob.accepted', sessionId: sid, version: nextVersion, cutoffIndex, reason: turnsDue ? 'turns' : 'time' }));
-    return { accepted: true, version: nextVersion, cutoffIndex, thresholdTurns, thresholdSeconds, reason: turnsDue ? 'turns' : 'time' } as const;
+    console.log(JSON.stringify({ level: 'info', where: 'summaries.ensureJob.accepted', sessionId: sid, version: nextVersion, cutoffIndex, reason: 'turns' }));
+    return { accepted: true, version: nextVersion, cutoffIndex, thresholdTurns, reason: 'turns' } as const;
   },
 });
 

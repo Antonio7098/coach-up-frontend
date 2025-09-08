@@ -15,7 +15,6 @@ export const onAssistantMessage = mutation({
     const sid = args.sessionId;
     const nowMs = now();
     const everyN = Number(process.env.SUMMARY_GENERATE_ASSISTANT_EVERY_N || 4);
-    const maxAgeSec = Number(process.env.SUMMARY_GENERATE_SECONDS || 120);
     const lockMs = Number(process.env.SUMMARY_LOCK_MS || 15000);
 
     // Retry logic for concurrent modification errors
@@ -69,10 +68,8 @@ export const onAssistantMessage = mutation({
           doc = { ...doc, turnsSince, assistantMsgSince, updatedAt: nowMs, version: newVersion };
         }
 
-        const ageSec = doc.lastGeneratedAt > 0 ? Math.floor((nowMs - doc.lastGeneratedAt) / 1000) : Number.MAX_SAFE_INTEGER;
         const moduloDue = doc.assistantMsgSince > 0 && everyN > 0 && (doc.assistantMsgSince % everyN === 0);
-        const timeDue = ageSec >= maxAgeSec;
-        const dueNow = !!(moduloDue || timeDue);
+        const dueNow = !!moduloDue;
 
         let locked = false;
         if (dueNow) {
@@ -95,7 +92,7 @@ export const onAssistantMessage = mutation({
           }
         }
 
-        return { dueNow, locked, reason: moduloDue ? "assistant_modulo" : (timeDue ? "time" : null), turnsSince: doc.turnsSince, assistantMsgSince: doc.assistantMsgSince, ageSec } as const;
+        return { dueNow, locked, reason: moduloDue ? "assistant_modulo" : null, turnsSince: doc.turnsSince, assistantMsgSince: doc.assistantMsgSince } as const;
 
       } catch (error) {
         lastError = error;

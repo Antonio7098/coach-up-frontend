@@ -71,6 +71,31 @@ function App() {
   );
 }
 
+function DebugInteractionsCache() {
+  const convo = useMinimalConversation();
+  let status: any = {};
+  try { status = (convo as any).getCacheStatus ? (convo as any).getCacheStatus() : {}; } catch {}
+  const sinceModeActive = status.sinceModeActive ?? (convo as any).sinceModeActive ?? false;
+  const lastFetchWasIncremental = status.lastFetchWasIncremental ?? (convo as any).lastFetchWasIncremental ?? false;
+  const lastFetchWas304 = status.lastFetchWas304 ?? (convo as any).lastFetchWas304 ?? false;
+  const latestId = status.latestId ?? (convo as any).latestId ?? null;
+  const cacheSize = status.cacheSize ?? (convo as any).interactionsCount ?? undefined;
+  const lastEtag = status.lastEtag ?? (convo as any).lastEtag ?? null;
+  const isLoading = status.isLoading ?? (convo as any).isInteractionsLoading ?? false;
+  const waitingForSession = !(convo as any)?.getSummaryMeta && !sinceModeActive && !latestId && (cacheSize === 0 || cacheSize === undefined);
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      <div><span className="text-gray-500">sinceModeActive:</span> {String(sinceModeActive)}</div>
+      <div><span className="text-gray-500">lastFetchWasIncremental:</span> {String(lastFetchWasIncremental)}</div>
+      <div><span className="text-gray-500">lastFetchWas304:</span> {String(lastFetchWas304)}</div>
+      <div><span className="text-gray-500">latestId:</span> {latestId ? String(latestId) : 'null'}</div>
+      <div><span className="text-gray-500">cacheSize:</span> {typeof cacheSize === 'number' ? cacheSize : '-'}</div>
+      <div><span className="text-gray-500">lastEtag:</span> {lastEtag ? String(lastEtag) : 'null'}</div>
+      <div><span className="text-gray-500">loading:</span> {String(isLoading)}{waitingForSession ? ' (waiting for session)' : ''}</div>
+    </div>
+  );
+}
+
 function Content({
   profile,
   setProfile,
@@ -1033,6 +1058,35 @@ function Content({
                   <div><span className="text-blue-600 font-semibold">&gt; USER:</span> {mic.transcript || <span className="text-gray-500">(none)</span>}</div>
                   <div><span className="text-blue-600 font-semibold">&gt; ASSISTANT:</span> {mic.assistantText || <span className="text-gray-500">(none)</span>}</div>
                   <div className="text-xs text-gray-600">status={mic.status} | loop={String(mic.vadLoop)} | recording={String(mic.recording)} | playing={String(audio.isPlaybackActive)}</div>
+
+                  {/* Interactions Cache (debug) */}
+                  <div className="border border-gray-200 rounded p-2 bg-gray-50">
+                    <div className="text-xs font-mono text-blue-600 font-semibold mb-1">[INTERACTIONS_CACHE]</div>
+                    {(() => {
+                      const c: any = convo;
+                      let status: any = {};
+                      try { status = c.getCacheStatus ? c.getCacheStatus() : {}; } catch {}
+                      const sinceModeActive = status.sinceModeActive ?? c.sinceModeActive ?? false;
+                      const lastFetchWasIncremental = status.lastFetchWasIncremental ?? c.lastFetchWasIncremental ?? false;
+                      const lastFetchWas304 = status.lastFetchWas304 ?? c.lastFetchWas304 ?? false;
+                      const latestId = status.latestId ?? c.latestId ?? null;
+                      const cacheSize = status.cacheSize ?? c.interactionsCount ?? undefined;
+                      const lastEtag = status.lastEtag ?? c.lastEtag ?? null;
+                      const isLoading = status.isLoading ?? c.isInteractionsLoading ?? false;
+                      return (
+                        <div className="grid grid-cols-2 gap-1 text-[11px] text-gray-700">
+                          <div>sinceModeActive: <span className="font-semibold">{String(sinceModeActive)}</span></div>
+                          <div>lastIncr: <span className="font-semibold">{String(lastFetchWasIncremental)}</span></div>
+                          <div>last304: <span className="font-semibold">{String(lastFetchWas304)}</span></div>
+                          <div>latestId: <span className="font-semibold">{latestId ? String(latestId) : 'null'}</span></div>
+                          <div>cacheSize: <span className="font-semibold">{typeof cacheSize === 'number' ? cacheSize : '-'}</span></div>
+                          <div>etag: <span className="font-semibold">{lastEtag ? String(lastEtag) : 'null'}</span></div>
+                          <div>loading: <span className="font-semibold">{String(isLoading)}</span></div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
                   <div className="flex gap-2 flex-wrap">
           {(() => {
             const isAnyLoop = mic.vadLoop;

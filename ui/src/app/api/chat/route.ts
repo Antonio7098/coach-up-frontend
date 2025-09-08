@@ -121,7 +121,7 @@ export async function GET(request: Request) {
     const separator = upstreamUrl.includes('?') ? '&' : '?';
     upstreamUrl += `${separator}systemPrompt=${encodeURIComponent(systemPromptParam)}`;
   }
-  try {
+try {
     const clientHistParam = url.searchParams.get("history") || "";
     let historyItems: Array<{ role: string; content: string }> = [];
     if (clientHistParam) {
@@ -131,52 +131,75 @@ export async function GET(request: Request) {
     let systemItem: { role: string; content: string } | null = null;
     if (sessionId) {
       try {
-        const client = makeConvex(convexBaseUrl());
-        const latestResult = await client.query("functions/summaries:getLatest", { sessionId });
-        const latest: any = (latestResult as { value?: any })?.value || null;
-        const summaryText: string = String(latest?.text || "").trim();
-        if (summaryText) {
-          systemItem = { role: "system", content: summaryText.length > 3200 ? summaryText.slice(0, 3200) : summaryText };
-          // Remove any existing system entry to avoid duplication
-          historyItems = [systemItem].concat(historyItems.filter((it) => it.role !== "system"));
+        // Use our new session-summary endpoint instead of direct Convex call
+        const attemptFetch = async (): Promise<Response | null> => {
+          try {
+            return await fetch(`${url.origin}/api/v1/session-summary?sessionId=${encodeURIComponent(sessionId)}`, {
+              headers: { 'x-request-id': requestId }
+            });
+          } catch { return null; }
+        };
+        let summaryResponse = await attemptFetch();
+        if (summaryResponse) {
+          try { console.log('[api/chat] summary fetch', { status: summaryResponse.status, rid: requestId, sessionId }); } catch {}
+        }
+        // If not found yet (race), retry once after a short delay
+        if (summaryResponse && summaryResponse.status === 404) {
+          try { console.warn('[api/chat] summary 404, retrying'); } catch {}
+          try { await new Promise((r) => setTimeout(r, 150)); } catch {}
+          summaryResponse = await attemptFetch();
+          if (summaryResponse) {
+            try { console.log('[api/chat] summary retry result', { status: summaryResponse.status }); } catch {}
+          }
+        }
+        if (summaryResponse && summaryResponse.ok) {
+          const summaryData = await summaryResponse.json();
+          // Our session-summary endpoint returns the latest text at the top level as `text`
+          const summaryText: string = String(summaryData?.text || summaryData?.summary?.text || "").trim();
+          try { console.log('[api/chat] summary ok', { len: summaryText.length }); } catch {}
+          if (summaryText) {
+            systemItem = { role: "system", content: summaryText.length > 3200 ? summaryText.slice(0, 3200) : summaryText };
+            // Remove any existing system entry to avoid duplication
+            historyItems = [systemItem].concat(historyItems.filter((it) => it.role !== "system"));
 
-          const enc = b64urlEncode(JSON.stringify(historyItems));
-          const params = new URLSearchParams(url.searchParams);
-          params.set("history", enc);
+            const enc = b64urlEncode(JSON.stringify(historyItems));
+            const params = new URLSearchParams(url.searchParams);
+            params.set("history", enc);
 
-          // Include mock user data if available
-          if (mockUserData) {
+            // Include mock user data if available
+            if (mockUserData) {
+              const userDataEnc = b64urlEncode(JSON.stringify(mockUserData));
+              params.set("mockUserData", userDataEnc);
+            }
+
+            upstreamUrl = `${aiApiBaseUrl()}/chat/stream?${params.toString()}`;
+          } else if (mockUserData) {
+            // No summary but we have mock user data
+            const params = new URLSearchParams(url.searchParams);
             const userDataEnc = b64urlEncode(JSON.stringify(mockUserData));
             params.set("mockUserData", userDataEnc);
+            upstreamUrl = `${aiApiBaseUrl()}/chat/stream?${params.toString()}`;
           }
-
-          upstreamUrl = `${aiApiBaseUrl()}/chat/stream?${params.toString()}`;
-        } else if (mockUserData) {
-          // No summary but we have mock user data
-          const params = new URLSearchParams(url.searchParams);
-          const userDataEnc = b64urlEncode(JSON.stringify(mockUserData));
-          params.set("mockUserData", userDataEnc);
-          upstreamUrl = `${aiApiBaseUrl()}/chat/stream?${params.toString()}`;
-
-          if (debugOn) {
-            const recentPreview = historyItems.filter((it) => it.role !== "system").slice(-6).map((m) => ({ role: m.role, content: m.content.slice(0, 240), len: m.content.length }));
-            const summaryText = systemItem ? (systemItem as { role: string; content: string }).content : "";
-            savePromptPreview(requestId, {
-              system: "Coach-min chat",
-              summary: summaryText.slice(0, 1000),
-              summaryLen: summaryText.length,
-              recentMessages: recentPreview,
-              prompt: promptParam.slice(0, 400),
-            });
-          }
-        } else if (debugOn) {
-          savePromptPreview(requestId, { system: "Coach-min chat", summary: "", summaryLen: 0, recentMessages: historyItems.slice(-6).map((m) => ({ role: m.role, content: m.content.slice(0,240), len: m.content.length })), prompt: promptParam.slice(0, 400) });
         }
-      } catch {}
-    } else if (debugOn) {
-      savePromptPreview(requestId, { system: "Coach-min chat", summary: "", summaryLen: 0, recentMessages: historyItems.slice(-6).map((m) => ({ role: m.role, content: m.content.slice(0,240), len: m.content.length })), prompt: promptParam.slice(0, 400) });
+      } catch (error) {
+        console.error("Error fetching summary:", error);
+      }
     }
-  } catch {}
+
+    if (debugOn) {
+      const recentPreview = historyItems.filter((it) => it.role !== "system").slice(-6).map((m) => ({ role: m.role, content: m.content.slice(0, 240), len: m.content.length }));
+      const summaryText = systemItem ? (systemItem as { role: string; content: string }).content : "";
+      savePromptPreview(requestId, {
+        system: "Coach-min chat",
+        summary: summaryText.slice(0, 1000),
+        summaryLen: summaryText.length,
+        recentMessages: recentPreview,
+        prompt: promptParam.slice(0, 400),
+      });
+    }
+  } catch (error) {
+    console.error("Error in chat route:", error);
+  }
 
   // Do NOT propagate client abort to upstream; we want upstream to finish so we can persist and trigger summaries.
   // If the client disconnects, we'll stop piping to the client but keep consuming upstream.

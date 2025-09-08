@@ -2,6 +2,8 @@
 
 import React, { createContext, useCallback, useContext, useMemo, useRef } from "react";
 import { useSessionSummary } from "../../hooks/useSessionSummary";
+import { useInteractionsCache } from "../../hooks/useInteractionsCache";
+import { useSummaryStatusCache } from "../../hooks/useSummaryStatusCache";
 import { useMinimalSession } from "./MinimalSessionContext";
 import { useAuth } from "@clerk/nextjs";
 import { fetchWithRetry } from "../../app/api/lib/retry";
@@ -36,11 +38,53 @@ export function useMinimalConversation() {
 }
 
 export function MinimalConversationProvider({ children }: { children: React.ReactNode }) {
-  // Minimal in-memory history of last 2 messages (role: user|assistant)
-  const historyRef = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
   const { sessionId } = useMinimalSession();
-  const { summary, onTurn, thresholds } = useSessionSummary(sessionId, { autoloadOnMount: false });
+  // Autoload summary so the first turn can include it in history/system
+  const { summary, onTurn, thresholds } = useSessionSummary(sessionId, { autoloadOnMount: true });
   const { getToken } = useAuth();
+
+  // Use the new interactions cache system
+  const {
+    interactions,
+    latestId,
+    isLoading: interactionsLoading,
+    refresh: refreshInteractions,
+    getRecentInteractions,
+    sinceModeActive,
+    lastFetchWasIncremental,
+    lastFetchWas304,
+    lastEtag,
+  } = useInteractionsCache({
+    sessionId: sessionId || '',
+    staleTime: 5000, // 5 seconds
+    revalidateOnFocus: true,
+    debounceMs: 300
+  });
+
+  // Use the new summary status cache system
+  const {
+    status: summaryStatus,
+    isLoading: summaryStatusLoading,
+    refresh: refreshSummaryStatus,
+    isDue,
+    isInProgress,
+    turnsSince,
+    lastSummaryVersion
+  } = useSummaryStatusCache({
+    sessionId: sessionId || '',
+    staleTime: 3000, // 3 seconds for summary status
+    revalidateOnFocus: true,
+    useLiteEndpoint: true
+  });
+
+  // Minimal in-memory history for backward compatibility (last 2 messages)
+  const historyRef = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
+
+  // Refs to store cache refresh functions for trailer event handling
+  const refreshFunctionsRef = useRef<{
+    refreshInteractionsCache?: () => Promise<void>;
+    refreshSummaryStatus?: () => Promise<void>;
+  }>({});
 
   // Reset in-memory history when session changes to avoid cross-session mixing
   React.useEffect(() => {
@@ -105,10 +149,60 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
       return "";
     }
     console.log("chatToTextStreaming: Starting chat request", { prompt: prompt.substring(0, 50), sessionId: currentSessionId });
-    // Build minimal history param from the last N messages (excluding this prompt)
-    const recent = historyRef.current.slice(-MAX_HISTORY_FOR_CONVO).map((m) => ({ role: m.role, content: (m.content || "").slice(0, 240) }));
-    const sys = (summary?.text || "").trim();
-    const items = sys ? ([{ role: "system", content: sys.slice(0, 480) }] as const).concat(recent as any) : recent;
+    // Build history from cached interactions (more comprehensive than in-memory history)
+    const recentInteractions = getRecentInteractions(MAX_HISTORY_FOR_CONVO);
+    const recent = recentInteractions
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .map((m) => ({
+        role: m.role === 'assistant' ? 'assistant' : 'user',
+        content: (m.text || "").slice(0, 240)
+      }));
+
+    // Fallback to in-memory history if cache is empty
+    const fallbackHistory = historyRef.current.slice(-MAX_HISTORY_FOR_CONVO).map((m) => ({
+      role: m.role,
+      content: (m.content || "").slice(0, 240)
+    }));
+
+    const historyToUse = recent.length > 0 ? recent : fallbackHistory;
+    // Ensure we have the freshest system summary:
+    // 1) If we have a local summary, check the lite endpoint for a newer version.
+    // 2) If newer, fetch the full summary text and use it.
+    // 3) If no local summary text, do a one-shot full fetch as a fallback.
+    let sys = (summary?.text || "").trim();
+    let sysVersion = Number(summary?.version || 0);
+    if (currentSessionId) {
+      try {
+        // Preflight: check lite for newer version
+        const liteHeaders = await buildAuthHeaders({ accept: 'application/json', 'x-request-id': Math.random().toString(36).slice(2) });
+        const liteRes = await fetch(`/api/v1/session-summary/lite?sessionId=${encodeURIComponent(currentSessionId)}`, { method: 'GET', headers: liteHeaders, cache: 'no-store' });
+        const lite = await liteRes.json().catch(() => ({} as any));
+        const liteVer = Number(lite?.lastSummary?.version || 0);
+        if (liteRes.ok && Number.isFinite(liteVer) && liteVer > sysVersion) {
+          // Fetch full for newest text
+          const fullHeaders = await buildAuthHeaders({ accept: 'application/json', 'x-request-id': Math.random().toString(36).slice(2) });
+          const fullRes = await fetch(`/api/v1/session-summary?sessionId=${encodeURIComponent(currentSessionId)}`, { method: 'GET', headers: fullHeaders, cache: 'no-store' });
+          const full = await fullRes.json().catch(() => ({} as any));
+          if (fullRes.ok) {
+            const txt = String(full?.text || full?.summary?.text || '').trim();
+            if (txt) {
+              sys = txt;
+              sysVersion = liteVer;
+            }
+          }
+        }
+      } catch {}
+    }
+    // Fallback: if still empty, try one-shot full fetch
+    if (!sys && currentSessionId) {
+      try {
+        const headers = await buildAuthHeaders({ accept: "application/json", 'x-request-id': Math.random().toString(36).slice(2) });
+        const res = await fetch(`/api/v1/session-summary?sessionId=${encodeURIComponent(currentSessionId)}`, { method: 'GET', headers, cache: 'no-store' });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) sys = String(data?.text || data?.summary?.text || "").trim();
+      } catch {}
+    }
+    const items = sys ? ([{ role: "system", content: sys.slice(0, 480) }] as const).concat(historyToUse as any) : historyToUse;
     
     // Debug logging
     console.log("[MinimalConversationContext] chatToTextStreaming history building:", {
@@ -174,16 +268,19 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
         if (!es) { reject(new Error("stream failed")); return; }
         let acc = "";
         let chunkCount = 0;
-        es.onmessage = (evt) => {
+es.onmessage = (evt) => {
           if (evt.data === "[DONE]") {
             try {
-              // Streaming complete
+              console.log('[SSE] done', { rid, chunks: chunkCount, totalLen: acc.length });
               es?.close();
             } catch {};
             resolve(acc);
           } else {
             acc += evt.data;
             chunkCount++;
+            if (chunkCount === 1) {
+              try { console.log('[SSE] first-chunk', { rid, firstLen: evt.data.length }); } catch {}
+            }
             // Stream chunk received
             // Call the chunk callback for streaming TTS
             if (onChunk && evt.data) {
@@ -191,9 +288,10 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
             }
           }
         };
-        es.addEventListener('prompt', (evt: MessageEvent) => {
+es.addEventListener('prompt', (evt: MessageEvent) => {
           try {
             const data = JSON.parse(evt.data || '{}');
+            try { console.log('[SSE] prompt event', { rid, hasRendered: !!data?.rendered, sysLen: (data?.system || '').length }); } catch {}
             setPromptPreview({
               system: typeof data?.system === 'string' ? data.system : '',
               summary: undefined,
@@ -214,11 +312,62 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
             }
           } catch {}
         });
-        es.onerror = (error) => {
+        es.addEventListener('trailer', (evt: MessageEvent) => {
+          try {
+            const data = JSON.parse(evt.data || '{}');
+            console.log("chatToTextStreaming: Received trailer event", data);
+
+            // Update interaction cache with latest interaction ID
+            if (data?.latestInteractionId && currentSessionId) {
+              try {
+                // Trigger cache refresh to include the new interaction
+                console.log("Trailer: Refreshing interactions cache for new interaction", data.latestInteractionId);
+                // Use setTimeout to avoid blocking the stream completion
+                setTimeout(() => {
+                  try {
+                    // Access the refresh functions through the ref
+                    if (refreshFunctionsRef.current?.refreshInteractionsCache) {
+                      refreshFunctionsRef.current.refreshInteractionsCache();
+                    }
+                  } catch (e) {
+                    console.warn("Failed to refresh interactions cache:", e);
+                  }
+                }, 100);
+              } catch (e) {
+                console.warn("Failed to trigger interactions cache refresh:", e);
+              }
+            }
+
+            // Update summary status cache with trailer data
+            if (data?.summaryStatusLite && currentSessionId) {
+              try {
+                // Update the summary status cache with the trailer data
+                // This eliminates the need for a separate summary status fetch
+                console.log("Trailer: Refreshing summary status cache with trailer data");
+                setTimeout(() => {
+                  try {
+                    // Access the refresh functions through the ref
+                    if (refreshFunctionsRef.current?.refreshSummaryStatus) {
+                      refreshFunctionsRef.current.refreshSummaryStatus();
+                    }
+                  } catch (e) {
+                    console.warn("Failed to refresh summary status cache:", e);
+                  }
+                }, 100);
+              } catch (e) {
+                console.warn("Failed to trigger summary status cache refresh:", e);
+              }
+            }
+          } catch (e) {
+            console.warn("Failed to parse trailer event:", e);
+          }
+        });
+es.onerror = (error) => {
           console.error("chatToTextStreaming: EventSource error", error);
           try { es?.close(); } catch {}
           if (acc) resolve(acc); else resolve(null);
         };
+        es.onopen = () => { try { console.log('[SSE] open', { rid }); } catch {} };
       } catch (e: any) {
         reject(new Error(e?.message || "stream failed"));
       }
@@ -372,19 +521,74 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
   }, [chatToTextStreaming, onTurn, sessionId]);
 
   const getImmediateHistory = useCallback(() => {
+    // Try to get from cached interactions first (more comprehensive)
+    const recentFromCache = getRecentInteractions(2);
+    if (recentFromCache.length > 0) {
+      return recentFromCache
+        .filter(m => m.role === 'user' || m.role === 'assistant')
+        .map(m => ({
+          role: m.role as "user" | "assistant",
+          content: m.text
+        }));
+    }
+
+    // Fallback to in-memory history
     const history = historyRef.current.slice(-2);
     try {
       // getImmediateHistory called
     } catch {}
     return history;
-  }, []);
+  }, [getRecentInteractions]);
 
   const getSummaryMeta = useCallback(() => {
+    // Use cached summary status if available, fallback to old summary object
+    if (summaryStatus) {
+      const thresholdTurns = 8; // Default, could be made configurable
+      const turnsUntilDue = Math.max(0, thresholdTurns - turnsSince);
+      return {
+        ready: !!summaryStatus.lastSummary,
+        updatedAt: summaryStatus.lastSummary?.updatedAt,
+        turnsUntilDue,
+        thresholdTurns,
+        isDue,
+        isInProgress
+      };
+    }
+
+    // Fallback to old summary object for backward compatibility
     const ready = !!(summary && typeof summary.text === "string" && summary.text.trim().length > 0);
     const thresholdTurns = thresholds?.turns ?? 8;
     const turnsUntilDue = Math.max(0, thresholdTurns - (Number.isFinite(turnsSinceRefresh) ? turnsSinceRefresh : 0));
     return { ready, updatedAt: summary?.updatedAt, turnsUntilDue, thresholdTurns };
-  }, [summary, thresholds?.turns, turnsSinceRefresh]);
+  }, [summaryStatus, summary, thresholds?.turns, turnsSinceRefresh, turnsSince, isDue, isInProgress]);
+
+  // Cache management functions
+  const refreshInteractionsCache = useCallback(async () => {
+    await refreshInteractions();
+  }, [refreshInteractions]);
+
+  const refreshSummaryStatusCache = useCallback(async () => {
+    await refreshSummaryStatus();
+  }, [refreshSummaryStatus]);
+
+  const getCacheStatus = useCallback(() => ({
+    interactionsCount: interactions.length,
+    latestId,
+    isLoading: interactionsLoading,
+    cacheSize: interactions.length,
+    sinceModeActive,
+    lastFetchWasIncremental,
+    lastFetchWas304,
+    lastEtag,
+  }), [interactions.length, latestId, interactionsLoading, sinceModeActive, lastFetchWasIncremental, lastFetchWas304, lastEtag]);
+
+  // Store refresh functions in ref for trailer event access
+  React.useEffect(() => {
+    refreshFunctionsRef.current = {
+      refreshInteractionsCache,
+      refreshSummaryStatus: refreshSummaryStatusCache
+    };
+  }, [refreshInteractionsCache, refreshSummaryStatusCache]);
 
   const value = useMemo<MinimalConversationContextValue>(() => ({
     chatToText: chatToTextWithHistory,
@@ -396,7 +600,64 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     getLastPromptPreview: () => promptPreview,
     refreshPromptPreview: async () => {},
     promptPreview,
-  }), [chatToTextWithHistory, chatToTextStreaming, chatToTextStreamingWithHistory, getImmediateHistory, recordTurn, getSummaryMeta, promptPreview]);
+    // Extended context value with cache management
+    refreshInteractionsCache,
+    getCacheStatus,
+    interactionsCount: interactions.length,
+    isInteractionsLoading: interactionsLoading,
+    // Summary status cache
+    summaryStatus,
+    refreshSummaryStatus: refreshSummaryStatusCache,
+    isSummaryStatusLoading: summaryStatusLoading,
+    isDue,
+    isInProgress,
+    turnsSince,
+    lastSummaryVersion,
+    // Interactions cache debug flags
+    sinceModeActive,
+    lastFetchWasIncremental,
+    lastFetchWas304,
+    lastEtag,
+  } as MinimalConversationContextValue & {
+    refreshInteractionsCache: () => Promise<void>;
+    getCacheStatus: () => any;
+    interactionsCount: number;
+    isInteractionsLoading: boolean;
+    summaryStatus: any;
+    refreshSummaryStatus: () => Promise<void>;
+    isSummaryStatusLoading: boolean;
+    isDue: boolean;
+    isInProgress: boolean;
+    turnsSince: number;
+    lastSummaryVersion: number;
+    sinceModeActive: boolean;
+    lastFetchWasIncremental: boolean;
+    lastFetchWas304: boolean;
+    lastEtag: string | null;
+  }), [
+    chatToTextWithHistory,
+    chatToTextStreaming,
+    chatToTextStreamingWithHistory,
+    getImmediateHistory,
+    recordTurn,
+    getSummaryMeta,
+    promptPreview,
+    refreshInteractionsCache,
+    getCacheStatus,
+    interactions.length,
+    interactionsLoading,
+    summaryStatus,
+    refreshSummaryStatusCache,
+    summaryStatusLoading,
+    isDue,
+    isInProgress,
+    turnsSince,
+    lastSummaryVersion,
+    sinceModeActive,
+    lastFetchWasIncremental,
+    lastFetchWas304,
+    lastEtag
+  ]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

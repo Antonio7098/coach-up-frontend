@@ -1,5 +1,5 @@
 /* eslint-disable no-console */
-import client from "prom-client";
+import * as client from "prom-client";
 
 // Ensure a singleton registry across hot reloads in Next.js
 const g = globalThis as unknown as {

@@ -42,7 +42,10 @@ function aiApiBaseUrl() {
   );
 }
 
+// Compact lite endpoint for frequent polling
 export async function GET(request: Request) {
+  const urlObj = new URL(request.url);
+  const isLite = urlObj.pathname.endsWith('/lite') || urlObj.searchParams.get('lite') === 'true';
   const headersIn = new Headers(request.headers);
   const requestId = headersIn.get("x-request-id") || safeUUID();
   const idempotencyKey = headersIn.get("idempotency-key") || headersIn.get("Idempotency-Key") || "";
@@ -71,7 +74,7 @@ export async function GET(request: Request) {
   if (!rl.ok) {
     const labels = { route: routePath, method, status: '429', mode } as const;
     promMetrics.rateLimitedTotal.labels(labels.route, labels.method, labels.status, labels.mode).inc();
-    return respond(429, { error: "Rate limit exceeded" }, { "Retry-After": String(rl.retryAfterSec), "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) });
+    return respond(429, { error: "Rate limit exceeded" }, { "Retry-After": String((rl as any).retryAfterSec), "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) });
   }
 
   // Optional auth gating via CLERK_ENABLED
@@ -80,8 +83,7 @@ export async function GET(request: Request) {
     return respond(401, { error: "Unauthorized" }, { "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) });
   }
 
-  const url = new URL(request.url);
-  const sessionId = url.searchParams.get("sessionId") || "";
+  const sessionId = urlObj.searchParams.get("sessionId") || "";
   if (!sessionId) {
     return respond(400, { error: "sessionId is required" }, { "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) });
   }
@@ -124,6 +126,32 @@ export async function GET(request: Request) {
       }
     } catch {}
 
+    // Return compact payload for lite mode (frequent polling)
+    if (isLite) {
+      const litePayload = {
+        sessionId,
+        due: typeof status?.assistantSince === 'number' && typeof status?.thresholdTurns === 'number'
+          ? status.assistantSince >= status.thresholdTurns : false,
+        lastSummary: last ? {
+          version: typeof last.version === 'number' ? last.version : 0,
+          cutoffIndex: typeof last.cutoffIndex === 'number' ? last.cutoffIndex : undefined,
+          updatedAt,
+          preview: String(last.text || "").substring(0, 100) + (String(last.text || "").length > 100 ? "..." : "")
+        } : null,
+        reservation: {
+          inProgress: latest?.inProgress === true,
+          lastJobAt: typeof status?.lastJobAt === 'number' ? status.lastJobAt : undefined
+        },
+        turnsSince: typeof status?.assistantSince === 'number' ? status.assistantSince : 0
+      };
+      return respond(200, litePayload, {
+        "X-RateLimit-Limit": String(rl.limit),
+        "X-RateLimit-Remaining": String(rl.remaining),
+        "X-RateLimit-Reset": String(rl.resetSec)
+      });
+    }
+
+    // Full payload for regular requests
     const payload = {
       sessionId,
       text: String(last?.text || ""),
