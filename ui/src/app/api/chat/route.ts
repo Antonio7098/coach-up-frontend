@@ -132,7 +132,8 @@ export async function GET(request: Request) {
     if (sessionId) {
       try {
         const client = makeConvex(convexBaseUrl());
-        const latest: any = await client.query("functions/summaries:getLatest", { sessionId });
+        const latestResult = await client.query("functions/summaries:getLatest", { sessionId });
+        const latest: any = (latestResult as { value?: any })?.value || null;
         const summaryText: string = String(latest?.text || "").trim();
         if (summaryText) {
           systemItem = { role: "system", content: summaryText.length > 3200 ? summaryText.slice(0, 3200) : summaryText };

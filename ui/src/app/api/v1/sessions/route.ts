@@ -72,7 +72,8 @@ export async function GET(request: Request) {
       return respond(200, payload);
     }
     const client = makeConvex(convexBaseUrl());
-    const data: any = await client.query("functions/sessions:getBySessionId", { sessionId });
+    const queryResult = await client.query("functions/sessions:getBySessionId", { sessionId });
+    const data: any = (queryResult as { value?: any })?.value || null;
     const payload = { session: data ?? null, hasSession: !!data };
     return respond(200, payload);
   } catch (err: unknown) {

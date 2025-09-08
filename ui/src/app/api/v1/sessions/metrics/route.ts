@@ -63,7 +63,8 @@ export async function GET(request: Request) {
 
     if (lastActivityAt == null || interactionCount == null) {
       try {
-        const docs: any[] = await client.query("functions/interactions:listBySession", { sessionId, limit: 200 });
+        const queryResult = await client.query("functions/interactions:listBySession", { sessionId, limit: 200 });
+        const docs: any[] = (queryResult as { value?: any[] })?.value || [];
         if (Array.isArray(docs) && docs.length > 0) {
           const tsVals = docs.map((d) => Number(d?.ts || d?.createdAt || 0)).filter((n) => Number.isFinite(n) && n > 0);
           if (tsVals.length > 0) {
