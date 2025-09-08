@@ -81,10 +81,15 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
   const historyRef = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
 
   // Refs to store cache refresh functions for trailer event handling
-  const refreshFunctionsRef = useRef<{
+  const refreshFunctionsRef = React.useRef<{
     refreshInteractionsCache?: () => Promise<void>;
     refreshSummaryStatus?: () => Promise<void>;
   }>({});
+
+  // Phase 2 telemetry: track last prefetch and cache refresh times
+  const [lastPrefetchAt, setLastPrefetchAt] = React.useState<number | null>(null);
+  const [lastInteractionsRefreshAt, setLastInteractionsRefreshAt] = React.useState<number | null>(null);
+  const [lastSummaryStatusRefreshAt, setLastSummaryStatusRefreshAt] = React.useState<number | null>(null);
 
   // Reset in-memory history when session changes to avoid cross-session mixing
   React.useEffect(() => {
@@ -119,6 +124,12 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
       setTurnsSinceRefresh(0);
     }
   }, [summary?.updatedAt]);
+  // Phase 2: stream-start prefetch cooldown gate (ms timestamp until which we skip)
+  const prefetchGateRef = React.useRef<number>(0);
+  // Track a single in-flight EventSource and a monotonically increasing request sequence
+  const esRef = React.useRef<EventSource | null>(null);
+  const seqRef = React.useRef<number>(0);
+  const activeSessionRef = React.useRef<string | null>(null);
 
   function toBase64Url(s: string): string {
     try {
@@ -243,6 +254,11 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     lastRidRef.current = rid;
     setPromptPreview(null);
 
+    // Increment sequence and close any previous EventSource (latest-wins)
+    const seq = ++seqRef.current;
+    activeSessionRef.current = currentSessionId || null;
+    try { if (esRef.current) { try { esRef.current.close(); } catch {}; esRef.current = null; } } catch {}
+
     const startStreaming = (): Promise<string | null> => new Promise((resolve, reject) => {
       try {
         let es: EventSource | null = null;
@@ -251,7 +267,6 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
           let systemPromptParam = "";
           if (options?.customSystemPrompt && options.customSystemPrompt.trim()) {
             systemPromptParam = `&systemPrompt=${encodeURIComponent(options.customSystemPrompt.trim())}`;
-
           }
 
           // Add model parameter if provided
@@ -264,22 +279,28 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
 
           console.log("chatToTextStreaming: Making EventSource request to", url);
           es = new EventSource(url, { withCredentials: false });
+          esRef.current = es;
         } catch {}
         if (!es) { reject(new Error("stream failed")); return; }
         let acc = "";
         let chunkCount = 0;
 es.onmessage = (evt) => {
+          // Ignore if a newer request has started
+          if (seq !== seqRef.current || (activeSessionRef.current || null) !== (currentSessionId || null)) {
+            return;
+          }
           if (evt.data === "[DONE]") {
             try {
-              console.log('[SSE] done', { rid, chunks: chunkCount, totalLen: acc.length });
+              console.log('[SSE] done', { rid, seq, chunks: chunkCount, totalLen: acc.length });
               es?.close();
+              if (esRef.current === es) esRef.current = null;
             } catch {};
             resolve(acc);
           } else {
             acc += evt.data;
             chunkCount++;
             if (chunkCount === 1) {
-              try { console.log('[SSE] first-chunk', { rid, firstLen: evt.data.length }); } catch {}
+              try { console.log('[SSE] first-chunk', { rid, seq, firstLen: evt.data.length }); } catch {}
             }
             // Stream chunk received
             // Call the chunk callback for streaming TTS
@@ -290,8 +311,10 @@ es.onmessage = (evt) => {
         };
 es.addEventListener('prompt', (evt: MessageEvent) => {
           try {
+            // Ignore if stale
+            if (seq !== seqRef.current || (activeSessionRef.current || null) !== (currentSessionId || null)) return;
             const data = JSON.parse(evt.data || '{}');
-            try { console.log('[SSE] prompt event', { rid, hasRendered: !!data?.rendered, sysLen: (data?.system || '').length }); } catch {}
+            try { console.log('[SSE] prompt event', { rid, seq, hasRendered: !!data?.rendered, sysLen: (data?.system || '').length }); } catch {}
             setPromptPreview({
               system: typeof data?.system === 'string' ? data.system : '',
               summary: undefined,
@@ -363,17 +386,58 @@ es.addEventListener('prompt', (evt: MessageEvent) => {
           }
         });
 es.onerror = (error) => {
+          // Ignore if stale
+          if (seq !== seqRef.current || (activeSessionRef.current || null) !== (currentSessionId || null)) {
+            try { es?.close(); } catch {}
+            if (esRef.current === es) esRef.current = null;
+            return;
+          }
           console.error("chatToTextStreaming: EventSource error", error);
           try { es?.close(); } catch {}
+          if (esRef.current === es) esRef.current = null;
           if (acc) resolve(acc); else resolve(null);
         };
-        es.onopen = () => { try { console.log('[SSE] open', { rid }); } catch {} };
+        es.onopen = () => {
+          // Ignore if stale
+          if (seq !== seqRef.current || (activeSessionRef.current || null) !== (currentSessionId || null)) return;
+          try { console.log('[SSE] open', { rid, seq }); } catch {}
+          // Phase 2: on stream start, prefetch interactions and summary status if allowed by cooldown
+          const now = Date.now();
+          if (prefetchGateRef.current && now < prefetchGateRef.current) {
+            try { console.log('[prefetch] skip (cooldown)', { rid, untilMs: prefetchGateRef.current - now }); } catch {}
+          } else {
+            prefetchGateRef.current = now + 1500; // 1.5s cooldown window
+            try {
+              console.log('[prefetch] start', { rid, sessionId: currentSessionId });
+              setLastPrefetchAt(now);
+            } catch {}
+            // Fire-and-forget background refreshes; respect internal staleTime/de-dupe
+            setTimeout(() => {
+              try {
+                refreshFunctionsRef.current?.refreshInteractionsCache?.();
+              } catch (e) {
+                try { console.warn('[prefetch] interactions error', { err: e instanceof Error ? e.message : String(e) }); } catch {}
+              }
+            }, 0);
+            setTimeout(() => {
+              try {
+                refreshFunctionsRef.current?.refreshSummaryStatus?.();
+              } catch (e) {
+                try { console.warn('[prefetch] summary-status error', { err: e instanceof Error ? e.message : String(e) }); } catch {}
+              }
+            }, 50);
+            setTimeout(() => {
+              try { console.log('[prefetch] queued'); } catch {}
+            }, 0);
+          }
+        };
       } catch (e: any) {
         reject(new Error(e?.message || "stream failed"));
       }
     });
     const first = await startStreaming();
     if (typeof first === "string") return first;
+    // If first attempt failed without data, try once more (network flake)
     const second = await startStreaming();
     if (typeof second === "string") return second;
     throw new Error("stream failed");
@@ -565,10 +629,12 @@ es.onerror = (error) => {
   // Cache management functions
   const refreshInteractionsCache = useCallback(async () => {
     await refreshInteractions();
+    try { setLastInteractionsRefreshAt(Date.now()); } catch {}
   }, [refreshInteractions]);
 
   const refreshSummaryStatusCache = useCallback(async () => {
     await refreshSummaryStatus();
+    try { setLastSummaryStatusRefreshAt(Date.now()); } catch {}
   }, [refreshSummaryStatus]);
 
   const getCacheStatus = useCallback(() => ({
@@ -580,7 +646,21 @@ es.onerror = (error) => {
     lastFetchWasIncremental,
     lastFetchWas304,
     lastEtag,
-  }), [interactions.length, latestId, interactionsLoading, sinceModeActive, lastFetchWasIncremental, lastFetchWas304, lastEtag]);
+    lastPrefetchAt,
+    lastInteractionsRefreshAt,
+    lastSummaryStatusRefreshAt,
+  }), [
+    interactions.length,
+    latestId,
+    interactionsLoading,
+    sinceModeActive,
+    lastFetchWasIncremental,
+    lastFetchWas304,
+    lastEtag,
+    lastPrefetchAt,
+    lastInteractionsRefreshAt,
+    lastSummaryStatusRefreshAt,
+  ]);
 
   // Store refresh functions in ref for trailer event access
   React.useEffect(() => {
@@ -618,6 +698,10 @@ es.onerror = (error) => {
     lastFetchWasIncremental,
     lastFetchWas304,
     lastEtag,
+    // Prefetch and cache freshness telemetry
+    lastPrefetchAt,
+    lastInteractionsRefreshAt,
+    lastSummaryStatusRefreshAt,
   } as MinimalConversationContextValue & {
     refreshInteractionsCache: () => Promise<void>;
     getCacheStatus: () => any;
@@ -656,7 +740,10 @@ es.onerror = (error) => {
     sinceModeActive,
     lastFetchWasIncremental,
     lastFetchWas304,
-    lastEtag
+    lastEtag,
+    lastPrefetchAt,
+    lastInteractionsRefreshAt,
+    lastSummaryStatusRefreshAt,
   ]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

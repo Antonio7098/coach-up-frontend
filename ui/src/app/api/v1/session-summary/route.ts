@@ -173,6 +173,10 @@ export async function GET(request: Request) {
   }
 }
 
+// In-memory idempotency cache and hysteresis guards (best-effort, per-instance)
+const idemCache = new Map<string, { ts: number; status: number; body: any }>();
+const notDueCooldown = new Map<string, number>();
+
 export async function POST(request: Request) {
   const headersIn = new Headers(request.headers);
   const requestId = headersIn.get("x-request-id") || safeUUID();
@@ -209,6 +213,23 @@ export async function POST(request: Request) {
   const tokenBudget = Number(body?.tokenBudget) || undefined;
   if (!sessionId.trim()) return respond(400, { error: "sessionId is required" });
 
+  // Idempotency: if Idempotency-Key header provided and recently processed, replay cached response (TTL 60s)
+  const idemKey = headersIn.get('Idempotency-Key') || headersIn.get('idempotency-key') || '';
+  if (idemKey) {
+    const hit = idemCache.get(idemKey);
+    if (hit && Date.now() - hit.ts < 60000) {
+      return respond(hit.status, hit.body, { 'Idempotency-Key': idemKey });
+    }
+  }
+
+  // Hysteresis: if we rejected as not_due within a short TTL, return fast not_due without re-hitting backend
+  const lastNotDueAt = notDueCooldown.get(sessionId) || 0;
+  if (Date.now() - lastNotDueAt < 2000) {
+    const resp = { status: 'rejected', accepted: false, reason: 'not_due_hysteresis' };
+    if (idemKey) idemCache.set(idemKey, { ts: Date.now(), status: 200, body: resp });
+    return respond(200, resp, idemKey ? { 'Idempotency-Key': idemKey } : undefined);
+  }
+
   // Cadence cooldown intentionally disabled for simplicity (no-op)
   const cadenceSeconds = 0;
 
@@ -228,9 +249,14 @@ export async function POST(request: Request) {
       const job: any = await convex.mutation("functions/summaries:ensureJob", { sessionId, nowMs });
       const val = job && typeof job === 'object' && 'accepted' in job ? job : job?.value;
       if (val && val.accepted) {
-        return respond(200, { status: 'accepted', accepted: true, version: val.version, cutoffIndex: val.cutoffIndex });
+        const resp = { status: 'accepted', accepted: true, version: val.version, cutoffIndex: val.cutoffIndex };
+        if (idemKey) idemCache.set(idemKey, { ts: Date.now(), status: 200, body: resp });
+        return respond(200, resp, idemKey ? { 'Idempotency-Key': idemKey } : undefined);
       }
-      return respond(200, { status: 'rejected', accepted: false, reason: val?.reason || 'not_due' });
+      const resp = { status: 'rejected', accepted: false, reason: val?.reason || 'not_due' };
+      notDueCooldown.set(sessionId, Date.now());
+      if (idemKey) idemCache.set(idemKey, { ts: Date.now(), status: 200, body: resp });
+      return respond(200, resp, idemKey ? { 'Idempotency-Key': idemKey } : undefined);
     } catch (e) {
       return respond(502, { error: 'ensureJob failed' });
     }

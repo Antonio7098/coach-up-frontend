@@ -208,8 +208,15 @@ export function MinimalMicProvider({
   const bargeInActiveRef = useRef<boolean>(false);
   const resumeAfterBargeInRef = useRef<boolean>(false);
 
+  const lastStopAtRef = useRef<number>(0);
   const stopRecording = useCallback(() => {
     // Stop recording called
+    const now = Date.now();
+    if (now - lastStopAtRef.current < 300) {
+      // debounce duplicate stop calls
+      return;
+    }
+    lastStopAtRef.current = now;
     setRecording(false);
     setInputSpeaking(false);
     try {
@@ -237,6 +244,20 @@ export function MinimalMicProvider({
     // Cancel current capture
     try { stopRecording(); } catch {}
   }, [stopRecording]);
+
+  const resolveCanonicalSessionId = useCallback(async (): Promise<string | null> => {
+    // Ensure we have a canonical (non-temporary) session id before proceeding
+    try { await ensureFreshSession(); } catch {}
+    let sid = sessionIdRef.current || null;
+    const deadline = Date.now() + 1500; // wait up to 1.5s for canonical id
+    while (sid && sid.startsWith('sess_') && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+      sid = sessionIdRef.current || sid;
+    }
+    return sid;
+  }, [ensureFreshSession]);
+
+  const currentTurnSeqRef = useRef<number>(0);
 
   const startRecordingInternal = useCallback(async (forceVad: boolean = false) => {
     if (recording || startingRef.current) return;
@@ -274,6 +295,9 @@ export function MinimalMicProvider({
             }
             setStatus("chat");
 
+            // Resolve a canonical session id before dispatching chat
+            const canonicalSid = await resolveCanonicalSessionId();
+
             const chatOptions = {
               userProfile: userProfileRef.current,
               userGoals: userGoalsRef.current,
@@ -300,7 +324,11 @@ export function MinimalMicProvider({
             // Use streaming TTS instead of waiting for full response
             let accumulatedText = "";
             let chunkCount = 0;
+            // Bump turn sequence to invalidate any older audio
+            const turnSeq = ++currentTurnSeqRef.current;
             const onChunk = (chunk: string) => {
+              // Ignore chunks from stale turns
+              if (turnSeq !== currentTurnSeqRef.current) return;
               accumulatedText += chunk;
               chunkCount++;
               // Process chunk for TTS immediately (sentence-based)
@@ -325,8 +353,8 @@ export function MinimalMicProvider({
             // Starting streaming chat with history
 
             // Use chatToTextStreaming to avoid duplicate user interactions (STT route handles user interactions)
-            console.log("MinimalMic: Calling chatToTextStreaming", { text: text.substring(0, 50), sessionId: sessionIdRef.current });
-            const streamingReply = await convo.chatToTextStreaming(text, onChunk, { ...streamingOptions, sessionId: sessionIdRef.current || undefined });
+            console.log("MinimalMic: Calling chatToTextStreaming", { text: text.substring(0, 50), sessionId: canonicalSid });
+            const streamingReply = await convo.chatToTextStreaming(text, onChunk, { ...streamingOptions, sessionId: canonicalSid || undefined });
             console.log("MinimalMic: chatToTextStreaming completed", { reply: streamingReply?.substring(0, 50) });
 
             // Record this turn into the minimal conversation history for future context (without backend persistence)
@@ -339,7 +367,7 @@ export function MinimalMicProvider({
             // Streaming chat completed
 
             // Final TTS for any remaining text (in case streaming missed some)
-            if (accumulatedText && accumulatedText !== streamingReply) {
+            if (turnSeq === currentTurnSeqRef.current && accumulatedText && accumulatedText !== streamingReply) {
               try { void voice.enqueueTTSChunk?.(streamingReply.slice(accumulatedText.length)); } catch {}
             }
 
