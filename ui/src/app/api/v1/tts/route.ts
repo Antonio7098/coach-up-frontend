@@ -177,20 +177,8 @@ export async function POST(request: Request) {
       ttsCharacters: ttsCost.characters,
     } as const;
 
-    // Fire-and-forget persistence of assistant interaction row with cost data
-    persistInteraction({
-      sessionId,
-      groupId,
-      text,
-      audioUrl: result.audioUrl,
-      ttsCostCents: ttsCost.costCents,
-      ttsCharacters: ttsCost.characters,
-    }).catch(() => {});
-
-    // Update session costs and metrics
-    if (sessionId) {
-      // Note: Session cost updates are handled by the Chat API during streaming
-    }
+    // NOTE: Assistant interaction persistence and cadence triggers happen server-side (chat/stream).
+    // TTS endpoint is synthesis-only to avoid double-write and duplicate cadence triggers.
 
     // Metrics: audio bytes out and storage uploaded bytes
     try {
@@ -211,14 +199,11 @@ export async function POST(request: Request) {
       const labels = { route: routePath, method, status: "200", mode } as const;
       promMetrics.ttsLatencyMs.labels(labels.route, labels.method, labels.status, labels.mode).observe(Date.now() - started);
     } catch {}
-    console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, mode, sessionId, groupId, voiceId: payload.voiceId, format: payload.format, latencyMs: Date.now() - started }));
     return respond(200, payload);
   } catch (err: any) {
     if (err?.name === 'ProviderNotConfiguredError' || err instanceof ProviderNotConfiguredError) {
-      console.log(JSON.stringify({ level: 'error', route: routePath, requestId, status: 501, mode, msg: 'TTS provider not configured', error: err?.message, latencyMs: Date.now() - started }));
       return respond(501, { error: "TTS provider not configured" });
     }
-    console.log(JSON.stringify({ level: 'error', route: routePath, requestId, status: 500, mode, msg: 'TTS failed', error: err?.message, latencyMs: Date.now() - started }));
     return respond(500, { error: "TTS failed" });
   }
 }

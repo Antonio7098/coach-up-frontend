@@ -56,14 +56,12 @@ export async function GET(request: Request) {
   // Optional auth gating
   const auth = await requireAuth(request);
   if (!auth.ok) {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 401, reason: auth.reason, latencyMs: Date.now() - started }));
     return respond(401, { error: "Unauthorized" });
   }
 
   const url = new URL(request.url);
   const sessionId = url.searchParams.get("sessionId") || "";
   if (!sessionId.trim()) {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 400, msg: 'Missing sessionId', latencyMs: Date.now() - started }));
     return respond(400, { error: "sessionId is required" });
   }
 
@@ -71,13 +69,11 @@ export async function GET(request: Request) {
     if (mode === 'mock') {
       const doc = await mockConvex.getSessionById?.({ sessionId });
       const payload = { session: doc ?? null, hasSession: !!doc };
-      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, sessionId, mode, hasSession: !!doc, latencyMs: Date.now() - started }));
       return respond(200, payload);
     }
     const client = makeConvex(convexBaseUrl());
     const data: any = await client.query("functions/sessions:getBySessionId", { sessionId });
     const payload = { session: data ?? null, hasSession: !!data };
-    console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, sessionId, mode, hasSession: !!data, latencyMs: Date.now() - started }));
     return respond(200, payload);
   } catch (err: unknown) {
     try { console.error('[sessions] GET failed', err); } catch {}

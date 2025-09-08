@@ -71,7 +71,7 @@ export async function GET(request: Request) {
           }
           interactionCount = docs.length;
         } else {
-          lastActivityAt = lastActivityAt ?? Number(session?.startTime || 0) || null;
+          lastActivityAt = lastActivityAt ?? Number(session?.startTime || 0);
           interactionCount = interactionCount ?? 0;
         }
       } catch {

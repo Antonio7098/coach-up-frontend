@@ -27,7 +27,6 @@ function convexBaseUrl() {
 
 async function getMockUserData(sessionId: string) {
   try {
-    console.log(`[ui/api/chat] getMockUserData called for sessionId: ${sessionId}`);
 
     // Seed mock data if not already seeded
     mockConvex.__devSeedUserData?.();
@@ -35,28 +34,21 @@ async function getMockUserData(sessionId: string) {
     // First try to get userId from session
     let userId = null;
     const session = await mockConvex.getSessionById?.({ sessionId });
-    console.log(`[ui/api/chat] Session lookup result:`, session);
     if (session?.userId) {
       userId = session.userId;
-      console.log(`[ui/api/chat] Found userId from session: ${userId}`);
     } else {
       // Fallback: try common test userIds
-      console.log(`[ui/api/chat] No session userId, trying fallback userIds`);
       const testUserIds = ['test_user', 'sales_demo', 'demo_user'];
       for (const testId of testUserIds) {
-        console.log(`[ui/api/chat] Trying userId: ${testId}`);
         const profile = await mockConvex.getUserProfile?.({ userId: testId });
-        console.log(`[ui/api/chat] Profile for ${testId}:`, profile);
         if (profile) {
           userId = testId;
-          console.log(`[ui/api/chat] Found user with profile: ${userId}`);
           break;
         }
       }
     }
 
     if (!userId) {
-      console.log(`[ui/api/chat] No userId found, returning null`);
       return null;
     }
 
@@ -65,7 +57,6 @@ async function getMockUserData(sessionId: string) {
       mockConvex.listUserGoals?.({ userId })
     ]);
 
-    console.log(`[ui/api/chat] Final result - profile: ${!!profile}, goals: ${goals?.length || 0}`);
     return { profile, goals: goals || [] };
   } catch (e) {
     console.warn('[ui/api/chat] Failed to fetch mock user data:', e);
@@ -91,18 +82,15 @@ export async function OPTIONS() {
 }
 
 export async function GET(request: Request) {
-  console.log(`[ui/api/chat] GET request received: ${request.url}`);
   const controller = new AbortController();
   const url = new URL(request.url);
   const { search } = url;
   const promptParam = url.searchParams.get("prompt") || "";
   const sessionId = url.searchParams.get("sessionId") || "";
   const ridIn = url.searchParams.get("rid") || "";
-  console.log(`[ui/api/chat] Extracted sessionId: ${sessionId}`);
   const debugOn = (process.env.PROMPT_DEBUG === "1") || (url.searchParams.get("debug") === "1");
   const systemPromptParam = url.searchParams.get("systemPrompt") || "";
   try {
-    console.log(`[ui/api/chat] promptLen=%d systemPromptLen=%d`, promptParam.length, systemPromptParam.length);
   } catch {}
   const requestId = (() => {
     try {
@@ -117,24 +105,16 @@ export async function GET(request: Request) {
   // Check if we need to fetch mock user data
   let mockUserData = null;
   const isMockMode = process.env.MOCK_CONVEX === '1';
-  console.log(`[ui/api/chat] Mock mode check: MOCK_CONVEX=${process.env.MOCK_CONVEX}, isMockMode=${isMockMode}, sessionId=${sessionId}`);
   if (isMockMode && sessionId) {
-    console.log(`[ui/api/chat] Attempting to fetch mock user data`);
     mockUserData = await getMockUserData(sessionId);
     if (mockUserData) {
-      console.log(`[ui/api/chat] Fetched mock user data for session ${sessionId}: profile=${!!mockUserData.profile}, goals=${mockUserData.goals.length}`);
-      console.log(`[ui/api/chat] Profile:`, mockUserData.profile);
-      console.log(`[ui/api/chat] Goals:`, mockUserData.goals);
     } else {
-      console.log(`[ui/api/chat] No mock user data found`);
     }
   } else {
-    console.log(`[ui/api/chat] Not fetching mock user data: isMockMode=${isMockMode}, sessionId=${sessionId}`);
   }
 
   // Merge in server-side summary to history (as system) when available
   let upstreamUrl = `${aiApiBaseUrl()}/chat/stream${search}`;
-  console.log(`[ui/api/chat] Upstream URL: ${upstreamUrl}`);
 
   // Add custom system prompt parameter if provided
   if (systemPromptParam && systemPromptParam.trim().length > 0) {
@@ -167,7 +147,6 @@ export async function GET(request: Request) {
           if (mockUserData) {
             const userDataEnc = b64urlEncode(JSON.stringify(mockUserData));
             params.set("mockUserData", userDataEnc);
-            console.log(`[ui/api/chat] Added mockUserData to params: ${userDataEnc.substring(0, 50)}...`);
           }
 
           upstreamUrl = `${aiApiBaseUrl()}/chat/stream?${params.toString()}`;
@@ -176,7 +155,6 @@ export async function GET(request: Request) {
           const params = new URLSearchParams(url.searchParams);
           const userDataEnc = b64urlEncode(JSON.stringify(mockUserData));
           params.set("mockUserData", userDataEnc);
-          console.log(`[ui/api/chat] Added mockUserData to params (no summary): ${userDataEnc.substring(0, 50)}...`);
           upstreamUrl = `${aiApiBaseUrl()}/chat/stream?${params.toString()}`;
 
           if (debugOn) {
@@ -199,14 +177,13 @@ export async function GET(request: Request) {
     }
   } catch {}
 
-  // Propagate client abort to upstream
-  request.signal.addEventListener("abort", () => controller.abort());
+  // Do NOT propagate client abort to upstream; we want upstream to finish so we can persist and trigger summaries.
+  // If the client disconnects, we'll stop piping to the client but keep consuming upstream.
 
   let upstream: Response;
   try {
     const incoming = new Headers(request.headers);
     const trackedSkillId = incoming.get("x-tracked-skill-id");
-    try { console.log(`[ui/api/chat] x-tracked-skill-id=%s requestId=%s`, trackedSkillId || "-", requestId); } catch {}
     const headers = new Headers({
       Accept: "text/event-stream",
       "X-Request-Id": requestId,
@@ -247,9 +224,9 @@ export async function GET(request: Request) {
 
     // Pipe the other branch through to the client
     forPipe
-      .pipeTo(writable)
+      .pipeTo(writable, { preventCancel: true })
       .then(() => { disconnectReason = "completed"; })
-      .catch(() => { disconnectReason = "client_abort"; try { controller.abort(); } catch {} })
+      .catch(() => { disconnectReason = "client_abort"; /* do not abort upstream */ })
       .finally(() => {
         try {
           const totalMs = Date.now() - startedAt;
@@ -264,9 +241,9 @@ export async function GET(request: Request) {
   } catch {
     // Fallback: if tee/read fails, just pipe through
     upstream.body
-      .pipeTo(writable)
+      .pipeTo(writable, { preventCancel: true })
       .then(() => { disconnectReason = "completed"; })
-      .catch(() => { disconnectReason = "client_abort"; try { controller.abort(); } catch {} })
+      .catch(() => { disconnectReason = "client_abort"; /* do not abort upstream */ })
       .finally(() => {
         try {
           const totalMs = Date.now() - startedAt;

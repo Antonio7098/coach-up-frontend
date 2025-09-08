@@ -186,7 +186,7 @@ const googleTts: TtsProvider = {
         throw new Error(`Failed to parse GOOGLE_CLOUD_CREDENTIALS_JSON: ${(e as Error).message}`);
       }
     } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-      console.warn('Using file-based Google credentials - not recommended in serverless environments');
+      // File-based credentials configured
     }
 
     let { contentType, ext } = pickFormat(input.format)

@@ -59,30 +59,25 @@ export async function GET(request: Request) {
   if (!rl.ok) {
     const labels = { route: routePath, method, status: '429', mode } as const;
     promMetrics.rateLimitedTotal.labels(labels.route, labels.method, labels.status, labels.mode).inc();
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 429, reason: 'rate_limited', retryAfterSec: rl.retryAfterSec }));
     return respond(429, { error: "Rate limit exceeded" }, { "Retry-After": String(rl.retryAfterSec), "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) });
   }
   const rateHeaders = { "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) };
 
   if (!userId) {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 400, msg: 'Missing userId', mode, latencyMs: Date.now() - started }));
     return respond(400, { error: "userId required" }, rateHeaders);
   }
 
   try {
     if (process.env.MOCK_CONVEX === '1') {
       const profile = await mockConvex.getUserProfile({ userId });
-      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, userId, status: 200, found: !!profile, mode, latencyMs: Date.now() - started }));
       return respond(200, { profile: profile ?? null }, rateHeaders);
     }
 
     const client = makeConvex(convexBaseUrl());
     const profile = await client.query("functions/users:getProfile", { userId }) as any;
-    console.log(JSON.stringify({ level: 'info', route: routePath, requestId, userId, status: 200, found: !!profile, mode, latencyMs: Date.now() - started }));
     return respond(200, { profile: profile ?? null }, rateHeaders);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e ?? 'Convex query failed');
-    console.log(JSON.stringify({ level: 'error', route: routePath, requestId, userId, status: 502, error: msg, mode, latencyMs: Date.now() - started }));
     return respond(502, { error: "Convex query failed" }, rateHeaders);
   }
 }
@@ -113,7 +108,6 @@ export async function PUT(request: Request) {
   if (!rl.ok) {
     const labels = { route: routePath, method, status: '429', mode } as const;
     promMetrics.rateLimitedTotal.labels(labels.route, labels.method, labels.status, labels.mode).inc();
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 429, reason: 'rate_limited', retryAfterSec: rl.retryAfterSec }));
     return respond(429, { error: "Rate limit exceeded" }, { "Retry-After": String(rl.retryAfterSec), "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) });
   }
   const rateHeaders = { "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) };
@@ -122,7 +116,6 @@ export async function PUT(request: Request) {
   try { body = await request.json(); } catch {}
   const { userId, displayName, email, avatarUrl, bio } = body || {};
   if (!userId) {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 400, msg: 'Missing userId', mode, latencyMs: Date.now() - started }));
     return respond(400, { error: "userId required" }, rateHeaders);
   }
 
@@ -139,7 +132,6 @@ export async function PUT(request: Request) {
     return respond(200, { ok: true, created: !!result?.created }, rateHeaders);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e ?? 'Convex mutation failed');
-    console.log(JSON.stringify({ level: 'error', route: routePath, requestId, userId, status: 502, error: msg, mode, latencyMs: Date.now() - started }));
     return respond(502, { error: "Convex mutation failed" }, rateHeaders);
   }
 }

@@ -117,7 +117,6 @@ export async function POST(request: Request) {
   try { const u = new URL(request.url); host = u.host; path = u.pathname; } catch {}
   const hasAuthHeader = !!headersIn.get("authorization");
   const hasCookie = !!headersIn.get("cookie");
-  try { console.log(JSON.stringify({ level: 'debug', where: 'stt.entry', host, path, method, hasAuthHeader, hasCookie })); } catch {}
   let provider = getSttProvider(process.env.STT_PROVIDER);
   let mode = provider.name;
   const endTimer = promMetrics.requestDurationSeconds.startTimer();
@@ -137,11 +136,9 @@ export async function POST(request: Request) {
 
   const auth = await requireAuth(request);
   if (!auth.ok) {
-    console.log(JSON.stringify({ level: 'warn', where: 'stt.authFail', route: routePath, requestId, status: 401, reason: auth.reason, host, path, hasAuthHeader, hasCookie, latencyMs: Date.now() - started }));
     // Include reason in body to help diagnose production 401s
     return respond(401, { error: "Unauthorized", reason: auth.reason });
   }
-  try { console.log(JSON.stringify({ level: 'info', where: 'stt.authOk', route: routePath, requestId, userId: !!auth?.userId, latencyMs: Date.now() - started })); } catch {}
 
   // Determine content type
   const ct = (headersIn.get("content-type") || "").toLowerCase();
@@ -224,17 +221,14 @@ export async function POST(request: Request) {
       }
 
       if (!isBlobLikeFile(audio)) {
-        console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 400, msg: 'audio file missing', latencyMs: Date.now() - started }));
         return respond(400, { error: "audio file is required in form field 'audio'" });
       }
       const mime = (audio.type || '').toLowerCase();
       if (!allowedTypes.has(mime)) {
-        console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 400, msg: 'Unsupported contentType', contentType: mime, latencyMs: Date.now() - started }));
         return respond(400, { error: "Unsupported contentType" });
       }
       const size = audio.size || 0;
       if (!(size > 0) || size > maxBytes) {
-        console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 413, msg: 'Invalid size', size, maxBytes, latencyMs: Date.now() - started }));
         return respond(413, { error: "Audio too large", maxBytes });
       }
 
@@ -312,14 +306,12 @@ export async function POST(request: Request) {
           }
           promMetrics.sttLatencyMs.labels(labels.route, labels.method, labels.status, labels.mode).observe(Date.now() - started);
         } catch {}
-        console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, mode, sessionId, groupId, multipart: true, size, mime, model: result.model, clientDetectMs, usedDataUrl: true, latencyMs: Date.now() - started }));
         return respond(200, payload);
       }
 
       // Upload to storage and pass objectKey to provider (preferred path when privacy gating is disabled)
       const uploaded = await uploadToS3AndGetKey(audio);
       if (!uploaded) {
-        console.log(JSON.stringify({ level: 'error', route: routePath, requestId, status: 501, mode, msg: 'Storage not configured', latencyMs: Date.now() - started }));
         return respond(501, { error: "Storage not configured" });
       }
       const [result, effectiveSessionId] = await Promise.all([
@@ -386,14 +378,11 @@ export async function POST(request: Request) {
         }
         promMetrics.sttLatencyMs.labels(labels.route, labels.method, labels.status, labels.mode).observe(Date.now() - started);
       } catch {}
-      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, mode, sessionId, groupId, multipart: true, size, mime, model: result.model, clientDetectMs, usedDataUrl: false, objectKey: uploaded.objectKey, latencyMs: Date.now() - started }));
       return respond(200, payload);
     } catch (err: any) {
       if (err?.name === 'ProviderNotConfiguredError' || err instanceof ProviderNotConfiguredError) {
-        console.log(JSON.stringify({ level: 'error', route: routePath, requestId, status: 501, mode, msg: 'STT provider not configured', error: err?.message, latencyMs: Date.now() - started }));
         return respond(501, { error: "STT provider not configured" });
       }
-      console.log(JSON.stringify({ level: 'error', route: routePath, requestId, status: 500, mode, msg: 'STT failed (multipart)', error: err?.message, latencyMs: Date.now() - started }));
       return respond(500, { error: "STT failed" });
     }
   }

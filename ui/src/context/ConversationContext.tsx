@@ -110,10 +110,28 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
     const sysText = (summary?.text || "").trim();
     const sys = sysText ? [{ role: "system", content: sysText.slice(0, 480) }] : [];
     const items = [...sys, ...base];
+    
+    // Debug logging
+    console.log("[ConversationContext] buildHistoryParam:", {
+      maxN,
+      historyLength: historyRef.current.length,
+      baseLength: base.length,
+      sysLength: sys.length,
+      totalItems: items.length,
+      items: items.map(item => ({ role: item.role, contentLength: item.content.length, contentPreview: item.content.substring(0, 50) + "..." }))
+    });
+    
     try {
       const json = JSON.stringify(items);
-      return toBase64Url(json);
-    } catch {
+      const encoded = toBase64Url(json);
+      console.log("[ConversationContext] buildHistoryParam result:", {
+        jsonLength: json.length,
+        encodedLength: encoded.length,
+        encodedPreview: encoded.substring(0, 100) + "..."
+      });
+      return encoded;
+    } catch (error) {
+      console.error("[ConversationContext] buildHistoryParam error:", error);
       return "";
     }
   }, [summary]);
@@ -131,6 +149,17 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
       try {
         const hist = buildHistoryParam();
         const qs = `?prompt=${encodeURIComponent(prompt)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""}${hist ? `&history=${encodeURIComponent(hist)}` : ""}`;
+        
+        // Debug logging
+        console.log("[ConversationContext] sendPrompt URL construction:", {
+          prompt: prompt.substring(0, 50) + "...",
+          sessionId,
+          histLength: hist.length,
+          histPreview: hist.substring(0, 100) + "...",
+          queryString: qs.substring(0, 200) + "...",
+          fullUrl: `/api/chat${qs}`
+        });
+        
         try { activeChatEsRef.current?.close(); } catch {}
         activeChatEsRef.current = null;
         let es: EventSource | null = null;

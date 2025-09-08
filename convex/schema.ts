@@ -217,11 +217,16 @@ export default defineSchema({
   .index('by_user', ['userId'])
   .index('by_user_goal', ['userId', 'goalId']),
 
-  // Session summaries — decoupled from assessments
+  // Session summaries — decoupled from assessments with concurrency control
   session_summaries: defineTable({
     sessionId: v.string(),
     version: v.number(),
     text: v.string(),
+    cutoffIndex: v.optional(v.number()), // transcript index where this summary ends
+    inProgress: v.optional(v.boolean()), // single-flight lock
+    thresholdTurns: v.optional(v.number()), // turns threshold for next summary
+    thresholdSeconds: v.optional(v.number()), // time threshold for next summary
+    lastJobAt: v.optional(v.number()), // when ensureJob was last called
     lastMessageTs: v.optional(v.number()),
     meta: v.optional(v.object({
       provider: v.optional(v.string()),
@@ -232,6 +237,7 @@ export default defineSchema({
     updatedAt: v.number(),
   })
   .index('by_session_createdAt', ['sessionId', 'createdAt'])
+  .index('by_session_version', ['sessionId', 'version'])
   .index('by_createdAt', ['createdAt']),
 
   // Summary cadence state — ingest-driven triggers and locks (SPR-008 v2)
@@ -241,6 +247,7 @@ export default defineSchema({
     assistantMsgSince: v.number(), // assistant messages since last summary
     lastGeneratedAt: v.number(), // ms since epoch
     lastVersion: v.number(),
+    cutoffIndex: v.optional(v.number()), // transcript index of last summarized message
     lockUntil: v.optional(v.number()), // ms since epoch
     createdAt: v.number(),
     updatedAt: v.number(),

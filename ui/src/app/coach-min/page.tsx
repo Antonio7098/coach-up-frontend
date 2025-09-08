@@ -175,10 +175,79 @@ function Content({
     }
   }, [sessionId, buildAuthHeaders]);
 
+  // Fetch session costs (totals + per-interaction history)
+  const fetchSessionCosts = React.useCallback(async () => {
+    if (!sessionId) return;
+    setSessionCostsLoading(true);
+    setSessionCostsError("");
+    try {
+      const reqId = Math.random().toString(36).slice(2);
+      const headers = await buildAuthHeaders({ accept: 'application/json', 'x-request-id': reqId });
+
+      // Pull totals from metrics endpoint and raw interactions for history
+      const [metricsRes, interactionsRes] = await Promise.all([
+        fetch(`/api/v1/sessions/metrics?sessionId=${encodeURIComponent(sessionId)}`, { method: 'GET', headers, cache: 'no-store' }),
+        fetch(`/api/v1/interactions?sessionId=${encodeURIComponent(sessionId)}&limit=200`, { method: 'GET', headers, cache: 'no-store' }),
+      ]);
+
+      const metrics = await metricsRes.json().catch(() => ({} as any));
+      const interactionsPayload = await interactionsRes.json().catch(() => ({} as any));
+      if (!metricsRes.ok) throw new Error(metrics?.error || `metrics failed: ${metricsRes.status}`);
+      if (!interactionsRes.ok) throw new Error(interactionsPayload?.error || `interactions failed: ${interactionsRes.status}`);
+
+      const interactions = Array.isArray(interactionsPayload?.interactions) ? interactionsPayload.interactions : [];
+
+      // Map interactions with cost fields (defaulting to 0)
+      const history = interactions.map((it: any) => ({
+        id: String(it?.messageId || `${it?.sessionId || ''}:${it?.ts || it?.createdAt || ''}`),
+        role: String(it?.role || ''),
+        text: String(it?.text || ''),
+        createdAt: Number(it?.createdAt || it?.ts || Date.now()),
+        costs: {
+          sttCostCents: Number(it?.sttCostCents || 0),
+          llmCostCents: Number(it?.llmCostCents || 0),
+          ttsCostCents: Number(it?.ttsCostCents || 0),
+          totalCostCents: Number(it?.totalCostCents || 0),
+        },
+      }));
+
+      // Derive duration from metrics (preferred) or fallback to history span
+      const startTime = typeof metrics?.startTime === 'number' ? metrics.startTime : undefined;
+      const lastActivityAt = typeof metrics?.lastActivityAt === 'number' ? metrics.lastActivityAt : undefined;
+      const minCreated = history.length > 0 ? Math.min(...history.map((h: any) => h.createdAt || Date.now())) : undefined;
+      const maxCreated = history.length > 0 ? Math.max(...history.map((h: any) => h.createdAt || Date.now())) : undefined;
+      const durationMs = (startTime && lastActivityAt)
+        ? Math.max(0, lastActivityAt - startTime)
+        : (minCreated && maxCreated ? Math.max(0, maxCreated - minCreated) : 0);
+
+      const totals = {
+        sttCostCents: Number(metrics?.sttCostCents || 0),
+        llmCostCents: Number(metrics?.llmCostCents || 0),
+        ttsCostCents: Number(metrics?.ttsCostCents || 0),
+        totalCostCents: Number(metrics?.totalCostCents || 0),
+      };
+
+      setSessionCosts({
+        costs: totals,
+        metrics: {
+          interactionCount: Number(metrics?.interactionCount || history.length || 0),
+          durationMs,
+        },
+        interactions: history,
+      });
+    } catch (e) {
+      setSessionCostsError(e instanceof Error ? e.message : String(e));
+      setSessionCosts(null);
+    } finally {
+      setSessionCostsLoading(false);
+    }
+  }, [sessionId, buildAuthHeaders]);
+
   // Fetch metrics when sessionId changes
   React.useEffect(() => {
     fetchSessionMetrics();
-  }, [fetchSessionMetrics]);
+    fetchSessionCosts();
+  }, [fetchSessionMetrics, fetchSessionCosts]);
 
   // Tab management for collapsible panel
   const [activeTab, setActiveTab] = React.useState<'status' | 'prompt' | 'summary' | 'transcript' | 'session'>('status');
@@ -274,7 +343,10 @@ function Content({
         lastMessageTs: typeof data?.lastMessageTs === 'number' ? data.lastMessageTs : undefined,
         thresholdTurns: typeof data?.thresholdTurns === 'number' ? data.thresholdTurns : undefined,
         turnsSince: typeof data?.turnsSince === 'number' ? data.turnsSince : undefined,
-      };
+        cutoffIndex: typeof data?.cutoffIndex === 'number' ? data.cutoffIndex : undefined,
+        inProgress: data?.inProgress === true,
+        secondsSince: typeof data?.secondsSince === 'number' ? data.secondsSince : undefined,
+      } as any;
       try { console.log("[fresh] GET ok", { len: next.text.length, version: next.version, updatedAt: next.updatedAt }); } catch {}
       setFresh(next);
       setHistory((cur) => {
@@ -345,6 +417,7 @@ function Content({
   // backend cadence-generated summaries (non-blocking and debounced)
   const lastAssistantRef = React.useRef<string | null>(null);
   const refreshInflightRef = React.useRef<boolean>(false);
+  const pollUntilRef = React.useRef<number>(0);
   React.useEffect(() => {
     const cur = mic.assistantText || "";
     const prev = lastAssistantRef.current || "";
@@ -352,15 +425,32 @@ function Content({
       // Note: turn counting is now handled server-side via onTurn() callback
       refreshInflightRef.current = true;
       lastAssistantRef.current = cur;
+      // Short debounce to allow backend to persist and maybe complete summary
       setTimeout(() => {
+        // Burst refresh immediately
         void Promise.all([
           refreshFresh(),
           refreshServerTranscript(),
           refreshSessionState(),
+          fetchSessionMetrics(),
+          fetchSessionCosts(),
         ]).finally(() => { refreshInflightRef.current = false; });
       }, 1200);
+      // Also poll summary state for a few seconds to reflect turns_since changes quickly
+      pollUntilRef.current = Date.now() + 10000; // 10s window
     }
-  }, [mic.assistantText, refreshFresh, refreshServerTranscript, refreshSessionState]);
+  }, [mic.assistantText, refreshFresh, refreshServerTranscript, refreshSessionState, fetchSessionMetrics, fetchSessionCosts]);
+
+  React.useEffect(() => {
+    // Lightweight polling for summary state while a short window is active
+    const id = window.setInterval(() => {
+      if (pollUntilRef.current > Date.now()) {
+        try { console.log("[fresh] POLL window active – refreshing summary state"); } catch {}
+        void refreshFresh();
+      }
+    }, 2000);
+    return () => { window.clearInterval(id); };
+  }, [refreshFresh]);
 
   // Note: turn counter reset is now handled server-side
 
@@ -850,7 +940,7 @@ function Content({
             onClick={() => setPanelCollapsed(false)}
             className="px-3 py-2 text-xs font-mono bg-white text-black border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
           >
-            [DEBUG]
+⚙️
           </button>
         </div>
 
@@ -1092,8 +1182,8 @@ function Content({
                       {fresh ? ` | v${fresh.version}` : ""}
             {(() => {
               // Only show turns until due if we have server data
-              const serverTurnsSince = fresh && Number.isFinite(Number(fresh.turnsSince)) ? Number(fresh.turnsSince) : undefined;
-              const serverThresholdTurns = fresh && Number.isFinite(Number(fresh.thresholdTurns)) ? Number(fresh.thresholdTurns) : undefined;
+              const serverTurnsSince = fresh && Number.isFinite(Number((fresh as any).turnsSince)) ? Number((fresh as any).turnsSince) : undefined;
+              const serverThresholdTurns = fresh && Number.isFinite(Number((fresh as any).thresholdTurns)) ? Number((fresh as any).thresholdTurns) : undefined;
 
               if (serverTurnsSince !== undefined && serverThresholdTurns !== undefined) {
                 const turnsUntilDue = Math.max(0, serverThresholdTurns - serverTurnsSince);
@@ -1103,22 +1193,34 @@ function Content({
               }
             })()}
           </div>
+
+          {/* Summary observability badges */}
+          <div className="flex flex-wrap gap-2 mb-2">
+            <span className="px-2 py-0.5 text-[11px] rounded border bg-white text-gray-700">ver: <span className="font-semibold">{fresh?.version ?? '-'}</span></span>
+            <span className="px-2 py-0.5 text-[11px] rounded border bg-white text-gray-700">in_progress: <span className="font-semibold">{String((fresh as any)?.inProgress ?? false)}</span></span>
+            <span className="px-2 py-0.5 text-[11px] rounded border bg-white text-gray-700">cutoff_index: <span className="font-semibold">{(fresh as any)?.cutoffIndex ?? '-'}</span></span>
+            <span className="px-2 py-0.5 text-[11px] rounded border bg-white text-gray-700">turns_since: <span className="font-semibold">{(fresh as any)?.turnsSince ?? '-'}</span></span>
+            <span className="px-2 py-0.5 text-[11px] rounded border bg-white text-gray-700">threshold_turns: <span className="font-semibold">{(fresh as any)?.thresholdTurns ?? '-'}</span></span>
+            <span className="px-2 py-0.5 text-[11px] rounded border bg-white text-gray-700">seconds_since: <span className="font-semibold">{(fresh as any)?.secondsSince ?? '-'}</span></span>
+            <span className="px-2 py-0.5 text-[11px] rounded border bg-white text-gray-700">last_msg_ts: <span className="font-semibold">{(fresh as any)?.lastMessageTs ? new Date((fresh as any).lastMessageTs).toLocaleTimeString() : '-'}</span></span>
+          </div>
                     <div className="text-xs whitespace-pre-wrap min-h-[64px] text-gray-800">{fresh?.text || <span className="text-gray-500">(none)</span>}</div>
 
-                    {/* Incorporated messages */}
+                    {/* Incorporated/pending messages since last cutoff (from endpoint) */}
                     <div className="mt-3">
-                      <div className="text-xs text-gray-700 font-mono mb-2 font-semibold">&gt; MESSAGES_INCORPORATED_SINCE_LAST_CUTOFF:</div>
+                      <div className="text-xs text-gray-700 font-mono mb-2 font-semibold">&gt; MESSAGES_SINCE_LAST_CUTOFF (endpoint):</div>
                       <div className="text-xs bg-white border border-gray-200 p-2 rounded max-h-40 overflow-auto font-mono">
-              {(() => {
-                const cutoff = fresh?.lastMessageTs || 0;
-                const msgs = serverTranscript
-                  .filter(m => (m.createdAt ?? 0) > cutoff)
-                  .map(m => `${m.role}: ${m.text}`);
-                          if (!fresh || cutoff === 0 || msgs.length === 0) return <span className="text-gray-500">(none)</span>;
-                          return <div className="space-y-1">{msgs.map((t, i) => (<div key={i} className="text-gray-800">{t}</div>))}</div>;
-              })()}
-            </div>
-          </div>
+                        {Array.isArray((fresh as any)?.messagesSinceCutoffPreview) && (fresh as any).messagesSinceCutoffPreview.length > 0 ? (
+                          <div className="space-y-1">
+                            {(fresh as any).messagesSinceCutoffPreview.map((t: string, i: number) => (
+                              <div key={i} className="text-gray-800">{t}</div>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-gray-500">(none)</span>
+                        )}
+                      </div>
+                    </div>
 
                     {freshErr ? <div className="text-xs text-red-600 mt-2 font-mono font-semibold">&gt; ERROR: {freshErr}</div> : null}
 
@@ -1234,19 +1336,19 @@ function Content({
                   {/* Session Cost Summary */}
                   <div className="border border-gray-200 rounded p-3 bg-gray-50">
                     <div className="text-sm font-mono text-blue-600 font-semibold mb-2">[SESSION_COST_SUMMARY]</div>
-                    {sessionCostsData ? (
+                    {sessionCosts ? (
                       <div className="text-xs space-y-2 font-mono">
                         <div className="grid grid-cols-2 gap-4">
                           <div>
                             <div className="text-gray-600">Total Cost:</div>
                             <div className="text-lg font-bold text-green-600">
-                              ${(sessionCostsData.costs.totalCostCents / 100).toFixed(2)}
+                              ${(sessionCosts.costs.totalCostCents / 100).toFixed(2)}
                             </div>
                           </div>
                           <div>
                             <div className="text-gray-600">Session Duration:</div>
                             <div className="text-lg font-bold text-blue-600">
-                              {Math.floor(sessionCostsData.metrics.durationMs / 60000)}m {Math.floor((sessionCostsData.metrics.durationMs % 60000) / 1000)}s
+                              {Math.floor(sessionCosts.metrics.durationMs / 60000)}m {Math.floor((sessionCosts.metrics.durationMs % 60000) / 1000)}s
                             </div>
                           </div>
                         </div>
@@ -1254,25 +1356,25 @@ function Content({
                           <div className="text-center">
                             <div className="text-xs text-gray-600">STT</div>
                             <div className="font-semibold text-orange-600">
-                              ${(sessionCostsData.costs.sttCostCents / 100).toFixed(2)}
+                              ${(sessionCosts.costs.sttCostCents / 100).toFixed(2)}
                             </div>
                           </div>
                           <div className="text-center">
                             <div className="text-xs text-gray-600">LLM</div>
                             <div className="font-semibold text-purple-600">
-                              ${(sessionCostsData.costs.llmCostCents / 100).toFixed(2)}
+                              ${(sessionCosts.costs.llmCostCents / 100).toFixed(2)}
                             </div>
                           </div>
                           <div className="text-center">
                             <div className="text-xs text-gray-600">TTS</div>
                             <div className="font-semibold text-blue-600">
-                              ${(sessionCostsData.costs.ttsCostCents / 100).toFixed(2)}
+                              ${(sessionCosts.costs.ttsCostCents / 100).toFixed(2)}
                             </div>
                           </div>
                         </div>
                         <div className="pt-2 border-t border-gray-300">
                           <div className="text-gray-600">Interactions:</div>
-                          <div className="font-semibold text-gray-800">{sessionCostsData.metrics.interactionCount}</div>
+                          <div className="font-semibold text-gray-800">{sessionCosts.metrics.interactionCount}</div>
                         </div>
                       </div>
                     ) : (
@@ -1283,12 +1385,12 @@ function Content({
                   {/* Per-Interaction Cost History */}
                   <div className="border border-gray-200 rounded p-3 bg-gray-50">
                     <div className="text-sm font-mono text-blue-600 font-semibold mb-2">[COST_HISTORY]</div>
-                    {sessionCostsData ? (
+                    {sessionCosts ? (
                       <div className="text-xs space-y-1 font-mono max-h-40 overflow-auto">
-                        {sessionCostsData.interactions.length === 0 ? (
+                        {sessionCosts.interactions.length === 0 ? (
                           <div className="text-gray-500">(no interactions yet)</div>
                         ) : (
-                          sessionCostsData.interactions.map((interaction: any, index: number) => (
+                          sessionCosts.interactions.map((interaction: any, index: number) => (
                             <div key={interaction.id} className="border border-gray-200 rounded p-2 bg-white">
                               <div className="flex justify-between items-start mb-1">
                                 <span className="text-blue-600 font-semibold">{interaction.role.toUpperCase()}:</span>

@@ -20,6 +20,7 @@ export type MinimalConversationContextValue = {
   chatToTextStreaming: (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void; sessionId?: string }) => Promise<string>;
   chatToTextStreamingWithHistory: (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }) => Promise<string>;
   getImmediateHistory: () => Array<{ role: "user" | "assistant"; content: string }>;
+  recordTurn: (userText: string, assistantText: string) => void;
   getSummaryMeta: () => { ready: boolean; updatedAt?: number; turnsUntilDue: number; thresholdTurns: number };
   getLastPromptPreview: () => PromptPreview;
   refreshPromptPreview: () => Promise<void>;
@@ -48,6 +49,13 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
       (historyRef.current as any) = [];
     } catch {}
   }, [sessionId]);
+
+  // How many recent messages to include (bounded 1..10), respects NEXT_PUBLIC_MESSAGE_CONTEXT_LENGTH
+  const MAX_HISTORY_FOR_CONVO = React.useMemo(() => {
+    const envN = Number(process.env.NEXT_PUBLIC_MESSAGE_CONTEXT_LENGTH ?? 0) || 2;
+    const n = Math.max(1, Math.min(10, Math.floor(envN)));
+    return n;
+  }, []);
 
   const buildAuthHeaders = useCallback(async (base: HeadersInit = {}): Promise<HeadersInit> => {
     try {
@@ -97,11 +105,27 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
       return "";
     }
     console.log("chatToTextStreaming: Starting chat request", { prompt: prompt.substring(0, 50), sessionId: currentSessionId });
-    // Build minimal history param from the last 2 messages (excluding this prompt)
-    const last2 = historyRef.current.slice(-2).map((m) => ({ role: m.role, content: (m.content || "").slice(0, 240) }));
+    // Build minimal history param from the last N messages (excluding this prompt)
+    const recent = historyRef.current.slice(-MAX_HISTORY_FOR_CONVO).map((m) => ({ role: m.role, content: (m.content || "").slice(0, 240) }));
     const sys = (summary?.text || "").trim();
-    const items = sys ? ([{ role: "system", content: sys.slice(0, 480) }] as const).concat(last2 as any) : last2;
+    const items = sys ? ([{ role: "system", content: sys.slice(0, 480) }] as const).concat(recent as any) : recent;
+    
+    // Debug logging
+    console.log("[MinimalConversationContext] chatToTextStreaming history building:", {
+      historyLength: historyRef.current.length,
+      lastN: MAX_HISTORY_FOR_CONVO,
+      recentLength: recent.length,
+      sysLength: sys.length,
+      totalItems: items.length,
+      items: items.map(item => ({ role: item.role, contentLength: item.content.length, contentPreview: item.content.substring(0, 50) + "..." }))
+    });
+    
     const histParam = items.length ? `&history=${encodeURIComponent(toBase64Url(JSON.stringify(items)))}` : "";
+    
+    console.log("[MinimalConversationContext] chatToTextStreaming histParam:", {
+      histParamLength: histParam.length,
+      histParamPreview: histParam.substring(0, 100) + "..."
+    });
 
     // Build user profile and goals parameters
     let profileParam = "";
@@ -209,6 +233,25 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
   const chatToText = useCallback(async (prompt: string, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }): Promise<string> => {
     return chatToTextStreaming(prompt, undefined, options);
   }, [chatToTextStreaming]);
+
+  // Allow external callers (Mic) to record a completed turn into local history without persisting to backend
+  const recordTurn = useCallback((userText: string, assistantText: string) => {
+    try {
+      if (typeof userText === 'string' && userText.trim()) {
+        historyRef.current.push({ role: 'user', content: userText });
+      }
+      if (typeof assistantText === 'string' && assistantText.trim()) {
+        historyRef.current.push({ role: 'assistant', content: assistantText });
+      }
+      // Keep only last MAX_HISTORY_FOR_CONVO messages
+      if (historyRef.current.length > MAX_HISTORY_FOR_CONVO) {
+        historyRef.current = historyRef.current.slice(-MAX_HISTORY_FOR_CONVO);
+      }
+      // Fire onTurn to notify cadence logic that a turn completed
+      try { onTurn(); } catch {}
+      setTurnsSinceRefresh((n) => (Number.isFinite(n) ? n + 1 : 1));
+    } catch {}
+  }, [MAX_HISTORY_FOR_CONVO, onTurn]);
 
   // Push user/assistant messages into minimal history when chatToText resolves
   const chatToTextWithHistory = useCallback(async (prompt: string, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }): Promise<string> => {
@@ -348,11 +391,12 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     chatToTextStreaming: (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void; sessionId?: string }) => chatToTextStreaming(prompt, onChunk, options),
     chatToTextStreamingWithHistory,
     getImmediateHistory,
+    recordTurn,
     getSummaryMeta,
     getLastPromptPreview: () => promptPreview,
     refreshPromptPreview: async () => {},
     promptPreview,
-  }), [chatToTextWithHistory, chatToTextStreaming, chatToTextStreamingWithHistory, getImmediateHistory, getSummaryMeta, promptPreview]);
+  }), [chatToTextWithHistory, chatToTextStreaming, chatToTextStreamingWithHistory, getImmediateHistory, recordTurn, getSummaryMeta, promptPreview]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

@@ -329,14 +329,10 @@ export function MinimalMicProvider({
             const streamingReply = await convo.chatToTextStreaming(text, onChunk, { ...streamingOptions, sessionId: sessionIdRef.current || undefined });
             console.log("MinimalMic: chatToTextStreaming completed", { reply: streamingReply?.substring(0, 50) });
 
-            // Manually update conversation history since we're not using the "WithHistory" version
+            // Record this turn into the minimal conversation history for future context (without backend persistence)
             try {
-              const history = convo.getImmediateHistory();
-              history.push({ role: "user", content: text });
-              history.push({ role: "assistant", content: streamingReply });
-              // Keep only last 2 messages
-              if (history.length > 2) {
-                history.splice(0, history.length - 2);
+              if (typeof convo.recordTurn === 'function') {
+                convo.recordTurn(text, streamingReply);
               }
             } catch {}
 

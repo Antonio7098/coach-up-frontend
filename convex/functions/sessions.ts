@@ -215,10 +215,141 @@ export const updateActivity = mutation({
       await ctx.db.patch(existing._id, updates);
     }
 
-    return { 
+    return {
       sessionId: args.sessionId,
       updated: Object.keys(updates).length > 0,
-      updates 
+      updates
     };
+  },
+});
+
+export const touchTurn = mutation({
+  args: {
+    sessionId: v.string(),
+    nowMs: v.number(),
+    thresholdTurns: v.optional(v.number()),
+    thresholdSeconds: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    console.log(JSON.stringify({ level: 'info', where: 'sessions.touchTurn.start', sessionId: args.sessionId, nowMs: args.nowMs, thresholdTurns: args.thresholdTurns ?? null, thresholdSeconds: args.thresholdSeconds ?? null }));
+    const sid = args.sessionId;
+    const nowMs = args.nowMs;
+    const thresholdTurns = args.thresholdTurns ?? Number(process.env.SUMMARY_GENERATE_ASSISTANT_EVERY_N || 4);
+    const thresholdSeconds = args.thresholdSeconds ?? Number(process.env.SUMMARY_GENERATE_SECONDS || 120);
+
+    // Retry logic for concurrent modification errors
+    const maxRetries = 10;
+    let lastError: any;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const [existing] = await ctx.db
+          .query("summary_state")
+          .withIndex("by_session", (q: any) => q.eq("sessionId", sid))
+          .collect();
+
+        let doc = existing;
+        console.log(JSON.stringify({ level: 'debug', where: 'sessions.touchTurn.readState', hasDoc: !!doc, turnsSince: doc?.turnsSince ?? 0, assistantMsgSince: doc?.assistantMsgSince ?? 0, version: doc?.version ?? 0 }));
+        if (!doc) {
+          const id = await ctx.db.insert("summary_state", {
+            sessionId: sid,
+            turnsSince: 1,
+            assistantMsgSince: 1,
+            lastGeneratedAt: 0,
+            lastVersion: 0,
+            cutoffIndex: 0,
+            lockUntil: 0,
+            createdAt: nowMs,
+            updatedAt: nowMs,
+            version: 1,
+          });
+          doc = await ctx.db.get(id);
+        } else {
+          // Optimistic locking: use version field to prevent concurrent modifications
+          const currentVersion = doc.version ?? 0;
+          const newVersion = currentVersion + 1;
+
+          // Increment counters; treat assistant message as completing a turn
+          const turnsSince = (doc.turnsSince ?? 0) + 1;
+          const assistantMsgSince = (doc.assistantMsgSince ?? 0) + 1;
+
+          // Use replace instead of patch for atomic update with version check
+          const updateResult = await ctx.db.replace(doc._id, {
+            // logging snapshot before write
+            // fields spread below
+            ...doc,
+            turnsSince,
+            assistantMsgSince,
+            updatedAt: nowMs,
+            version: newVersion,
+          });
+
+          if (!updateResult) {
+            console.log(JSON.stringify({ level: 'warn', where: 'sessions.touchTurn.replace.failed', attempt }));
+            // Replace failed (likely due to concurrent modification)
+            throw new Error("Concurrent modification detected");
+          }
+
+          doc = { ...doc, turnsSince, assistantMsgSince, updatedAt: nowMs, version: newVersion };
+        }
+
+        // Check if summary is due
+        const ageSec = doc.lastGeneratedAt > 0 ? Math.floor((nowMs - doc.lastGeneratedAt) / 1000) : Number.MAX_SAFE_INTEGER;
+        const turnsDue = doc.turnsSince >= thresholdTurns;
+        const timeDue = ageSec >= thresholdSeconds;
+        const shouldEnqueue = turnsDue || timeDue;
+
+        const out = {
+          sessionId: sid,
+          shouldEnqueue,
+          turnsSince: doc.turnsSince,
+          thresholdTurns,
+          thresholdSeconds,
+          ageSec,
+          reason: turnsDue ? "turns" : (timeDue ? "time" : null)
+        } as const;
+        console.log(JSON.stringify({ level: 'info', where: 'sessions.touchTurn.done', ...out }));
+        return out;
+
+      } catch (error) {
+        lastError = error;
+
+        // Check if this is a concurrent modification error
+        const isConcurrentError = error?.message?.includes("changed while") ||
+                                 error?.message?.includes("Concurrent modification") ||
+                                 error?.message?.includes("replace");
+
+        if (isConcurrentError && attempt < maxRetries - 1) {
+          console.log(JSON.stringify({ level: 'warn', where: 'sessions.touchTurn.retry', attempt, reason: 'occ' }));
+          // Retry immediately without delay (setTimeout not allowed in mutations)
+          continue;
+        }
+
+        // If we've exhausted retries or it's not a concurrent error, capture and break
+        lastError = error;
+        break;
+      }
+    }
+
+    // Last resort: return a best-effort view so the caller can proceed without hard failing
+    console.log(JSON.stringify({ level: 'error', where: 'sessions.touchTurn.fallback', err: String(lastError?.message || lastError) }));
+    const [doc] = await ctx.db
+      .query("summary_state")
+      .withIndex("by_session", (q: any) => q.eq("sessionId", sid))
+      .collect();
+
+    const turns = Number(doc?.turnsSince ?? 0);
+    const ageSec = Number(doc?.lastGeneratedAt) > 0 ? Math.floor((nowMs - Number(doc?.lastGeneratedAt)) / 1000) : Number.MAX_SAFE_INTEGER;
+    const shouldEnqueue = (turns >= thresholdTurns) || (ageSec >= thresholdSeconds);
+
+    return {
+      sessionId: sid,
+      shouldEnqueue,
+      turnsSince: turns,
+      thresholdTurns,
+      thresholdSeconds,
+      ageSec,
+      reason: (turns >= thresholdTurns) ? "turns" : ((ageSec >= thresholdSeconds) ? "time" : null)
+    } as const;
   },
 });

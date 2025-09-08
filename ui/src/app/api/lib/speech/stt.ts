@@ -314,17 +314,6 @@ const deepgramStt: SttProvider = {
       language,
     )}&punctuate=${punctuate}`
 
-    // Structured debug log for diagnostics
-    try {
-      console.log('[stt][deepgram] prepared request', {
-        hasKey: !!key,
-        model,
-        language,
-        contentType,
-        bodyBytes,
-        source: input.audioUrl ? 'audioUrl' : input.objectKey ? 'objectKey' : 'unknown',
-      })
-    } catch {}
 
     // Simple retry for transient network errors
     const maxAttempts = Number(process.env.DEEPGRAM_RETRY_ATTEMPTS || 3)
