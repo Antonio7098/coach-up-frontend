@@ -92,9 +92,8 @@ export async function GET(request: Request) {
     if (mode === 'mock') {
       const row = getLatestSummary(sessionId);
       if (!row) {
-        // No summary yet — return default payload with sensible fields so UI can compute cadence
-        const payload = { sessionId, text: "", lastMessageTs: undefined, updatedAt: 0, version: 0 };
-        return respond(200, payload, { "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) });
+        // No summary yet — return 404
+        return respond(404, { error: "No summary found" }, { "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) });
       }
       const payload = { sessionId, text: row.text, lastMessageTs: typeof row.lastMessageTs === 'number' ? row.lastMessageTs : undefined, updatedAt: row.updatedAt, version: row.version };
       return respond(200, payload, { "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) });
@@ -233,6 +232,8 @@ export async function POST(request: Request) {
   // Cadence cooldown intentionally disabled for simplicity (no-op)
   const cadenceSeconds = 0;
 
+  // Note: triage enforcement moved to after ensureJob acceptance so it aligns to the reserved cutoffIndex.
+
   try {
     if (mode === 'mock') {
       // In mock mode, simulate an accepted reservation without generating text
@@ -249,6 +250,27 @@ export async function POST(request: Request) {
       const job: any = await convex.mutation("functions/summaries:ensureJob", { sessionId, nowMs });
       const val = job && typeof job === 'object' && 'accepted' in job ? job : job?.value;
       if (val && val.accepted) {
+        // Option B: enforce triage before returning accepted, aligned to reserved cutoffIndex
+        try {
+          const triageEnabled = String(process.env.AI_TRIAGE_ENABLED || '').toLowerCase();
+          if (triageEnabled === '1' || triageEnabled === 'true') {
+            const authz = headersIn.get('authorization') || headersIn.get('Authorization') || '';
+            const triageUrl = `/api/v1/triage?sessionId=${encodeURIComponent(sessionId)}&limit=20&cutoffIndex=${encodeURIComponent(String(val.cutoffIndex))}`;
+            const ctrl = new AbortController();
+            const triageTimeoutMs = Math.max(1000, Math.min(5000, Number(process.env.TRIAGE_TIMEOUT_MS || 4000)));
+            const to = setTimeout(() => ctrl.abort(), triageTimeoutMs);
+            const triageHeaders: Record<string, string> = { 'accept': 'application/json', 'x-request-id': requestId };
+            if (authz) triageHeaders['authorization'] = authz;
+            const triageRes = await fetch(triageUrl, { method: 'POST', headers: triageHeaders, signal: ctrl.signal });
+            const triageText = await triageRes.text();
+            try { console.log(JSON.stringify({ where: 'summary.pre.triage', sessionId, status: triageRes.status, tookMs: triageTimeoutMs, cutoffIndex: val.cutoffIndex, textPreview: triageText.slice(0, 240) })); } catch {}
+            try { clearTimeout(to); } catch {}
+          }
+        } catch (e) {
+          try { console.warn(JSON.stringify({ where: 'summary.pre.triage.error', sessionId, error: String(e) })); } catch {}
+          // Proceed regardless; triage is best-effort but intended to run first
+        }
+
         const resp = { status: 'accepted', accepted: true, version: val.version, cutoffIndex: val.cutoffIndex };
         if (idemKey) idemCache.set(idemKey, { ts: Date.now(), status: 200, body: resp });
         return respond(200, resp, idemKey ? { 'Idempotency-Key': idemKey } : undefined);

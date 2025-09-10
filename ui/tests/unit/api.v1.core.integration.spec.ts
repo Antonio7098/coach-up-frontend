@@ -40,6 +40,7 @@ describe('Integration (MOCK_CONVEX): interactions + sessions/state + events', ()
       messageId: 'm1',
       role: 'user' as const,
       contentHash: 'hash-abc',
+      text: 'test message',
       ts: Date.now(),
       userId: 'u1',
     };

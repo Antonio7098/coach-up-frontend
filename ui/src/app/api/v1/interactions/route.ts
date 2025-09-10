@@ -557,6 +557,22 @@ export async function POST(request: Request) {
             .filter((m: any) => m.content && m.content.trim().length > 0);
           const recentMessages = recent.length > 0 ? recent : interactions.slice(-4).map((d: any) => ({ role: d?.role === 'assistant' ? 'assistant' : 'user', content: String(d?.text || "") })).filter((m: any) => m.content && m.content.trim().length > 0);
 
+          // Stage 2+: best-effort triage before summary generation (non-blocking)
+          try {
+            const triageEnabled = String(process.env.AI_TRIAGE_ENABLED || '').toLowerCase();
+            if (triageEnabled === '1' || triageEnabled === 'true') {
+              const ctrl = new AbortController();
+              const to = setTimeout(() => ctrl.abort(), Math.max(300, Math.min(2000, Number(process.env.TRIAGE_TIMEOUT_MS || 1200))));
+              const authz = (request.headers.get('authorization') || request.headers.get('Authorization') || '') as string;
+              const triageHeaders: Record<string, string> = { accept: 'application/json', 'x-request-id': requestId };
+              if (authz) triageHeaders['authorization'] = authz;
+              fetch(`/api/v1/triage?sessionId=${encodeURIComponent(body.sessionId)}&limit=20`, { method: 'POST', headers: triageHeaders, cache: 'no-store', signal: ctrl.signal })
+                .catch(() => {})
+                .finally(() => { try { clearTimeout(to); } catch {} });
+              try { console.log(JSON.stringify({ level: 'info', where: 'interactions.triage.pre', sessionId: body.sessionId })); } catch {}
+            }
+          } catch {}
+
           // Call AI API to generate summary (LLM-backed)
           let text = "";
           try {

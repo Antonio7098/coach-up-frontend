@@ -3,7 +3,7 @@
 import React from "react";
 import { useAuth } from "@clerk/nextjs";
 import { MinimalAudioProvider, useMinimalAudio } from "../../context/minimal/MinimalAudioContext";
-import { MinimalVoiceProvider } from "../../context/minimal/MinimalVoiceContext";
+import { MinimalVoiceProvider, useMinimalVoice } from "../../context/minimal/MinimalVoiceContext";
 import { MinimalConversationProvider, useMinimalConversation } from "../../context/minimal/MinimalConversationContext";
 import { useMinimalSession } from "../../context/minimal/MinimalSessionContext";
 import { MinimalMicProvider, useMinimalMic } from "../../context/minimal/MinimalMicContext";
@@ -129,6 +129,7 @@ function Content({
 }) {
   const mic = useMinimalMic();
   const audio = useMinimalAudio();
+  const voice = useMinimalVoice();
   const convo = useMinimalConversation();
   const { sessionId, startNewSession } = useMinimalSession();
   const { user } = useUser();
@@ -177,6 +178,100 @@ function Content({
   const [sessionMetricsData, setSessionMetricsData] = React.useState<any>(null);
   const [sessionMetricsLoading, setSessionMetricsLoading] = React.useState<boolean>(false);
   const [sessionMetricsError, setSessionMetricsError] = React.useState<string>("");
+  
+  // TRIAGE debug state
+  const [triageItems, setTriageItems] = React.useState<Array<{ id: string; role: string; assessmentType?: string; groupId?: string; triageProcessedAt?: number; groupCount?: number; messages?: Array<{ id: string; role: string; text?: string; createdAt?: number; assessmentType?: string; triageProcessedAt?: number }> }>>([]);
+  const [triageUngrouped, setTriageUngrouped] = React.useState<Array<{ id: string; role: string; text?: string; createdAt?: number }>>([]);
+  const [triageHasGroups, setTriageHasGroups] = React.useState<boolean>(false);
+  const [triageStatus, setTriageStatus] = React.useState<string>("");
+  const [triageOpenMap, setTriageOpenMap] = React.useState<Record<string, boolean>>({});
+
+  // Manual chat state
+  const [manualChatInput, setManualChatInput] = React.useState<string>("");
+  const [manualChatStatus, setManualChatStatus] = React.useState<"idle" | "chat" | "tts" | "playback">("idle");
+  const [manualChatResponse, setManualChatResponse] = React.useState<string>("");
+
+  const refreshTriageList = React.useCallback(async () => {
+    if (!sessionId) return;
+    setTriageStatus('loading');
+    try {
+      const reqId = Math.random().toString(36).slice(2);
+      const headers = await buildAuthHeaders({ accept: 'application/json', 'x-request-id': reqId });
+      const res = await fetch(`/api/v1/transcripts?sessionId=${encodeURIComponent(sessionId)}&limit=200`, {
+        method: 'GET', headers, cache: 'no-store'
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `transcripts failed: ${res.status}`);
+      const items = Array.isArray(data?.items) ? data.items : [];
+      // Map to a unified shape
+      const mappedAll = items.map((d: any) => ({
+        id: String(d?.id || ''),
+        role: String(d?.role || ''),
+        text: typeof d?.text === 'string' ? d.text : undefined,
+        createdAt: typeof d?.createdAt === 'number' ? d.createdAt : undefined,
+        assessmentType: d?.assessmentType,
+        groupId: d?.groupId,
+        triageProcessedAt: typeof d?.triageProcessedAt === 'number' ? d.triageProcessedAt : undefined,
+      }));
+      // Keep a fallback list of ungrouped recents (last 20)
+      const ungrouped = mappedAll.filter((m: any) => !m.groupId).slice(-20);
+      setTriageUngrouped(ungrouped);
+
+      // Filter to only items that were triaged and assigned to a group
+      const mapped = mappedAll.filter((m: any) => m.groupId && m.triageProcessedAt);
+      // Collapse by groupId keeping latest triageProcessedAt and count, and capture messages per group
+      const groupedMap = new Map<string, { id: string; role: string; assessmentType?: string; groupId: string; triageProcessedAt: number; groupCount: number; messages: Array<{ id: string; role: string; text?: string; createdAt?: number; assessmentType?: string; triageProcessedAt?: number }> }>();
+      for (const m of mapped) {
+        const gid = String(m.groupId);
+        const existing = groupedMap.get(gid);
+        const msg = { id: m.id, role: m.role, text: m.text, createdAt: m.createdAt, assessmentType: m.assessmentType, triageProcessedAt: m.triageProcessedAt } as any;
+        if (!existing) {
+          groupedMap.set(gid, {
+            id: m.id,
+            role: m.role,
+            assessmentType: m.assessmentType,
+            groupId: gid,
+            triageProcessedAt: m.triageProcessedAt as number,
+            groupCount: 1,
+            messages: [msg],
+          });
+        } else {
+          existing.groupCount += 1;
+          existing.messages.push(msg);
+          if ((m.triageProcessedAt as number) > existing.triageProcessedAt) {
+            existing.triageProcessedAt = m.triageProcessedAt as number;
+            existing.id = m.id;
+            existing.role = m.role;
+            existing.assessmentType = m.assessmentType;
+          }
+        }
+      }
+      const grouped = Array.from(groupedMap.values())
+        .sort((a, b) => (b.triageProcessedAt - a.triageProcessedAt));
+      setTriageItems(grouped as any);
+      setTriageHasGroups(grouped.length > 0);
+      setTriageStatus('ready');
+    } catch (e: any) {
+      setTriageStatus(e?.message || 'error');
+    }
+  }, [sessionId, buildAuthHeaders]);
+
+  const runTriageNow = React.useCallback(async () => {
+    if (!sessionId) { setTriageStatus('no session'); return; }
+    setTriageStatus('running');
+    try {
+      const reqId = Math.random().toString(36).slice(2);
+      const headers = await buildAuthHeaders({ accept: 'application/json', 'x-request-id': reqId });
+      const res = await fetch(`/api/v1/triage?sessionId=${encodeURIComponent(sessionId)}&limit=20`, {
+        method: 'POST', headers, cache: 'no-store'
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `triage failed: ${res.status}`);
+      setTriageStatus(`ok: updated=${Number(data?.updated || 0)} inferred=${String(data?.inferred || '')}`);
+    } catch (e: any) {
+      setTriageStatus(e?.message || 'error');
+    }
+  }, [sessionId, buildAuthHeaders]);
 
   const fetchSessionMetrics = React.useCallback(async () => {
     if (!sessionId) return;
@@ -275,7 +370,7 @@ function Content({
   }, [fetchSessionMetrics, fetchSessionCosts]);
 
   // Tab management for collapsible panel
-  const [activeTab, setActiveTab] = React.useState<'status' | 'prompt' | 'summary' | 'transcript' | 'session'>('status');
+  const [activeTab, setActiveTab] = React.useState<'status' | 'chat' | 'summary' | 'session' | 'triage'>('status');
   const [panelCollapsed, setPanelCollapsed] = React.useState<boolean>(true);
   // Keep the latest prompt preview from SSE in sync automatically
   const lastSsePreview = convo.promptPreview;
@@ -284,8 +379,8 @@ function Content({
       setPromptPreview(lastSsePreview);
     }
   }, [lastSsePreview]);
-  // Local in-session history of summaries (ascending by version)
-  const [history, setHistory] = React.useState<Array<{ version: number; updatedAt: number; text: string }>>([]);
+  // Local in-session transcript of summaries (ascending by version)
+  const [transcript, setTranscript] = React.useState<Array<{ version: number; updatedAt: number; text: string }>>([]);
   const [openMap, setOpenMap] = React.useState<Record<number, boolean>>({});
   // Note: Local turn counting removed - now handled server-side via onTurn() callback
   // Server transcript (Convex-backed)
@@ -374,7 +469,7 @@ function Content({
       } as any;
       try { console.log("[fresh] GET ok", { len: next.text.length, version: next.version, updatedAt: next.updatedAt }); } catch {}
       setFresh(next);
-      setHistory((cur) => {
+      setTranscript((cur) => {
         const exists = cur.some((h) => h.version === next.version);
         const arr = exists ? cur : [...cur, { version: next.version, updatedAt: next.updatedAt, text: next.text }];
         arr.sort((a,b) => a.version - b.version);
@@ -479,6 +574,7 @@ function Content({
           refreshSessionState(),
           fetchSessionMetrics(),
           fetchSessionCosts(),
+          // triage list is gated by cadence; do not refresh unconditionally here
         ]).finally(() => { refreshInflightRef.current = false; });
       }, 1200);
       // Also poll summary state for a few seconds to reflect turns_since changes quickly
@@ -491,13 +587,33 @@ function Content({
     const id = window.setInterval(() => {
       if (pollUntilRef.current > Date.now()) {
         try { console.log("[fresh] POLL window active – refreshing summary state"); } catch {}
-        void refreshFresh();
+        void Promise.all([
+          refreshFresh(),
+          // triage refresh is triggered by cadence watcher
+        ]);
       }
     }, 2000);
     return () => { window.clearInterval(id); };
   }, [refreshFresh]);
 
   // Note: turn counter reset is now handled server-side
+
+  // Gate triage refreshes by server cadence: when turnsSince hits thresholdTurns
+  React.useEffect(() => {
+    const turnsSince = Number.isFinite(Number((fresh as any)?.turnsSince)) ? Number((fresh as any)?.turnsSince) : undefined;
+    const threshold = Number.isFinite(Number((fresh as any)?.thresholdTurns)) ? Number((fresh as any)?.thresholdTurns) : undefined;
+    if (turnsSince !== undefined && threshold !== undefined && threshold > 0 && turnsSince > 0 && (turnsSince % threshold === 0)) {
+      void refreshTriageList();
+    }
+  }, [fresh?.turnsSince, fresh?.thresholdTurns, refreshTriageList]);
+
+  // Handle manual chat status changes
+  React.useEffect(() => {
+    if (manualChatStatus === "playback" && !audio.isPlaybackActive) {
+      // Reset to idle when playback ends
+      setManualChatStatus("idle");
+    }
+  }, [manualChatStatus, audio.isPlaybackActive]);
 
   // Fetch profile data
   const fetchProfile = React.useCallback(async () => {
@@ -630,6 +746,75 @@ function Content({
       console.error('Failed to update profile:', error);
     }
   }, [userId, fetchProfile, buildAuthHeaders]);
+
+  // Manual chat function - skips STT and calls chatToTextStreaming directly
+  const sendManualChat = React.useCallback(async () => {
+    if (!manualChatInput.trim() || manualChatStatus !== "idle") return;
+
+    const inputText = manualChatInput.trim();
+    setManualChatInput("");
+    setManualChatStatus("chat");
+    setManualChatResponse("");
+
+    try {
+      // Use the same chat options as voice chat
+      const chatOptions = {
+        userProfile: profile,
+        userGoals: goals,
+        customSystemPrompt: isSystemPromptEnabled && customSystemPrompt.trim() ? customSystemPrompt.trim() : undefined,
+        model: selectedModel && selectedModel.trim() ? selectedModel.trim() : undefined,
+        onModelUsed: (model: string, provider: string) => {
+          // Update the model if it differs from current selection
+          if (model && model !== selectedModel) {
+            console.log(`[ManualChat] Model updated from ${selectedModel} to ${model}`);
+            setSelectedModel(model);
+            try { localStorage.setItem("chat:model", model); } catch {}
+          }
+        }
+      };
+
+      // Call chatToTextStreaming with history
+      console.log('[ManualChat] Starting chat request:', inputText);
+      const reply = await convo.chatToTextStreaming(inputText, (chunk) => {
+        console.log('[ManualChat] Received chunk:', chunk);
+      }, chatOptions);
+      console.log('[ManualChat] Chat response:', reply);
+
+      if (!reply || reply.trim().length === 0) {
+        throw new Error('Empty response from chat API');
+      }
+
+      setManualChatResponse(reply);
+      setManualChatStatus("tts");
+
+      // Start TTS playback
+      try {
+        console.log('[ManualChat] Starting TTS for reply:', reply);
+        voice.cancelTTS?.();
+        await voice.enqueueTTSSegment(reply);
+        console.log('[ManualChat] TTS completed');
+        setManualChatStatus("playback");
+      } catch (ttsError) {
+        console.error('[ManualChat] TTS failed:', ttsError);
+        setManualChatStatus("idle");
+      }
+
+      // Record this turn into the conversation history
+      try {
+        if (typeof convo.recordTurn === 'function') {
+          convo.recordTurn(inputText, reply);
+        }
+      } catch (recordError) {
+        console.warn('[ManualChat] Failed to record turn:', recordError);
+      }
+
+    } catch (error) {
+      console.error('[ManualChat] Chat failed:', error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      setManualChatResponse(`Error: ${errorMessage}`);
+      setManualChatStatus("idle");
+    }
+  }, [manualChatInput, manualChatStatus, profile, goals, isSystemPromptEnabled, customSystemPrompt, selectedModel, convo, voice]);
 
   // Dashboard animation logic (similar to coach page)
   React.useEffect(() => {
@@ -1022,18 +1207,7 @@ function Content({
                       : 'border-transparent text-gray-500 hover:text-gray-700'
                   }`}
                 >
-                  STATUS
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('prompt')}
-                  className={`px-4 py-2 text-sm font-mono border-b-2 transition-colors whitespace-nowrap ${
-                    activeTab === 'prompt'
-                      ? 'border-blue-500 text-blue-600'
-                      : 'border-transparent text-gray-500 hover:text-gray-700'
-                  }`}
-                >
-                  LLM_PROMPT
+                  CHAT
                 </button>
                 <button
                   type="button"
@@ -1048,17 +1222,6 @@ function Content({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setActiveTab('transcript')}
-                  className={`px-4 py-2 text-sm font-mono border-b-2 transition-colors whitespace-nowrap ${
-                    activeTab === 'transcript'
-                      ? 'border-blue-500 text-blue-600'
-                      : 'border-transparent text-gray-500 hover:text-gray-700'
-                  }`}
-                >
-                  TRANSCRIPT
-                </button>
-                <button
-                  type="button"
                   onClick={() => setActiveTab('session')}
                   className={`px-4 py-2 text-sm font-mono border-b-2 transition-colors whitespace-nowrap ${
                     activeTab === 'session'
@@ -1067,6 +1230,17 @@ function Content({
                   }`}
                 >
                   SESSION
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('triage')}
+                  className={`px-4 py-2 text-sm font-mono border-b-2 transition-colors whitespace-nowrap ${
+                    activeTab === 'triage'
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  TRIAGE
                 </button>
               </div>
             </div>
@@ -1117,6 +1291,146 @@ function Content({
                     })()}
                   </div>
 
+                  {/* Manual Chat Section */}
+                  <div className="border border-gray-200 rounded p-3 bg-gray-50 mb-3">
+                    <div className="text-sm font-mono text-blue-600 font-semibold mb-2">[MANUAL_CHAT]</div>
+                    <div className="space-y-2">
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={manualChatInput}
+                          onChange={(e) => setManualChatInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                              e.preventDefault();
+                              sendManualChat();
+                            }
+                          }}
+                          placeholder="Type your message here..."
+                          disabled={manualChatStatus !== "idle"}
+                          className="flex-1 px-2 py-1 border border-gray-300 rounded text-xs font-mono bg-white disabled:bg-gray-100 disabled:text-gray-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={sendManualChat}
+                          disabled={!manualChatInput.trim() || manualChatStatus !== "idle"}
+                          className={`px-3 py-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-50 font-mono text-xs disabled:opacity-50 disabled:cursor-not-allowed`}
+                        >
+                          {manualChatStatus === "idle" ? "[SEND]" : 
+                           manualChatStatus === "chat" ? "[CHAT...]" :
+                           manualChatStatus === "tts" ? "[TTS...]" :
+                           "[PLAYBACK...]"}
+                        </button>
+                      </div>
+                      {manualChatResponse && (
+                        <div className="text-xs">
+                          <div className="text-blue-600 font-semibold mb-1">&gt; MANUAL_RESPONSE:</div>
+                          <div className="bg-white border border-gray-200 p-2 rounded text-gray-800 font-mono whitespace-pre-wrap">{manualChatResponse}</div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Chat Section */}
+                  <div className="border border-gray-200 rounded p-3 bg-gray-50 mb-3">
+                    <div className="text-sm font-mono text-blue-600 font-semibold mb-2">[LLM_PROMPT_DEBUG]</div>
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="text-xs text-gray-600 font-mono">{promptPreview ? 'STATUS: READY' : 'STATUS: EMPTY'}</div>
+                      <button type="button" onClick={() => { try { setPromptPreview(convo.getLastPromptPreview()); } catch {} }} className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-50">[REFRESH]</button>
+                    </div>
+                    {promptPreview ? (
+                      <div className="text-xs space-y-1">
+                        <div className="text-blue-600 font-semibold">&gt; FULL_PROMPT_TO_LLM:</div>
+                        <pre className="whitespace-pre-wrap bg-gray-50 border border-gray-200 p-3 rounded max-h-56 overflow-auto text-xs text-gray-800 font-mono">{promptPreview.prompt || ''}</pre>
+                      </div>
+                    ) : (
+                      <div className="text-xs text-gray-500">(none)</div>
+                    )}
+
+                    {/* Model Selection Section */}
+                    <div className="border-t border-gray-200 mt-4 pt-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="text-sm font-mono text-blue-600 font-semibold">[MODEL_SELECTION]</div>
+                      </div>
+                      <div className="mb-3">
+                        <select
+                          value={selectedModel}
+                          onChange={(e) => setSelectedModel(e.target.value)}
+                          className="w-full p-2 border border-gray-300 rounded text-xs bg-white font-mono"
+                        >
+                          <option value="google/gemini-2.5-flash-lite">GEMINI-2.5-FLASH-LITE</option>
+                          <option value="google/gemini-2.5-flash">GEMINI-2.5-FLASH</option>
+                        </select>
+                        <div className="text-xs text-gray-600 mt-1">
+                          Selected model will be used for chat requests
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* System Prompt Editor Section */}
+                    <div className="border-t border-gray-200 mt-4 pt-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="text-sm font-mono text-blue-600 font-semibold">[SYSTEM_PROMPT_EDITOR]</div>
+                        <button
+                          type="button"
+                          onClick={() => setIsSystemPromptEnabled(!isSystemPromptEnabled)}
+                          className={`px-3 py-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-50 font-mono text-xs`}
+                        >
+                          [{isSystemPromptEnabled ? 'ENABLED' : 'DISABLED'}]
+                        </button>
+                      </div>
+
+                      <div className="text-xs text-gray-600 mb-2 font-mono">
+                        {isSystemPromptEnabled ? 'STATUS: CUSTOM PROMPT ACTIVE' : 'STATUS: USING DEFAULT PROMPT'}
+                      </div>
+
+                      <div className="space-y-2">
+                        <textarea
+                          value={customSystemPrompt}
+                          onChange={(e) => setCustomSystemPrompt(e.target.value)}
+                          placeholder="Enter custom system prompt here..."
+                          disabled={!isSystemPromptEnabled}
+                          className={`w-full p-2 border rounded text-xs font-mono ${isSystemPromptEnabled ? 'bg-white text-gray-800' : 'bg-gray-50 text-gray-400'}`}
+                          rows={6}
+                        />
+
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const defaultPrompt = "You are a concise, friendly speech coach. Your purpose is to help users improve speaking skills through short, actionable guidance and practice.\n\nBehavioral rules:\n- Greetings and small talk: reply with 1 short friendly sentence, then immediately pivot to the goal.\n- Default response length: at most 2–3 sentences or 5 short bullets.\n- Ask exactly one question to clarify goals or select the next focus area.\n- When providing guidance, prefer practical, immediately applicable tips.\n- Stay conversational, positive, and time-efficient.";
+                              setCustomSystemPrompt(defaultPrompt);
+                            }}
+                            disabled={!isSystemPromptEnabled}
+                            className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            [LOAD_DEFAULT]
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setCustomSystemPrompt("")}
+                            disabled={!isSystemPromptEnabled}
+                            className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            [CLEAR]
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              // Prompt is applied automatically, but this provides confirmation
+                            }}
+                            disabled={!isSystemPromptEnabled}
+                            className="px-3 py-1 text-xs border rounded bg-green-50 border-green-300 text-green-700 hover:bg-green-100 disabled:opacity-50 disabled:cursor-not-allowed font-mono"
+                          >
+                            [APPLY]
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="flex gap-2 flex-wrap">
           {(() => {
             const isAnyLoop = mic.vadLoop;
@@ -1148,106 +1462,6 @@ function Content({
             </div>
               )}
 
-              {activeTab === 'prompt' && (
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="text-sm font-mono text-blue-600 font-semibold">[LLM_PROMPT_DEBUG]</div>
-                    <button type="button" onClick={() => { try { setPromptPreview(convo.getLastPromptPreview()); } catch {} }} className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-50">[REFRESH]</button>
-            </div>
-                  <div className="text-xs text-gray-600 mb-2">{promptPreview ? 'STATUS: READY' : 'STATUS: EMPTY'}</div>
-          {promptPreview ? (
-                    <div className="text-xs space-y-1">
-                      <div className="text-blue-600 font-semibold">&gt; FULL_PROMPT_TO_LLM:</div>
-                      <pre className="whitespace-pre-wrap bg-gray-50 border border-gray-200 p-3 rounded max-h-56 overflow-auto text-xs text-gray-800 font-mono">{promptPreview.prompt || ''}</pre>
-            </div>
-          ) : (
-                    <div className="text-xs text-gray-500">(none)</div>
-          )}
-
-          {/* Model Selection Section */}
-          <div className="border-t border-gray-200 mt-4 pt-4">
-            <div className="flex items-center justify-between mb-3">
-              <div className="text-sm font-mono text-blue-600 font-semibold">[MODEL_SELECTION]</div>
-            </div>
-            <div className="mb-3">
-              <select
-                value={selectedModel}
-                onChange={(e) => setSelectedModel(e.target.value)}
-                className="w-full p-2 border border-gray-300 rounded text-xs bg-white font-mono"
-              >
-                <option value="google/gemini-2.5-flash-lite">GEMINI-2.5-FLASH-LITE</option>
-                <option value="google/gemini-2.5-flash">GEMINI-2.5-FLASH</option>
-              </select>
-              <div className="text-xs text-gray-600 mt-1">
-                Selected model will be used for chat requests
-              </div>
-            </div>
-          </div>
-
-          {/* System Prompt Editor Section */}
-          <div className="border-t border-gray-200 mt-4 pt-4">
-            <div className="flex items-center justify-between mb-3">
-              <div className="text-sm font-mono text-blue-600 font-semibold">[SYSTEM_PROMPT_EDITOR]</div>
-              <button
-                type="button"
-                onClick={() => setIsSystemPromptEnabled(!isSystemPromptEnabled)}
-                className={`px-3 py-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-50 font-mono text-xs`}
-              >
-                [{isSystemPromptEnabled ? 'ENABLED' : 'DISABLED'}]
-              </button>
-            </div>
-
-            <div className="text-xs text-gray-600 mb-2 font-mono">
-              {isSystemPromptEnabled ? 'STATUS: CUSTOM PROMPT ACTIVE' : 'STATUS: USING DEFAULT PROMPT'}
-            </div>
-
-            <div className="space-y-2">
-              <textarea
-                value={customSystemPrompt}
-                onChange={(e) => setCustomSystemPrompt(e.target.value)}
-                placeholder="Enter custom system prompt here..."
-                disabled={!isSystemPromptEnabled}
-                className={`w-full p-2 border rounded text-xs font-mono ${isSystemPromptEnabled ? 'bg-white text-gray-800' : 'bg-gray-50 text-gray-400'}`}
-                rows={6}
-              />
-
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const defaultPrompt = "You are a concise, friendly speech coach. Your purpose is to help users improve speaking skills through short, actionable guidance and practice.\n\nBehavioral rules:\n- Greetings and small talk: reply with 1 short friendly sentence, then immediately pivot to the goal.\n- Default response length: at most 2–3 sentences or 5 short bullets.\n- Ask exactly one question to clarify goals or select the next focus area.\n- When providing guidance, prefer practical, immediately applicable tips.\n- Stay conversational, positive, and time-efficient.";
-                    setCustomSystemPrompt(defaultPrompt);
-                  }}
-                  disabled={!isSystemPromptEnabled}
-                  className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  [LOAD_DEFAULT]
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setCustomSystemPrompt("")}
-                  disabled={!isSystemPromptEnabled}
-                  className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  [CLEAR]
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    // Prompt is applied automatically, but this provides confirmation
-                  }}
-                  disabled={!isSystemPromptEnabled}
-                  className="px-3 py-1 text-xs border rounded bg-green-50 border-green-300 text-green-700 hover:bg-green-100 disabled:opacity-50 disabled:cursor-not-allowed font-mono"
-                >
-                  [APPLY]
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-              )}
 
               {activeTab === 'summary' && (
                 <div className="space-y-4">
@@ -1333,13 +1547,13 @@ function Content({
                   <div className="border border-gray-200 rounded p-3 bg-gray-50">
           <div className="flex items-center justify-between mb-2">
                       <div className="text-sm font-mono text-blue-600 font-semibold">[SUMMARY_HISTORY_LOCAL]</div>
-                      <div className="text-xs text-gray-600">{history.length} versions</div>
+                      <div className="text-xs text-gray-600">{transcript.length} versions</div>
           </div>
-          {history.length === 0 ? (
+          {transcript.length === 0 ? (
                       <div className="text-xs text-gray-500">(empty)</div>
           ) : (
             <div className="space-y-2">
-              {history.map((h) => (
+              {transcript.map((h) => (
                           <div key={h.version} className="border border-gray-200 rounded bg-white">
                             <div className="flex items-center justify-between px-2 py-1 bg-gray-100">
                               <div className="text-xs text-gray-700 font-mono">v{h.version} | {new Date(h.updatedAt).toLocaleTimeString()}</div>
@@ -1356,42 +1570,115 @@ function Content({
                 </div>
               )}
 
-              {activeTab === 'transcript' && (
-                <div className="space-y-4">
-                  {/* Recent Messages */}
-                  <div className="border border-gray-200 rounded p-3 bg-gray-50">
-                    <div className="text-sm font-mono text-blue-600 font-semibold mb-2">[RECENT_MESSAGES]</div>
-                    <div className="text-xs space-y-1 font-mono">
-                      {convo.getImmediateHistory().length === 0 ? (
-                        <div className="text-gray-500">(empty)</div>
-                      ) : (
-                        convo.getImmediateHistory().map((m, i) => (
-                          <div key={i}><span className="text-blue-600 font-semibold">{m.role}:</span> <span className="text-gray-800">{m.content}</span></div>
-                        ))
-                      )}
+              {activeTab === 'triage' && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-mono text-blue-600 font-semibold">[TRIAGE_OBSERVABILITY]</div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={async () => { await refreshTriageList(); }}
+                        className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-50"
+                      >[REFRESH]</button>
+                      <button
+                        type="button"
+                        onClick={async () => { await runTriageNow(); await refreshTriageList(); }}
+                        className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-50"
+                      >[RUN_TRIAGE_NOW]</button>
                     </div>
                   </div>
-
-                  {/* Server Transcript */}
-                  <div className="border border-gray-200 rounded p-3 bg-gray-50">
-          <div className="flex items-center justify-between mb-2">
-                      <div className="text-sm font-mono text-blue-600 font-semibold">[SERVER_TRANSCRIPT]</div>
-                      <button type="button" onClick={refreshServerTranscript} className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-100">[REFRESH]</button>
+                  <div className="text-xs text-gray-600">{triageStatus || '(idle)'}</div>
+                  {!triageHasGroups && (
+                    <div className="mb-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
+                      No triage group assignments found in transcripts. Showing recent ungrouped messages instead.
                     </div>
-                    <div className="text-xs text-gray-600 mb-1 font-mono">status={serverTranscriptStatus}</div>
-                    <div className="text-xs space-y-1 max-h-56 overflow-auto font-mono">
-                      {serverTranscript.length === 0 ? (
+                  )}
+                  <div className="text-xs bg-white border border-gray-200 rounded p-2 max-h-96 overflow-auto">
+                    {triageHasGroups ? (
+                      triageItems.length === 0 ? (
                         <div className="text-gray-500">(empty)</div>
                       ) : (
-                        serverTranscript.map((m) => (
-                          <div key={m.id}><span className="text-blue-600 font-semibold">{m.role}:</span> <span className="text-gray-800">{m.text || <span className="text-gray-500">(no text)</span>}</span></div>
-                        ))
-                      )}
-                    </div>
-                    {serverTranscriptErr ? <div className="text-xs text-red-600 mt-1 font-mono font-semibold">&gt; ERROR: {serverTranscriptErr}</div> : null}
+                        <div className="space-y-2">
+                          {triageItems.map((it, i) => {
+                            const batchId = String(it.groupId || `batch_${i}`);
+                            const open = !!triageOpenMap[batchId];
+                            // Parse batch info from groupId format: sessionId:batch:timestamp:label
+                            let batchTs: string | null = null;
+                            let batchLabel: string | null = null;
+                            try {
+                              const parts = batchId.split(':');
+                              if (parts.length >= 4) {
+                                const tsNum = Number(parts[2]);
+                                batchTs = Number.isFinite(tsNum) ? new Date(tsNum).toLocaleTimeString() : null;
+                                batchLabel = parts.slice(3).join(':');
+                              }
+                            } catch {}
+                            return (
+                              <div key={i} className="border border-gray-200 rounded p-2 bg-white">
+                                <div className="flex items-center justify-between mb-2">
+                                  <div className="text-[11px] text-gray-700 break-all">
+                                    <div><span className="text-gray-500">group:</span> {batchId}</div>
+                                    <div className="flex gap-3 mt-1 flex-wrap">
+                                      <div><span className="text-gray-500">count:</span> {it.groupCount ?? '-'}</div>
+                                      <div className="break-all"><span className="text-gray-500">latest_id:</span> {it.id}</div>
+                                      <div><span className="text-gray-500">triaged:</span> {it.triageProcessedAt ? new Date(it.triageProcessedAt).toLocaleTimeString() : '-'}</div>
+                                      {batchTs ? <div><span className="text-gray-500">batch_ts:</span> {batchTs}</div> : null}
+                                      {batchLabel ? <div className="break-all"><span className="text-gray-500">label:</span> {batchLabel}</div> : null}
+                                    </div>
+                                  </div>
+                                  <button type="button" onClick={() => setTriageOpenMap((m) => ({ ...m, [batchId]: !open }))} className="px-2 py-1 text-xs border rounded">
+                                    [{open ? 'HIDE' : 'SHOW'}]
+                                  </button>
+                                </div>
+                                {open && (
+                                  <div className="text-[11px] text-gray-700">
+                                    <div className="text-blue-600 font-semibold mb-1">messages ({it.messages?.length ?? 0}):</div>
+                                    {it.messages && it.messages.length > 0 ? (
+                                      <div className="space-y-1">
+                                        {it.messages.map((m, j) => (
+                                          <div key={j} className="bg-gray-50 border border-gray-200 rounded p-2">
+                                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                                              <div><span className="text-blue-600 font-semibold">{m.role}:</span> <span className="text-gray-800 whitespace-pre-wrap break-words">{m.text || '(no text)'}</span></div>
+                                            </div>
+                                            <div className="text-[10px] text-gray-500 mt-1 flex gap-3 flex-wrap">
+                                              <div>id={m.id}</div>
+                                              {m.createdAt ? <div>{new Date(m.createdAt).toLocaleTimeString()}</div> : null}
+                                              {m.assessmentType ? <div>assessment={String(m.assessmentType)}</div> : null}
+                                              {m.triageProcessedAt ? <div>triaged={new Date(m.triageProcessedAt).toLocaleTimeString()}</div> : null}
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ) : (
+                                      <div className="text-gray-500">(no messages)</div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )
+                    ) : (
+                      triageUngrouped.length === 0 ? (
+                        <div className="text-gray-500">(empty)</div>
+                      ) : (
+                        <div className="space-y-1">
+                          {triageUngrouped.map((it, i) => (
+                            <div key={i} className="grid grid-cols-6 gap-2">
+                              <div className="col-span-3 break-all"><span className="text-gray-500">id:</span> {it.id}</div>
+                              <div className="col-span-1"><span className="text-gray-500">role:</span> {it.role}</div>
+                              <div className="col-span-2"><span className="text-gray-500">time:</span> {it.createdAt ? new Date(it.createdAt).toLocaleTimeString() : '-'}</div>
+                              <div className="col-span-6"><span className="text-gray-500">text:</span> <span className="whitespace-pre-wrap break-words text-gray-800">{it.text || '-'}</span></div>
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    )}
                   </div>
                 </div>
               )}
+
 
               {activeTab === 'session' && (
                 <div className="space-y-4">

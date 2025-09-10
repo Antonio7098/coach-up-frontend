@@ -225,30 +225,8 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
       items: items.map(item => ({ role: item.role, contentLength: item.content.length, contentPreview: item.content.substring(0, 50) + "..." }))
     });
     
-    const histParam = items.length ? `&history=${encodeURIComponent(toBase64Url(JSON.stringify(items)))}` : "";
-    
-    console.log("[MinimalConversationContext] chatToTextStreaming histParam:", {
-      histParamLength: histParam.length,
-      histParamPreview: histParam.substring(0, 100) + "..."
-    });
-
-    // Build user profile and goals parameters
-    let profileParam = "";
-    let goalsParam = "";
-    if (options?.userProfile) {
-      try {
-        profileParam = `&userProfile=${encodeURIComponent(toBase64Url(JSON.stringify(options.userProfile)))}`;
-      } catch (e) {
-        console.warn("Failed to encode user profile:", e);
-      }
-    }
-    if (options?.userGoals && Array.isArray(options?.userGoals)) {
-      try {
-        goalsParam = `&userGoals=${encodeURIComponent(toBase64Url(JSON.stringify(options.userGoals)))}`;
-      } catch (e) {
-        console.warn("Failed to encode user goals:", e);
-      }
-    }
+    // Build history as array to send in POST body (avoid URL limits)
+    const historyItems = items;
 
     const rid = Math.random().toString(36).slice(2);
     lastRidRef.current = rid;
@@ -258,189 +236,141 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     const seq = ++seqRef.current;
     activeSessionRef.current = currentSessionId || null;
     try { if (esRef.current) { try { esRef.current.close(); } catch {}; esRef.current = null; } } catch {}
+    // Start POST-based streaming using fetch + SSE parsing
+    const body = {
+      prompt,
+      sessionId: currentSessionId,
+      historyItems,
+      userProfile: options?.userProfile || undefined,
+      userGoals: options?.userGoals || undefined,
+      systemPrompt: options?.customSystemPrompt || undefined,
+      model: options?.model || undefined,
+      debug: 1,
+    };
 
-    const startStreaming = (): Promise<string | null> => new Promise((resolve, reject) => {
-      try {
-        let es: EventSource | null = null;
-        try {
-          // Add custom system prompt if provided
-          let systemPromptParam = "";
-          if (options?.customSystemPrompt && options.customSystemPrompt.trim()) {
-            systemPromptParam = `&systemPrompt=${encodeURIComponent(options.customSystemPrompt.trim())}`;
-          }
+    const headers: HeadersInit = await buildAuthHeaders({ 'content-type': 'application/json' });
 
-          // Add model parameter if provided
-          let modelParam = "";
-          if (options?.model && options.model.trim()) {
-            modelParam = `&model=${encodeURIComponent(options.model.trim())}`;
-          }
-
-          const url = `/api/chat?prompt=${encodeURIComponent(prompt)}${currentSessionId ? `&sessionId=${encodeURIComponent(currentSessionId)}` : ""}${histParam}${profileParam}${goalsParam}${systemPromptParam}${modelParam}&rid=${encodeURIComponent(rid)}&debug=1`;
-
-          console.log("chatToTextStreaming: Making EventSource request to", url);
-          es = new EventSource(url, { withCredentials: false });
-          esRef.current = es;
-        } catch {}
-        if (!es) { reject(new Error("stream failed")); return; }
-        let acc = "";
-        let chunkCount = 0;
-es.onmessage = (evt) => {
-          // Ignore if a newer request has started
-          if (seq !== seqRef.current || (activeSessionRef.current || null) !== (currentSessionId || null)) {
-            return;
-          }
-          if (evt.data === "[DONE]") {
-            try {
-              console.log('[SSE] done', { rid, seq, chunks: chunkCount, totalLen: acc.length });
-              es?.close();
-              if (esRef.current === es) esRef.current = null;
-            } catch {};
-            resolve(acc);
-          } else {
-            acc += evt.data;
-            chunkCount++;
-            if (chunkCount === 1) {
-              try { console.log('[SSE] first-chunk', { rid, seq, firstLen: evt.data.length }); } catch {}
-            }
-            // Stream chunk received
-            // Call the chunk callback for streaming TTS
-            if (onChunk && evt.data) {
-              onChunk(evt.data);
-            }
-          }
-        };
-es.addEventListener('prompt', (evt: MessageEvent) => {
-          try {
-            // Ignore if stale
-            if (seq !== seqRef.current || (activeSessionRef.current || null) !== (currentSessionId || null)) return;
-            const data = JSON.parse(evt.data || '{}');
-            try { console.log('[SSE] prompt event', { rid, seq, hasRendered: !!data?.rendered, sysLen: (data?.system || '').length }); } catch {}
-            setPromptPreview({
-              system: typeof data?.system === 'string' ? data.system : '',
-              summary: undefined,
-              summaryLen: undefined,
-              recentMessages: undefined,
-              prompt: typeof data?.rendered === 'string' ? data.rendered : (typeof data?.user === 'string' ? data.user : ''),
-              createdAt: Date.now(),
-            });
-          } catch {}
-        });
-        es.addEventListener('model', (evt: MessageEvent) => {
-          try {
-            const data = JSON.parse(evt.data || '{}');
-            const model = typeof data?.model === 'string' ? data.model : '';
-            const provider = typeof data?.provider === 'string' ? data.provider : '';
-            if (model && provider && options?.onModelUsed) {
-              options.onModelUsed(model, provider);
-            }
-          } catch {}
-        });
-        es.addEventListener('trailer', (evt: MessageEvent) => {
-          try {
-            const data = JSON.parse(evt.data || '{}');
-            console.log("chatToTextStreaming: Received trailer event", data);
-
-            // Update interaction cache with latest interaction ID
-            if (data?.latestInteractionId && currentSessionId) {
-              try {
-                // Trigger cache refresh to include the new interaction
-                console.log("Trailer: Refreshing interactions cache for new interaction", data.latestInteractionId);
-                // Use setTimeout to avoid blocking the stream completion
-                setTimeout(() => {
-                  try {
-                    // Access the refresh functions through the ref
-                    if (refreshFunctionsRef.current?.refreshInteractionsCache) {
-                      refreshFunctionsRef.current.refreshInteractionsCache();
-                    }
-                  } catch (e) {
-                    console.warn("Failed to refresh interactions cache:", e);
-                  }
-                }, 100);
-              } catch (e) {
-                console.warn("Failed to trigger interactions cache refresh:", e);
-              }
-            }
-
-            // Update summary status cache with trailer data
-            if (data?.summaryStatusLite && currentSessionId) {
-              try {
-                // Update the summary status cache with the trailer data
-                // This eliminates the need for a separate summary status fetch
-                console.log("Trailer: Refreshing summary status cache with trailer data");
-                setTimeout(() => {
-                  try {
-                    // Access the refresh functions through the ref
-                    if (refreshFunctionsRef.current?.refreshSummaryStatus) {
-                      refreshFunctionsRef.current.refreshSummaryStatus();
-                    }
-                  } catch (e) {
-                    console.warn("Failed to refresh summary status cache:", e);
-                  }
-                }, 100);
-              } catch (e) {
-                console.warn("Failed to trigger summary status cache refresh:", e);
-              }
-            }
-          } catch (e) {
-            console.warn("Failed to parse trailer event:", e);
-          }
-        });
-es.onerror = (error) => {
-          // Ignore if stale
-          if (seq !== seqRef.current || (activeSessionRef.current || null) !== (currentSessionId || null)) {
-            try { es?.close(); } catch {}
-            if (esRef.current === es) esRef.current = null;
-            return;
-          }
-          console.error("chatToTextStreaming: EventSource error", error);
-          try { es?.close(); } catch {}
-          if (esRef.current === es) esRef.current = null;
-          if (acc) resolve(acc); else resolve(null);
-        };
-        es.onopen = () => {
-          // Ignore if stale
-          if (seq !== seqRef.current || (activeSessionRef.current || null) !== (currentSessionId || null)) return;
-          try { console.log('[SSE] open', { rid, seq }); } catch {}
-          // Phase 2: on stream start, prefetch interactions and summary status if allowed by cooldown
-          const now = Date.now();
-          if (prefetchGateRef.current && now < prefetchGateRef.current) {
-            try { console.log('[prefetch] skip (cooldown)', { rid, untilMs: prefetchGateRef.current - now }); } catch {}
-          } else {
-            prefetchGateRef.current = now + 1500; // 1.5s cooldown window
-            try {
-              console.log('[prefetch] start', { rid, sessionId: currentSessionId });
-              setLastPrefetchAt(now);
-            } catch {}
-            // Fire-and-forget background refreshes; respect internal staleTime/de-dupe
-            setTimeout(() => {
-              try {
-                refreshFunctionsRef.current?.refreshInteractionsCache?.();
-              } catch (e) {
-                try { console.warn('[prefetch] interactions error', { err: e instanceof Error ? e.message : String(e) }); } catch {}
-              }
-            }, 0);
-            setTimeout(() => {
-              try {
-                refreshFunctionsRef.current?.refreshSummaryStatus?.();
-              } catch (e) {
-                try { console.warn('[prefetch] summary-status error', { err: e instanceof Error ? e.message : String(e) }); } catch {}
-              }
-            }, 50);
-            setTimeout(() => {
-              try { console.log('[prefetch] queued'); } catch {}
-            }, 0);
-          }
-        };
-      } catch (e: any) {
-        reject(new Error(e?.message || "stream failed"));
-      }
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
     });
-    const first = await startStreaming();
-    if (typeof first === "string") return first;
-    // If first attempt failed without data, try once more (network flake)
-    const second = await startStreaming();
-    if (typeof second === "string") return second;
-    throw new Error("stream failed");
+    if (!res.ok || !res.body) {
+      throw new Error(`stream failed: ${res.status}`);
+    }
+
+    // SSE parsing
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let acc = '';
+    let buffer = '';
+
+    const finish = async () => {
+      // finalize this sequence only if it is latest
+      if (seq !== seqRef.current) return acc;
+      // Notify cadence
+      try { onTurn(); } catch {}
+      return acc;
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        await finish();
+        return acc;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      // Normalize CRLF to LF for robust SSE parsing
+      if (buffer.indexOf('\r\n') !== -1) {
+        try { /* debug */ } catch {}
+        buffer = buffer.replace(/\r\n/g, '\n');
+      }
+      // Parse SSE events separated by double newlines
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) >= 0) {
+        const rawEvent = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        // Extract data: lines
+        const lines = rawEvent.split('\n');
+        const dataLines = lines.filter(l => l.startsWith('data:')).map(l => l.slice(5).trimStart());
+        if (dataLines.length === 0) continue;
+        const data = dataLines.join('\n');
+        try { console.log('[POST SSE] data frame', { len: data.length, head: (data || '').slice(0, 120) }); } catch {}
+        if (data === '[DONE]') {
+          await finish();
+          return acc;
+        }
+        // If server sends a JSON meta event, intercept provider/model used
+        try {
+          const maybeJson = JSON.parse(data);
+          if (maybeJson && typeof maybeJson === 'object') {
+            // Handle known metadata and structured chunk formats
+            // 1) Prompt event for debug panel
+            if (maybeJson.event === 'prompt') {
+              try { console.log('[POST SSE] prompt event', { rid, seq, hasRendered: !!maybeJson?.rendered, sysLen: (maybeJson?.system || '').length }); } catch {}
+              const pp = {
+                system: typeof maybeJson?.system === 'string' ? maybeJson.system : '',
+                summary: undefined as any,
+                summaryLen: undefined as any,
+                recentMessages: undefined as any,
+                prompt: typeof maybeJson?.rendered === 'string' ? maybeJson.rendered : (typeof maybeJson?.user === 'string' ? maybeJson.user : ''),
+                createdAt: Date.now(),
+              };
+              try { console.log('[POST SSE] setPromptPreview(event)', { rid, seq, promptLen: (pp.prompt || '').length, sysLen: (pp.system || '').length }); } catch {}
+              setPromptPreview(pp);
+              continue; // do not speak metadata
+            }
+            // 2) Model/provider metadata (with or without explicit event key)
+            if ((maybeJson.event === 'model_used' || maybeJson.model || maybeJson.provider) && typeof options?.onModelUsed === 'function') {
+              const mdl = String(maybeJson.model || '');
+              const prov = String(maybeJson.provider || '');
+              if (mdl) options.onModelUsed(mdl, prov);
+              continue; // do not speak metadata
+            }
+            // 3) Session or other control metadata
+            if (maybeJson.sessionId || maybeJson.event || maybeJson.requestId) {
+              // Ignore non-text control messages
+              continue;
+            }
+            // 2.5) Prompt preview (from POST /api/chat merged stream)
+            if ((typeof maybeJson.rendered === 'string' && maybeJson.rendered.length > 0) || (typeof maybeJson.system === 'string')) {
+              try {
+                const pp = {
+                  system: typeof maybeJson.system === 'string' ? maybeJson.system : '',
+                  summary: undefined as any,
+                  summaryLen: undefined as any,
+                  recentMessages: undefined as any,
+                  prompt: String(maybeJson.rendered || maybeJson.user || ''),
+                  createdAt: Date.now(),
+                };
+                try { console.log('[POST SSE] setPromptPreview(meta)', { rid, seq, promptLen: (pp.prompt || '').length, sysLen: (pp.system || '').length }); } catch {}
+                setPromptPreview(pp);
+              } catch {}
+              // do not treat as text chunk
+              continue;
+            }
+            // 3) Structured text chunk formats
+            if (typeof maybeJson.text === 'string' && maybeJson.text.length > 0) {
+              acc += maybeJson.text;
+              try { onChunk?.(maybeJson.text); } catch {}
+              continue;
+            }
+            if (maybeJson.delta && typeof maybeJson.delta.content === 'string' && maybeJson.delta.content.length > 0) {
+              acc += maybeJson.delta.content;
+              try { onChunk?.(maybeJson.delta.content); } catch {}
+              continue;
+            }
+            // Unknown JSON object -> ignore to avoid reading metadata
+            continue;
+          }
+        } catch {}
+        // Treat as plain text chunk when not JSON
+        if (data && data.trim()) {
+          acc += data;
+          try { onChunk?.(data); } catch {}
+        }
+      }
+    }
   }, [sessionId, summary?.text]);
 
   const chatToText = useCallback(async (prompt: string, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }): Promise<string> => {

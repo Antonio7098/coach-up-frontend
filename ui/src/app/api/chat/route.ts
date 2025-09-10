@@ -7,7 +7,7 @@ import * as mockConvex from "../lib/mockConvex";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, X-Request-Id, X-Tracked-Skill-Id",
   // Expose provider/model so clients and benchmarks can read them
   "Access-Control-Expose-Headers": "X-Request-Id, X-Chat-Provider, X-Chat-Model",
@@ -292,6 +292,204 @@ try {
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
     // Explicitly prevent Next.js from buffering
+    "X-Accel-Buffering": "no",
+    "X-Request-Id": requestId,
+    ...corsHeaders,
+  };
+  const upstreamProvider = upstream.headers.get("X-Chat-Provider") || upstream.headers.get("x-chat-provider");
+  const upstreamModel = upstream.headers.get("X-Chat-Model") || upstream.headers.get("x-chat-model");
+  if (upstreamProvider) respHeaders["X-Chat-Provider"] = upstreamProvider;
+  if (upstreamModel) respHeaders["X-Chat-Model"] = upstreamModel;
+
+  return new Response(readable, { headers: respHeaders });
+}
+
+// New: POST endpoint to accept JSON body (prompt, sessionId, historyItems, etc.) and stream SSE
+export async function POST(request: Request) {
+  const controller = new AbortController();
+  const url = new URL(request.url);
+  const ridIn = url.searchParams.get("rid") || "";
+  const requestId = (() => {
+    try {
+      const g = globalThis as unknown as { crypto?: { randomUUID?: () => string } };
+      const generated = g.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+      return ridIn || generated;
+    } catch {
+      return ridIn || Math.random().toString(36).slice(2);
+    }
+  })();
+
+  let bodyIn: any = null;
+  try { bodyIn = await request.json(); } catch {}
+  if (!bodyIn || typeof bodyIn !== 'object') {
+    return new Response(JSON.stringify({ error: 'Invalid JSON body' }), { status: 400, headers: { 'content-type': 'application/json', ...corsHeaders } });
+  }
+
+  const promptParam: string = String(bodyIn.prompt || "");
+  const sessionId: string = String(bodyIn.sessionId || "");
+  const systemPromptParam: string = String(bodyIn.systemPrompt || bodyIn.customSystemPrompt || "");
+  const debugOn = (process.env.PROMPT_DEBUG === "1") || Boolean(bodyIn.debug);
+
+  // Build history items from either explicit array or base64 input
+  const clientHistoryItems: Array<{ role: string; content: string }> = Array.isArray(bodyIn.historyItems)
+    ? bodyIn.historyItems.filter((it: any) => it && typeof it.role === 'string' && typeof it.content === 'string')
+    : [];
+
+  // Optionally merge server summary if client did not include a system item
+  let historyItems = clientHistoryItems;
+  let systemItem: { role: string; content: string } | null = null;
+  const hasClientSystem = historyItems.find((it) => it.role === 'system' && (it.content || '').trim().length > 0);
+  if (hasClientSystem) {
+    systemItem = { role: 'system', content: hasClientSystem.content };
+  } else if (sessionId) {
+    try {
+      const attemptFetch = async (): Promise<Response | null> => {
+        try {
+          return await fetch(`${url.origin}/api/v1/session-summary?sessionId=${encodeURIComponent(sessionId)}`, {
+            headers: { 'x-request-id': requestId }
+          });
+        } catch { return null; }
+      };
+      let summaryResponse = await attemptFetch();
+      if (summaryResponse && summaryResponse.status === 404) {
+        try { await new Promise((r) => setTimeout(r, 150)); } catch {}
+        summaryResponse = await attemptFetch();
+      }
+      if (summaryResponse && summaryResponse.ok) {
+        const summaryData = await summaryResponse.json();
+        const summaryText: string = String(summaryData?.text || summaryData?.summary?.text || "").trim();
+        if (summaryText) {
+          systemItem = { role: 'system', content: summaryText.length > 3200 ? summaryText.slice(0, 3200) : summaryText };
+          // De-dup any existing system entries
+          historyItems = [systemItem].concat(historyItems.filter((it) => it.role !== 'system'));
+        }
+      }
+    } catch {}
+  }
+
+  // Prepare upstream URL (still GET to AI API for now)
+  const params = new URLSearchParams();
+  params.set('prompt', promptParam);
+  if (sessionId) params.set('sessionId', sessionId);
+  {
+    const enc = b64urlEncode(JSON.stringify(historyItems || []));
+    params.set('history', enc);
+  }
+  // Optional user profile/goals passthrough for mock/demo/testing
+  if (bodyIn.userProfile) {
+    try { params.set('userProfile', b64urlEncode(JSON.stringify(bodyIn.userProfile))); } catch {}
+  }
+  if (Array.isArray(bodyIn.userGoals)) {
+    try { params.set('userGoals', b64urlEncode(JSON.stringify(bodyIn.userGoals))); } catch {}
+  }
+  if (bodyIn.model) {
+    try { params.set('model', String(bodyIn.model)); } catch {}
+  }
+  if (systemPromptParam && systemPromptParam.trim().length > 0) {
+    params.set('systemPrompt', systemPromptParam);
+  }
+  if (debugOn) {
+    params.set('debug', '1');
+  }
+  const upstreamUrl = `${aiApiBaseUrl()}/chat/stream?${params.toString()}`;
+
+  // Save prompt preview if debug enabled
+  if (debugOn) {
+    try {
+      const recentPreview = historyItems.filter((it) => it.role !== 'system').slice(-6).map((m) => ({ role: m.role, content: (m.content || '').slice(0, 240), len: (m.content || '').length }));
+      const summaryText = systemItem ? systemItem.content : "";
+      savePromptPreview(requestId, {
+        system: "Coach-min chat",
+        summary: summaryText.slice(0, 1000),
+        summaryLen: summaryText.length,
+        recentMessages: recentPreview,
+        prompt: promptParam.slice(0, 400),
+      });
+    } catch {}
+  }
+
+  // Proxy to upstream SSE and pipe through
+  let upstream: Response;
+  try {
+    const incoming = new Headers(request.headers);
+    const trackedSkillId = incoming.get("x-tracked-skill-id");
+    const headers = new Headers({
+      Accept: "text/event-stream",
+      "X-Request-Id": requestId,
+    });
+    if (trackedSkillId) headers.set("X-Tracked-Skill-Id", trackedSkillId);
+    upstream = await fetch(upstreamUrl, { method: 'GET', headers, signal: controller.signal });
+  } catch {
+    return new Response("Upstream unavailable", { status: 502, headers: corsHeaders });
+  }
+  if (!upstream.ok || !upstream.body) {
+    return new Response("Upstream error", { status: 502, headers: corsHeaders });
+  }
+
+  // Build a merged ReadableStream that emits a prompt preview event (if debug)
+  // and then proxies the upstream SSE stream.
+  const enc = new TextEncoder();
+  const firstByteStart = Date.now();
+  const labels = { route: "/api/chat", method: "POST", status: "200", mode: upstream.headers.get("X-Chat-Provider") || upstream.headers.get("x-chat-provider") || "-" } as const;
+  const disconnectLabels = { route: "/api/chat" } as const;
+  const startedAt = Date.now();
+
+  const upstreamReader = upstream.body.getReader();
+  let measured = false;
+  const readable = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      try {
+        if (debugOn) {
+          const preview = {
+            system: systemItem?.content || "",
+            rendered: promptParam || "",
+            user: promptParam || "",
+          };
+          try {
+            console.log('[api/chat:POST] enqueue prompt event', {
+              rid: requestId,
+              sessionId,
+              sysLen: (preview.system || '').length,
+              renderedLen: (preview.rendered || '').length,
+            });
+          } catch {}
+          controller.enqueue(enc.encode(`event: prompt\n`));
+          controller.enqueue(enc.encode(`data: ${JSON.stringify(preview)}\n\n`));
+        }
+        let chunkCount = 0;
+        while (true) {
+          const { value, done } = await upstreamReader.read();
+          if (done) break;
+          if (!measured) {
+            try { promMetrics.chatFirstTokenMs.labels(labels.route, labels.method, labels.status, labels.mode as string).observe(Date.now() - firstByteStart); } catch {}
+            measured = true;
+          }
+          if (value) {
+            chunkCount++;
+            if (chunkCount === 1) {
+              try { console.log('[api/chat:POST] first upstream chunk', { rid: requestId, bytes: value.byteLength }); } catch {}
+            }
+            controller.enqueue(value);
+          }
+        }
+        try { console.log('[api/chat:POST] upstream completed', { rid: requestId, chunks: chunkCount }); } catch {}
+      } catch (e) {
+        // swallow
+      } finally {
+        try {
+          const totalMs = Date.now() - startedAt;
+          promMetrics.requestDurationSeconds.labels("/api/chat", "POST", "200", (upstream.headers.get("X-Chat-Provider") || upstream.headers.get("x-chat-provider") || "-") as string).observe(totalMs / 1000);
+        } catch {}
+        try { promMetrics.chatDisconnectsTotal.labels(disconnectLabels.route, measured ? "completed" : "client_abort").inc(); } catch {}
+        controller.close();
+      }
+    }
+  });
+
+  const respHeaders: Record<string, string> = {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
     "X-Accel-Buffering": "no",
     "X-Request-Id": requestId,
     ...corsHeaders,

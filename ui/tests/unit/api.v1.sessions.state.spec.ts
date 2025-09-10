@@ -13,6 +13,8 @@ const jsonRequest = (url: string, body: any, headers?: Record<string, string>) =
 describe('API: POST /api/v1/sessions/state', () => {
   beforeEach(() => {
     setConvexMockBehavior({ queryReturn: undefined, queryThrow: null, mutationReturn: { ok: true }, mutationThrow: null });
+    // Ensure we use real Convex client (not mock mode)
+    delete (process.env as any).MOCK_CONVEX;
   });
 
   it('returns 400 on invalid JSON', async () => {
@@ -43,7 +45,7 @@ describe('API: POST /api/v1/sessions/state', () => {
 
     const expectedHash = sha256Hex(trackedSkillId);
     expect(client.mutation).toHaveBeenCalledWith(
-      'events:logEvent',
+      'functions/events:logEvent',
       expect.objectContaining({ sessionId: body.sessionId, groupId: body.latestGroupId, trackedSkillIdHash: expectedHash, kind: 'session_state_updated' })
     );
   });

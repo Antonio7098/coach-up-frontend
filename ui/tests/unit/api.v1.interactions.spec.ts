@@ -13,6 +13,8 @@ const jsonRequest = (url: string, body: any, headers?: Record<string, string>) =
 describe('API: POST /api/v1/interactions', () => {
   beforeEach(() => {
     setConvexMockBehavior({ queryReturn: undefined, queryThrow: null, mutationReturn: { ok: true }, mutationThrow: null });
+    // Ensure we use real Convex client (not mock mode)
+    delete (process.env as any).MOCK_CONVEX;
   });
 
   it('returns 400 on invalid JSON', async () => {
@@ -33,6 +35,7 @@ describe('API: POST /api/v1/interactions', () => {
       messageId: 'm1',
       role: 'user',
       contentHash: 'deadbeef',
+      text: 'test message',
       ts: Date.now(),
     };
     const trackedSkillId = 'skill-abc';
@@ -45,13 +48,13 @@ describe('API: POST /api/v1/interactions', () => {
     expect(client).toBeTruthy();
     // appendInteraction called
     expect(client.mutation).toHaveBeenCalledWith(
-      'interactions:appendInteraction',
+      'functions/interactions:appendInteraction',
       expect.objectContaining({ sessionId: body.sessionId, groupId: body.groupId, messageId: body.messageId, contentHash: body.contentHash })
     );
     // events:logEvent called with hash
     const expectedHash = sha256Hex(trackedSkillId);
     expect(client.mutation).toHaveBeenCalledWith(
-      'events:logEvent',
+      'functions/events:logEvent',
       expect.objectContaining({ sessionId: body.sessionId, groupId: body.groupId, trackedSkillIdHash: expectedHash, kind: 'interaction_appended' })
     );
   });
@@ -65,6 +68,7 @@ describe('API: POST /api/v1/interactions', () => {
       messageId: 'm1',
       role: 'user',
       contentHash: 'deadbeef',
+      text: 'test message',
       ts: Date.now(),
     };
     const res = await interactionsPOST(jsonRequest('http://localhost:3000/api/v1/interactions', body));
