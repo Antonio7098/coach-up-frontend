@@ -99,7 +99,7 @@ const fetchSummaryStatus = useCallback(async (force = false) => {
       const response = await fetch(url, {
         method: 'GET',
         headers,
-        signal: abortControllerRef.current.signal
+        signal: abortControllerRef.current?.signal
       });
 
       if (!response.ok) {

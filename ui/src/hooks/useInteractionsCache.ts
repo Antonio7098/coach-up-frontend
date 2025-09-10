@@ -121,7 +121,7 @@ const fetchInteractions = useCallback(async (sinceId?: string, force = false) =>
       const response = await fetch(url, {
         method: 'GET',
         headers,
-        signal: abortControllerRef.current.signal,
+        signal: abortControllerRef.current?.signal,
         cache: 'no-store',
       });
 
