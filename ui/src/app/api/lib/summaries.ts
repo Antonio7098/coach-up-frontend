@@ -1,4 +1,4 @@
-/* eslint-disable no-console */
+ 
 
 export type SummaryRow = {
   sessionId: string;

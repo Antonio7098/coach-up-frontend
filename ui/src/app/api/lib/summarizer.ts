@@ -1,4 +1,4 @@
-/* eslint-disable no-console */
+ 
 
 export type SummarizerMessage = { role: string; content: string };
 

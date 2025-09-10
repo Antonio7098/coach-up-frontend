@@ -367,6 +367,27 @@ export async function POST(request: Request) {
     } catch {}
   }
 
+  // If there are no user/assistant items (only system), backfill from Convex to avoid empty first-turn context after refresh
+  {
+    const nonSystemCount = Array.isArray(historyItems) ? historyItems.filter((it: any) => it && it.role !== 'system').length : 0;
+    if (nonSystemCount === 0 && sessionId) {
+      try {
+        const headers = new Headers({ accept: 'application/json', 'x-request-id': requestId });
+        // Fetch a small tail of interactions
+        const res = await fetch(`${url.origin}/api/v1/interactions?sessionId=${encodeURIComponent(sessionId)}&limit=10`, { method: 'GET', headers, cache: 'no-store' });
+        const data = await res.json().catch(() => ({} as any));
+        if (res.ok && Array.isArray(data?.interactions)) {
+          const fromServer = data.interactions
+            .filter((m: any) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.text === 'string')
+            .map((m: any) => ({ role: m.role, content: String(m.text || '').slice(0, 240) }));
+          if (fromServer.length > 0) {
+            historyItems = (systemItem ? [systemItem] : []).concat(fromServer);
+          }
+        }
+      } catch {}
+    }
+  }
+
   // Prepare upstream URL (still GET to AI API for now)
   const params = new URLSearchParams();
   params.set('prompt', promptParam);

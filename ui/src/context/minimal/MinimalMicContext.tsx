@@ -21,6 +21,10 @@ export type MinimalMicContextValue = {
   triggerVadCalibration: () => void;
   resetVadState: () => void;
   getVadCalibrationData: () => any;
+  // Manual chat integration
+  setTranscript: (text: string) => void;
+  setAssistantText: (text: string) => void;
+  setStatus: (status: "idle" | "audio" | "stt" | "chat" | "tts" | "playback") => void;
 };
 
 const Ctx = createContext<MinimalMicContextValue | undefined>(undefined);
@@ -73,6 +77,22 @@ export function MinimalMicProvider({
   const [transcript, setTranscript] = useState("");
   const [assistantText, setAssistantText] = useState("");
   const [status, setStatus] = useState<"idle" | "audio" | "stt" | "chat" | "tts" | "playback">("idle");
+
+  // Wrapped setters with debug logging
+  const setTranscriptWithLog = useCallback((text: string) => {
+    console.log("MinimalMicContext: setTranscript called with:", text?.substring(0, 50));
+    setTranscript(text);
+  }, []);
+
+  const setAssistantTextWithLog = useCallback((text: string) => {
+    console.log("MinimalMicContext: setAssistantText called with:", text?.substring(0, 50));
+    setAssistantText(text);
+  }, []);
+
+  const setStatusWithLog = useCallback((newStatus: "idle" | "audio" | "stt" | "chat" | "tts" | "playback") => {
+    console.log("MinimalMicContext: setStatus called with:", newStatus);
+    setStatus(newStatus);
+  }, []);
   const [vadLoop, setVadLoop] = useState(false);
   const [inputSpeaking, setInputSpeaking] = useState(false);
   const mediaRef = useRef<MediaRecorder | null>(null);
@@ -194,10 +214,10 @@ export function MinimalMicProvider({
   React.useEffect(() => {
     if (audio.isPlaybackActive) {
       pendingPlaybackRef.current = false;
-      if (status === "tts") setStatus("playback");
+      if (status === "tts") setStatusWithLog("playback");
     } else {
       // When playback ends naturally, if we're looping/recording, return to audio
-      if (status === "playback" && (recording || vadLoopRef.current)) setStatus("audio");
+      if (status === "playback" && (recording || vadLoopRef.current)) setStatusWithLog("audio");
     }
   }, [audio.isPlaybackActive, status, recording]);
   const ttsActiveRef = useRef<boolean>(false);
@@ -287,13 +307,15 @@ export function MinimalMicProvider({
           const blob = new Blob(chunks, { type: "audio/webm" });
           if (blob.size === 0) { return; }
           if (!shouldSkip) {
-            setStatus("stt");
+            setStatusWithLog("stt");
             const { text } = await voice.sttFromBlob(blob, sessionIdRef.current || undefined);
-            setTranscript(text);
+            console.log("MinimalMic: Setting transcript after STT", { text: text?.substring(0, 50), length: text?.length });
+            setTranscriptWithLog(text);
             if (!text || text.trim().length === 0) {
               try { console.warn("MinimalMic: STT returned empty text"); } catch {}
             }
-            setStatus("chat");
+            console.log("MinimalMic: Setting status to chat after STT");
+            setStatusWithLog("chat");
 
             // Resolve a canonical session id before dispatching chat
             const canonicalSid = await resolveCanonicalSessionId();
@@ -318,7 +340,7 @@ export function MinimalMicProvider({
             // Chat processing complete
             // Note: User interactions are now handled by STT route, assistant interactions by AI API
             // No need to persist interactions here to avoid duplicates
-            setStatus("tts");
+            setStatusWithLog("tts");
             try { voice.cancelTTS?.(); } catch {}
 
             // Use streaming TTS instead of waiting for full response
@@ -371,7 +393,8 @@ export function MinimalMicProvider({
               try { void voice.enqueueTTSChunk?.(streamingReply.slice(accumulatedText.length)); } catch {}
             }
 
-            setAssistantText(streamingReply);
+            console.log("MinimalMic: Setting assistantText after chat completion", { reply: streamingReply?.substring(0, 50), length: streamingReply?.length });
+            setAssistantTextWithLog(streamingReply);
 
             // Note: Assistant interactions are now handled by AI API service
             // No need to persist interactions here to avoid duplicates
@@ -656,7 +679,11 @@ export function MinimalMicProvider({
     triggerVadCalibration,
     resetVadState,
     getVadCalibrationData,
-  }), [recording, transcript, assistantText, startRecording, stopRecording, vadLoop, status, inputSpeaking, triggerVadCalibration, resetVadState, getVadCalibrationData]);
+    // Manual chat integration
+    setTranscript: setTranscriptWithLog,
+    setAssistantText: setAssistantTextWithLog,
+    setStatus: setStatusWithLog,
+  }), [recording, transcript, assistantText, startRecording, stopRecording, vadLoop, status, inputSpeaking, triggerVadCalibration, resetVadState, getVadCalibrationData, setTranscriptWithLog, setAssistantTextWithLog, setStatusWithLog]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

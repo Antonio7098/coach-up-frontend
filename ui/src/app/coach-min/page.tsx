@@ -135,6 +135,19 @@ function Content({
   const { user } = useUser();
   const { getToken } = useAuth();
 
+  // Debug: Track mic context changes
+  React.useEffect(() => {
+    console.log("Content: Mic context updated", {
+      transcript: mic.transcript?.substring(0, 50),
+      transcriptLength: mic.transcript?.length,
+      assistantText: mic.assistantText?.substring(0, 50),
+      assistantTextLength: mic.assistantText?.length,
+      status: mic.status,
+      recording: mic.recording,
+      playing: audio.isPlaybackActive
+    });
+  }, [mic.transcript, mic.assistantText, mic.status, mic.recording, audio.isPlaybackActive]);
+
   const buildAuthHeaders = React.useCallback(async (base: HeadersInit = {}): Promise<HeadersInit> => {
     try {
       const token = await getToken();
@@ -598,6 +611,25 @@ function Content({
 
   // Note: turn counter reset is now handled server-side
 
+  // Seed LLM prompt preview whenever mic enters chat with a transcript
+  React.useEffect(() => {
+    try {
+      if (mic.status === 'chat' && typeof mic.transcript === 'string' && mic.transcript.trim().length > 0) {
+        const systemText = typeof (fresh as any)?.text === 'string' ? String((fresh as any).text) : '';
+        const promptText = mic.transcript;
+        console.log('[LLM_DEBUG] Seeding prompt preview from mic', { sysLen: systemText.length, promptLen: promptText.length });
+        setPromptPreview({
+          system: systemText,
+          summary: undefined as any,
+          summaryLen: undefined as any,
+          recentMessages: undefined as any,
+          prompt: promptText,
+          createdAt: Date.now(),
+        });
+      }
+    } catch (e) { try { console.warn('[LLM_DEBUG] Mic seed failed', e); } catch {} }
+  }, [mic.status, mic.transcript, (fresh as any)?.text]);
+
   // Gate triage refreshes by server cadence: when turnsSince hits thresholdTurns
   React.useEffect(() => {
     const turnsSince = Number.isFinite(Number((fresh as any)?.turnsSince)) ? Number((fresh as any)?.turnsSince) : undefined;
@@ -749,12 +781,44 @@ function Content({
 
   // Manual chat function - skips STT and calls chatToTextStreaming directly
   const sendManualChat = React.useCallback(async () => {
-    if (!manualChatInput.trim() || manualChatStatus !== "idle") return;
+    console.log('[ManualChat] FUNCTION CALLED - sendManualChat started');
+    if (!manualChatInput.trim() || manualChatStatus !== "idle") {
+      console.log('[ManualChat] EARLY RETURN - input empty or status not idle');
+      return;
+    }
 
     const inputText = manualChatInput.trim();
+    console.log('[ManualChat] Starting manual chat with input:', inputText);
+    console.log('[ManualChat] Mic context available:', !!mic);
+    console.log('[ManualChat] Mic setTranscript available:', typeof mic.setTranscript);
+    console.log('[ManualChat] Mic setAssistantText available:', typeof mic.setAssistantText);
+    console.log('[ManualChat] Mic setStatus available:', typeof mic.setStatus);
+    
+    // Seed prompt preview locally so the debug panel is not empty
+    try {
+      const systemText = typeof (fresh as any)?.text === 'string' ? String((fresh as any).text) : '';
+      console.log('[LLM_DEBUG] Seeding prompt preview from manual chat', { sysLen: systemText.length, promptLen: inputText.length });
+      setPromptPreview({
+        system: systemText,
+        summary: undefined as any,
+        summaryLen: undefined as any,
+        recentMessages: undefined as any,
+        prompt: inputText,
+        createdAt: Date.now(),
+      });
+    } catch (error) {
+      console.log('[ManualChat] Error setting prompt preview:', error);
+    }
+    
     setManualChatInput("");
     setManualChatStatus("chat");
     setManualChatResponse("");
+
+    // Update mic context to show the user input in debug panel
+    console.log('[ManualChat] Setting mic.transcript to:', inputText);
+    mic.setTranscript(inputText);
+    console.log('[ManualChat] Setting mic.status to: chat');
+    mic.setStatus("chat");
 
     try {
       // Use the same chat options as voice chat
@@ -784,6 +848,12 @@ function Content({
         throw new Error('Empty response from chat API');
       }
 
+      // Update mic context to show the assistant response in debug panel
+      console.log('[ManualChat] Setting mic.assistantText to:', reply);
+      mic.setAssistantText(reply);
+      console.log('[ManualChat] Setting mic.status to: tts');
+      mic.setStatus("tts");
+
       setManualChatResponse(reply);
       setManualChatStatus("tts");
 
@@ -794,9 +864,11 @@ function Content({
         await voice.enqueueTTSSegment(reply);
         console.log('[ManualChat] TTS completed');
         setManualChatStatus("playback");
+        mic.setStatus("playback");
       } catch (ttsError) {
         console.error('[ManualChat] TTS failed:', ttsError);
         setManualChatStatus("idle");
+        mic.setStatus("idle");
       }
 
       // Record this turn into the conversation history
@@ -813,8 +885,9 @@ function Content({
       const errorMessage = error instanceof Error ? error.message : String(error);
       setManualChatResponse(`Error: ${errorMessage}`);
       setManualChatStatus("idle");
+      mic.setStatus("idle");
     }
-  }, [manualChatInput, manualChatStatus, profile, goals, isSystemPromptEnabled, customSystemPrompt, selectedModel, convo, voice]);
+  }, [manualChatInput, manualChatStatus, profile, goals, isSystemPromptEnabled, customSystemPrompt, selectedModel, convo, voice, mic]);
 
   // Dashboard animation logic (similar to coach page)
   React.useEffect(() => {
@@ -1334,9 +1407,31 @@ function Content({
                   {/* Chat Section */}
                   <div className="border border-gray-200 rounded p-3 bg-gray-50 mb-3">
                     <div className="text-sm font-mono text-blue-600 font-semibold mb-2">[LLM_PROMPT_DEBUG]</div>
-                    <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center justify-between mb-3 gap-2">
                       <div className="text-xs text-gray-600 font-mono">{promptPreview ? 'STATUS: READY' : 'STATUS: EMPTY'}</div>
-                      <button type="button" onClick={() => { try { setPromptPreview(convo.getLastPromptPreview()); } catch {} }} className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-50">[REFRESH]</button>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => { try { setPromptPreview(convo.getLastPromptPreview()); } catch {} }}
+                          className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-50"
+                        >[REFRESH]</button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const sample = {
+                              system: String((fresh as any)?.text || ''),
+                              prompt: 'SEED: hello prompt preview',
+                              createdAt: Date.now(),
+                              summary: undefined as any,
+                              summaryLen: undefined as any,
+                              recentMessages: undefined as any,
+                            };
+                            try { console.log('[LLM_DEBUG] Manual seed button', { sysLen: (sample.system || '').length, promptLen: (sample.prompt || '').length }); } catch {}
+                            setPromptPreview(sample);
+                          }}
+                          className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-50"
+                        >[SEED_TEST]</button>
+                      </div>
                     </div>
                     {promptPreview ? (
                       <div className="text-xs space-y-1">

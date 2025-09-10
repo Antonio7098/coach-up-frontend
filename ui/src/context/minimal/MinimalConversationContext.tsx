@@ -159,6 +159,37 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
       console.warn("chatToTextStreaming: sessionId not available, cannot make request");
       return "";
     }
+
+    // Gate: ensure interactions cache is warm if recent activity within 10 minutes
+    const ensureReadyForSend = async (timeoutMs = 700) => {
+      try {
+        // If we already have cache entries, no need to wait
+        if (getRecentInteractions(2).length > 0) return;
+        // Ask server for latest interaction timestamp
+        const reqId = Math.random().toString(36).slice(2);
+        const headers = await buildAuthHeaders({ accept: 'application/json', 'x-request-id': reqId });
+        const metaRes = await fetch(`/api/v1/interactions?sessionId=${encodeURIComponent(currentSessionId)}&limit=1`, { method: 'GET', headers, cache: 'no-store' });
+        let within10m = false;
+        if (metaRes.ok) {
+          const meta = await metaRes.json().catch(() => ({} as any));
+          const latest = Number(meta?.interactions?.[0]?.createdAt || meta?.interactions?.[0]?.ts || 0);
+          if (Number.isFinite(latest) && latest > 0) {
+            within10m = (Date.now() - latest) < 10 * 60 * 1000;
+          }
+        }
+        if (!within10m) return; // treat as new session, skip warm-up
+        // Trigger a refresh and wait a short time for cache to fill
+        try { await refreshInteractionsCache(); } catch {}
+        const started = Date.now();
+        while (Date.now() - started < timeoutMs) {
+          if (getRecentInteractions(2).length > 0) return;
+          await new Promise(r => setTimeout(r, 50));
+        }
+      } catch {}
+    };
+
+    await ensureReadyForSend(700);
+
     console.log("chatToTextStreaming: Starting chat request", { prompt: prompt.substring(0, 50), sessionId: currentSessionId });
     // Build history from cached interactions (more comprehensive than in-memory history)
     const recentInteractions = getRecentInteractions(MAX_HISTORY_FOR_CONVO);
@@ -230,7 +261,19 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
 
     const rid = Math.random().toString(36).slice(2);
     lastRidRef.current = rid;
-    setPromptPreview(null);
+    // Seed a local prompt preview immediately so the debug panel isn't empty while SSE initializes
+    try {
+      const seeded = {
+        system: typeof sys === 'string' ? sys : '',
+        summary: undefined as any,
+        summaryLen: undefined as any,
+        recentMessages: undefined as any,
+        prompt: String(prompt || ''),
+        createdAt: Date.now(),
+      };
+      console.log('[POST SSE] seed prompt preview (pre-stream)', { seq, sysLen: (seeded.system || '').length, promptLen: (seeded.prompt || '').length });
+      setPromptPreview(seeded);
+    } catch {}
 
     // Increment sequence and close any previous EventSource (latest-wins)
     const seq = ++seqRef.current;
@@ -259,6 +302,37 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
       throw new Error(`stream failed: ${res.status}`);
     }
 
+    // Fallback: attempt to fetch prompt preview via X-Request-Id if SSE parsing doesn't set it quickly
+    const ridHeader = res.headers.get('x-request-id') || res.headers.get('X-Request-Id') || '';
+    try { console.log('[POST SSE] response headers', { ridHeader, hadBody: !!res.body }); } catch {}
+    let previewSet = false;
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+    if (ridHeader) {
+      try {
+        fallbackTimer = setTimeout(async () => {
+          if (previewSet) return;
+          try {
+            console.log('[POST SSE] fallback timer fired, fetching prompt preview', { rid: ridHeader });
+            const r = await fetch(`/api/v1/chat/prompt-preview?rid=${encodeURIComponent(ridHeader)}`, { method: 'GET', headers: await buildAuthHeaders({ accept: 'application/json' }) });
+            const j = await r.json().catch(() => ({} as any));
+            if (r.ok && j && j.preview && !previewSet) {
+              const pp = {
+                system: typeof j.preview.system === 'string' ? j.preview.system : '',
+                summary: j.preview.summary,
+                summaryLen: j.preview.summaryLen,
+                recentMessages: j.preview.recentMessages,
+                prompt: typeof j.preview.prompt === 'string' ? j.preview.prompt : '',
+                createdAt: Date.now(),
+              } as any;
+              try { console.log('[POST SSE] fallback prompt preview', { rid: ridHeader, sysLen: (pp.system || '').length, promptLen: (pp.prompt || '').length }); } catch {}
+              setPromptPreview(pp);
+              previewSet = true;
+            }
+          } catch {}
+        }, 250);
+      } catch {}
+    }
+
     // SSE parsing
     const reader = res.body.getReader();
     const decoder = new TextDecoder('utf-8');
@@ -270,6 +344,8 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
       if (seq !== seqRef.current) return acc;
       // Notify cadence
       try { onTurn(); } catch {}
+      // Cleanup timer if still pending
+      if (fallbackTimer) { try { clearTimeout(fallbackTimer); } catch {}; fallbackTimer = null; }
       return acc;
     };
 
@@ -307,7 +383,7 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
             // Handle known metadata and structured chunk formats
             // 1) Prompt event for debug panel
             if (maybeJson.event === 'prompt') {
-              try { console.log('[POST SSE] prompt event', { rid, seq, hasRendered: !!maybeJson?.rendered, sysLen: (maybeJson?.system || '').length }); } catch {}
+              try { console.log('[POST SSE] prompt event', { rid: ridHeader, seq, hasRendered: !!maybeJson?.rendered, sysLen: (maybeJson?.system || '').length }); } catch {}
               const pp = {
                 system: typeof maybeJson?.system === 'string' ? maybeJson.system : '',
                 summary: undefined as any,
@@ -316,8 +392,10 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
                 prompt: typeof maybeJson?.rendered === 'string' ? maybeJson.rendered : (typeof maybeJson?.user === 'string' ? maybeJson.user : ''),
                 createdAt: Date.now(),
               };
-              try { console.log('[POST SSE] setPromptPreview(event)', { rid, seq, promptLen: (pp.prompt || '').length, sysLen: (pp.system || '').length }); } catch {}
+              try { console.log('[POST SSE] setPromptPreview(event)', { rid: ridHeader, seq, promptLen: (pp.prompt || '').length, sysLen: (pp.system || '').length }); } catch {}
               setPromptPreview(pp);
+              previewSet = true;
+              if (fallbackTimer) { try { clearTimeout(fallbackTimer); } catch {}; fallbackTimer = null; }
               continue; // do not speak metadata
             }
             // 2) Model/provider metadata (with or without explicit event key)
@@ -343,8 +421,10 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
                   prompt: String(maybeJson.rendered || maybeJson.user || ''),
                   createdAt: Date.now(),
                 };
-                try { console.log('[POST SSE] setPromptPreview(meta)', { rid, seq, promptLen: (pp.prompt || '').length, sysLen: (pp.system || '').length }); } catch {}
+                try { console.log('[POST SSE] setPromptPreview(meta)', { rid: ridHeader, seq, promptLen: (pp.prompt || '').length, sysLen: (pp.system || '').length }); } catch {}
                 setPromptPreview(pp);
+                previewSet = true;
+                if (fallbackTimer) { try { clearTimeout(fallbackTimer); } catch {}; fallbackTimer = null; }
               } catch {}
               // do not treat as text chunk
               continue;

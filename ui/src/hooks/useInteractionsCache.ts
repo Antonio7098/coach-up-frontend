@@ -218,10 +218,21 @@ setCache(prevCache => {
     }, debounceMs);
   }, [fetchInteractions, debounceMs]);
 
-// Initial fetch when sessionId changes
+// Reset cache and initial fetch when sessionId changes
   useEffect(() => {
+    // If session changed, clear cache to avoid mixing sessions
+    setCache({ interactions: [], latestId: null, lastFetched: 0, etag: null, isStale: true });
+    if (abortControllerRef.current) {
+      try { abortControllerRef.current.abort(); } catch {}
+      abortControllerRef.current = null;
+    }
+    if (debounceTimeoutRef.current) {
+      try { clearTimeout(debounceTimeoutRef.current); } catch {}
+      debounceTimeoutRef.current = null as any;
+    }
+
     if (sessionId) {
-      try { console.debug('[interactions.cache] sessionId changed -> initial fetch', { sessionId }); } catch {}
+      try { console.debug('[interactions.cache] sessionId changed -> reset + initial fetch', { sessionId }); } catch {}
       void fetchInteractions(undefined, true);
     } else {
       // No session yet: make sure loading isn't stuck
