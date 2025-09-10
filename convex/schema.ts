@@ -115,6 +115,10 @@ export default defineSchema({
         v.literal("roleplay_scenario"),
         v.literal("general_chatter"),
         v.literal("unknown"),
+        v.literal("multi_step_exercise"),
+        v.literal("progressive_skill_building"),
+        v.literal("skill_practice"),
+        v.literal("practice"),
       )
     ),
     triageProcessedAt: v.optional(v.number()), // ms since epoch

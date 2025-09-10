@@ -32,6 +32,9 @@ vi.mock("../../src/context/ChatContext", () => ({
 vi.mock("../../src/hooks/useSessionSummary", () => ({
   useSessionSummary: () => ({ summary: { text: "prev summary" }, onTurn: () => {} }),
 }));
+vi.mock("../../src/context/AudioContext", () => ({
+  useAudio: () => ({ stopPlaybackAndClear: () => {} }),
+}));
 
 import { ConversationProvider, useConversation } from "../../src/context/ConversationContext";
 
