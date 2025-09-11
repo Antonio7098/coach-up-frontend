@@ -4,9 +4,17 @@
   "servers": [
     { "url": "http://localhost:3000", "description": "Local dev" }
   ],
+  "tags": [
+    { "name": "Skills", "description": "Skill management endpoints" },
+    { "name": "Storage", "description": "File storage and presigned URL endpoints" },
+    { "name": "Transcripts", "description": "Conversation transcript endpoints" },
+    { "name": "Speech", "description": "Speech-to-text and text-to-speech endpoints" }
+  ],
   "paths": {
     "/api/v1/skills": {
       "get": {
+        "operationId": "listSkills",
+        "tags": ["Skills"],
         "summary": "List skills or fetch a skill by id/category",
         "description": "Public, read-only endpoint. When `id` is provided, returns a single skill. Otherwise returns a list of active skills or filtered by `category`.",
         "parameters": [
@@ -75,6 +83,8 @@
     },
     "/api/v1/storage/audio/presign": {
       "post": {
+        "operationId": "createAudioUploadPresign",
+        "tags": ["Storage"],
         "summary": "Generate presigned PUT URL for audio upload",
         "description": "Returns a short‑lived presigned URL for uploading an audio object to S3‑compatible storage.",
         "requestBody": {
@@ -109,6 +119,8 @@
         }
       },
       "get": {
+        "operationId": "createAudioDownloadPresign",
+        "tags": ["Storage"],
         "summary": "Generate presigned GET URL for audio download",
         "description": "Returns a short‑lived presigned URL for downloading an audio object from S3‑compatible storage.",
         "parameters": [
@@ -140,7 +152,10 @@
     },
     "/api/v1/transcripts": {
       "get": {
+        "operationId": "listTranscripts",
+        "tags": ["Transcripts"],
         "summary": "List transcripts by sessionId (optionally groupId)",
+        "description": "Retrieve a paginated list of conversation transcripts for a specific session. Optionally filter by groupId for more targeted results.",
         "parameters": [
           { "name": "sessionId", "in": "query", "required": true, "schema": { "type": "string" }, "description": "Session identifier" },
           { "name": "groupId", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Optional group filter" },
@@ -173,6 +188,8 @@
     },
     "/api/v1/stt": {
       "post": {
+        "operationId": "transcribeAudio",
+        "tags": ["Speech"],
         "summary": "Transcribe short audio clip",
         "description": "Transcribes audio provided via URL or S3 objectKey (JSON body), or via direct upload using multipart/form-data with an 'audio' file field. Provider selection is env-driven with optional per-request override when enabled.",
         "requestBody": {
@@ -194,6 +211,8 @@
     },
     "/api/v1/tts": {
       "post": {
+        "operationId": "synthesizeSpeech",
+        "tags": ["Speech"],
         "summary": "Synthesize short text to speech",
         "description": "Synthesizes audio for provided text. By default uploads audio to S3 when configured.",
         "requestBody": {
