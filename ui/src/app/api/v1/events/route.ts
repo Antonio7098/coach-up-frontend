@@ -68,9 +68,11 @@ export async function GET(request: Request) {
       status: 200,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
     });
-  } catch {
-    return new Response(JSON.stringify({ error: "Convex query failed" }), {
-      status: 502,
+  } catch (e) {
+    // If Convex query isn't available, fall back to empty list so UI can render
+    try { console.warn('[events] listBySession failed, returning empty array', e); } catch {}
+    return new Response(JSON.stringify({ sessionId, trackedSkillIdHash, events: [] }), {
+      status: 200,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
     });
   }

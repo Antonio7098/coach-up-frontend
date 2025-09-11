@@ -14,11 +14,36 @@ const corsHeaders: Record<string, string> = {
 };
 
 type V2SkillAssessment = {
+  skillId: string;
   skillHash: string;
   level: number; // 0..10
-  metCriteria: string[];
-  unmetCriteria: string[];
-  feedback: string[];
+  confidence?: number; // 0..1
+  levelFeedback: {
+    currentLevel: number;
+    nextLevelCriteria: string[];
+    strengths: string[];
+    improvements: string[];
+    focus: string[];
+    examples?: string[];
+  };
+  assessmentMetadata: {
+    provider?: string;
+    modelId?: string;
+    promptVersion?: string;
+    processingTimeMs?: number;
+    tokenCount?: number;
+    costCents?: number;
+  };
+  sourceContext: {
+    interactionCount?: number;
+    transcriptLength?: number;
+    assessmentType?: string;
+    sessionDuration?: number;
+  };
+  // Legacy fields for backward compatibility
+  metCriteria?: string[];
+  unmetCriteria?: string[];
+  feedback?: string[];
 };
 
 type V2FinalizePayload = {
@@ -110,6 +135,9 @@ export async function POST(request: Request) {
     if (!item || typeof item !== 'object') {
       return respond(400, { error: err('must be object') });
     }
+    if (!isNonEmptyString((item as any).skillId)) {
+      return respond(400, { error: err('skillId must be non-empty string') });
+    }
     if (!isNonEmptyString((item as any).skillHash)) {
       return respond(400, { error: err('skillHash must be non-empty string') });
     }
@@ -117,21 +145,74 @@ export async function POST(request: Request) {
     if (!Number.isFinite(lvl) || lvl < 0 || lvl > 10) {
       return respond(400, { error: err('level must be a number between 0 and 10') });
     }
+    const conf = (item as any).confidence;
+    if (conf !== undefined && (typeof conf !== 'number' || conf < 0 || conf > 1)) {
+      return respond(400, { error: err('confidence must be a number between 0 and 1') });
+    }
+    
+    // Validate levelFeedback structure
+    const levelFeedback = (item as any).levelFeedback;
+    if (!levelFeedback || typeof levelFeedback !== 'object') {
+      return respond(400, { error: err('levelFeedback must be an object') });
+    }
+    const lfErr = (msg: string) => err(`levelFeedback.${msg}`);
+    const lvl2 = Number(levelFeedback.currentLevel);
+    if (!Number.isFinite(lvl2) || lvl2 < 0 || lvl2 > 10) {
+      return respond(400, { error: lfErr('currentLevel must be a number between 0 and 10') });
+    }
     const isStrArr = (a: unknown) => Array.isArray(a) && a.every((x) => typeof x === 'string');
-    if (!isStrArr((item as any).metCriteria)) {
-      return respond(400, { error: err('metCriteria must be string[]') });
+    if (!isStrArr(levelFeedback.nextLevelCriteria)) {
+      return respond(400, { error: lfErr('nextLevelCriteria must be string[]') });
     }
-    if (!isStrArr((item as any).unmetCriteria)) {
-      return respond(400, { error: err('unmetCriteria must be string[]') });
+    if (!isStrArr(levelFeedback.strengths)) {
+      return respond(400, { error: lfErr('strengths must be string[]') });
     }
-    if (!isStrArr((item as any).feedback)) {
-      return respond(400, { error: err('feedback must be string[]') });
+    if (!isStrArr(levelFeedback.improvements)) {
+      return respond(400, { error: lfErr('improvements must be string[]') });
+    }
+    if (!isStrArr(levelFeedback.focus)) {
+      return respond(400, { error: lfErr('focus must be string[]') });
+    }
+    if (levelFeedback.examples && !isStrArr(levelFeedback.examples)) {
+      return respond(400, { error: lfErr('examples must be string[]') });
+    }
+    
+    // Validate assessmentMetadata structure
+    const assessmentMetadata = (item as any).assessmentMetadata;
+    if (!assessmentMetadata || typeof assessmentMetadata !== 'object') {
+      return respond(400, { error: err('assessmentMetadata must be an object') });
+    }
+    
+    // Validate sourceContext structure
+    const sourceContext = (item as any).sourceContext;
+    if (!sourceContext || typeof sourceContext !== 'object') {
+      return respond(400, { error: err('sourceContext must be an object') });
     }
   }
 
   // Compute privacy-preserving trackedSkillId hash from header (if present)
   const trackedSkillId = (request.headers.get("x-tracked-skill-id") || "").trim();
   const trackedSkillIdHash = trackedSkillId ? sha256Hex(trackedSkillId) : undefined;
+
+  // Debug logging to verify incoming hashes and auth presence (no secrets logged)
+  try {
+    const hasAuth = !!(request.headers.get("authorization") || "").trim();
+    const hashes = Array.from(new Set((payload!.summary.skillAssessments || []).map((a: any) => a.skillHash)));
+    console.log(
+      JSON.stringify(
+        {
+          where: "assess.finalize.request",
+          sessionId: payload!.sessionId,
+          groupId: payload!.groupId,
+          assessments: (payload!.summary.skillAssessments || []).length,
+          hashes,
+          hasAuth,
+        },
+        null,
+        0
+      )
+    );
+  } catch {}
 
   try {
     const isMock = process.env.MOCK_CONVEX === '1';
@@ -144,9 +225,15 @@ export async function POST(request: Request) {
           userId: 'unknown',
           sessionId: payload.sessionId,
           groupId: payload.groupId,
+          skillId: item.skillId,
           skillHash: item.skillHash,
           level: item.level,
+          confidence: item.confidence,
+          levelFeedback: item.levelFeedback,
+          assessmentMetadata: item.assessmentMetadata,
+          sourceContext: item.sourceContext,
           rubricVersion: 'v2',
+          // Legacy fields for backward compatibility
           feedback: item.feedback,
           metCriteria: item.metCriteria,
           unmetCriteria: item.unmetCriteria,
@@ -179,7 +266,7 @@ export async function POST(request: Request) {
       return respond(200, { status: "ok", processed: 0, idempotent: true });
     }
 
-    const session = (await client.query("sessions:getBySessionId", { sessionId: payload.sessionId })) as any;
+    const session = (await client.query("functions/sessions:getBySessionId", { sessionId: payload.sessionId })) as any;
     const userId = session?.userId;
     if (!isNonEmptyString(userId)) {
       return respond(404, { error: "Could not resolve userId for sessionId" });
@@ -192,9 +279,15 @@ export async function POST(request: Request) {
         userId,
         sessionId: payload.sessionId,
         groupId: payload.groupId,
+        skillId: item.skillId,
         skillHash: item.skillHash,
         level: item.level,
+        confidence: item.confidence,
+        levelFeedback: item.levelFeedback,
+        assessmentMetadata: item.assessmentMetadata,
+        sourceContext: item.sourceContext,
         rubricVersion: 'v2',
+        // Legacy fields for backward compatibility
         feedback: item.feedback,
         metCriteria: item.metCriteria,
         unmetCriteria: item.unmetCriteria,
@@ -202,13 +295,50 @@ export async function POST(request: Request) {
       });
     }
     for (const skillHash of uniqueSkillHashes) {
-      await client.mutation("skills:updateLevelFromRecentAssessments", {
+      await client.mutation("functions/skills:updateLevelFromRecentAssessments", {
         userId,
         sessionId: payload.sessionId,
         groupId: payload.groupId,
         skillHash,
       });
     }
+
+    // Optionally persist a high-level summary document for this group so UI can retrieve latest summary
+    try {
+      const skillsCount = Array.isArray(payload.summary?.skillAssessments)
+        ? payload.summary.skillAssessments.length
+        : 0;
+      const summaryDoc = {
+        highlights: [],
+        recommendations: [],
+        rubricKeyPoints: [],
+        meta: {
+          skillsCount,
+        },
+      } as const;
+      await client.mutation("assessments:persistAssessmentSummaryV2", {
+        sessionId: payload.sessionId,
+        groupId: payload.groupId,
+        rubricVersion: 'v2',
+        summary: summaryDoc,
+      });
+    } catch (e) {
+      try { console.warn('[assessments.finalize] persist summary failed (non-fatal)', e); } catch {}
+    }
+
+    // Emit an assess event for observability
+    try {
+      const hashes = Array.from(uniqueSkillHashes);
+      await client.mutation("events:logEvent", {
+        userId,
+        sessionId: payload.sessionId,
+        groupId: payload.groupId,
+        requestId: undefined,
+        trackedSkillIdHash: trackedSkillIdHash,
+        kind: 'assess_finalize_group',
+        payload: { groupId: payload.groupId, skillsCount: hashes.length, hashes },
+      });
+    } catch {}
 
     // Mark as completed for idempotency
     await client.mutation("assessments:markFinalizeCompleted", {

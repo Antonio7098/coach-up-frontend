@@ -21,7 +21,7 @@ type Skill = {
 type TrackedSkill = {
   userId: string;
   skillId: string;
-  currentLevel: number; // 0..10
+  currentLevel: number; // 0-10 scale (0 = not started, 1-10 = skill levels)
   order: number; // 1..2
   createdAt: number;
   updatedAt: number;
@@ -31,7 +31,8 @@ type TrackedSkill = {
 // Recent assessments (mock) — roughly aligned with `convex/schema.ts` assessments table
 type AssessmentScore = {
   category: string; // e.g., "clarity", "conciseness"
-  level: number; // 0..10 derived from provider score (0..1)
+  level: number; // 0-10 scale (0 = not started, 1-10 = skill levels)
+  confidence?: number; // 0-1 confidence in assessment
   feedback?: string[]; // optional feedback items for expand view
 };
 

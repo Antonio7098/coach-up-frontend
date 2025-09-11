@@ -271,12 +271,11 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
         prompt: String(prompt || ''),
         createdAt: Date.now(),
       };
+      // Increment sequence and close any previous EventSource (latest-wins)
+      const seq = ++seqRef.current;
       console.log('[POST SSE] seed prompt preview (pre-stream)', { seq, sysLen: (seeded.system || '').length, promptLen: (seeded.prompt || '').length });
       setPromptPreview(seeded);
     } catch {}
-
-    // Increment sequence and close any previous EventSource (latest-wins)
-    const seq = ++seqRef.current;
     activeSessionRef.current = currentSessionId || null;
     try { if (esRef.current) { try { esRef.current.close(); } catch {}; esRef.current = null; } } catch {}
     // Start POST-based streaming using fetch + SSE parsing
@@ -338,6 +337,7 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     const decoder = new TextDecoder('utf-8');
     let acc = '';
     let buffer = '';
+    const seq = seqRef.current;
 
     const finish = async () => {
       // finalize this sequence only if it is latest

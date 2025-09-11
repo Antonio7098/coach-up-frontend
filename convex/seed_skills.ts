@@ -5,7 +5,7 @@
 import { Id } from "../_generated/dataModel";
 
 export interface SkillLevel {
-  level: number;
+  level: number; // 0-10 scale (0 = not started, 1-10 = skill levels)
   criteria: string;
   examples?: string[];
   rubricHints?: string[];

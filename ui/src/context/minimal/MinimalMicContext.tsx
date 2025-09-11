@@ -319,6 +319,9 @@ export function MinimalMicProvider({
 
             // Resolve a canonical session id before dispatching chat
             const canonicalSid = await resolveCanonicalSessionId();
+            try {
+              console.log("[MinimalMic] canonical sessionId resolved", { sessionIdProp: sessionIdRef.current, canonicalSid });
+            } catch {}
 
             const chatOptions = {
               userProfile: userProfileRef.current,
@@ -353,6 +356,9 @@ export function MinimalMicProvider({
               if (turnSeq !== currentTurnSeqRef.current) return;
               accumulatedText += chunk;
               chunkCount++;
+              if (chunkCount === 1 || (chunkCount % 10 === 0)) {
+                try { console.log("[MinimalMic] streaming chunk", { chunkCount, len: chunk?.length, accLen: accumulatedText.length }); } catch {}
+              }
               // Process chunk for TTS immediately (sentence-based)
               void voice.enqueueTTSChunk?.(chunk);
             };
@@ -378,6 +384,7 @@ export function MinimalMicProvider({
             console.log("MinimalMic: Calling chatToTextStreaming", { text: text.substring(0, 50), sessionId: canonicalSid });
             const streamingReply = await convo.chatToTextStreaming(text, onChunk, { ...streamingOptions, sessionId: canonicalSid || undefined });
             console.log("MinimalMic: chatToTextStreaming completed", { reply: streamingReply?.substring(0, 50) });
+            try { console.log("[MinimalMic] streaming complete", { chunkCount, accumulatedLen: accumulatedText.length, replyLen: (streamingReply || '').length }); } catch {}
 
             // Record this turn into the minimal conversation history for future context (without backend persistence)
             try {

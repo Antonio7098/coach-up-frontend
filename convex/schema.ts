@@ -10,17 +10,55 @@ export default defineSchema({
     userId: v.string(),
     sessionId: v.string(),
     groupId: v.optional(v.string()),
-    // Optional to support legacy v1 rows that didn't include a skill hash
-    skillHash: v.optional(v.string()), // required for kind="skill_assessment" in v2
-    // Widen kind to accept legacy records
+    
+    // Skill identification
+    skillId: v.optional(v.string()), // Direct reference to skills.id
+    skillHash: v.optional(v.string()), // Keep for backward compatibility
+    
+    // Assessment type and versioning
     kind: v.union(
       v.literal("skill_assessment"),
       v.literal("summary"),
       v.literal("multi_turn")
     ),
-    level: v.optional(v.number()), // 0..10 for per-skill rows
-    // Accept both v1 and v2 legacy rows
     rubricVersion: v.union(v.literal("v1"), v.literal("v2")),
+    
+    // Core assessment results (aligned with skill levels 0-10)
+    level: v.number(), // 0-10 scale (0 = not started, 1-10 = skill levels)
+    confidence: v.optional(v.number()), // 0-1 confidence in assessment
+    
+    // Level-specific feedback
+    levelFeedback: v.optional(v.object({
+      currentLevel: v.number(), // 0-10
+      nextLevelCriteria: v.array(v.string()), // What's needed for next level
+      strengths: v.array(v.string()), // What they're doing well
+      improvements: v.array(v.string()), // Areas to improve from previous attempts
+      focus: v.array(v.string()), // Actionable steps to reach next level
+      examples: v.optional(v.array(v.string())), // Examples from their speech
+    })),
+    
+          // Assessment metadata
+          assessmentMetadata: v.optional(v.object({
+            // Agent/LLM information
+            provider: v.optional(v.string()),
+            modelId: v.optional(v.string()),
+            promptVersion: v.optional(v.string()),
+            
+            // Quality metrics
+            processingTimeMs: v.optional(v.number()),
+            tokenCount: v.optional(v.number()),
+            costCents: v.optional(v.number()),
+          })),
+    
+    // Source context
+    sourceContext: v.optional(v.object({
+      interactionCount: v.optional(v.number()),
+      transcriptLength: v.optional(v.number()),
+      assessmentType: v.optional(v.string()), // From triage
+      sessionDuration: v.optional(v.number()), // Total session time
+    })),
+    
+    // Legacy fields for backward compatibility
     summary: v.optional(
       v.object({
         highlights: v.array(v.string()),
@@ -35,17 +73,21 @@ export default defineSchema({
         ),
       })
     ),
-    // These are optional in legacy rows
     feedback: v.optional(v.array(v.string())),
     metCriteria: v.optional(v.array(v.string())),
     unmetCriteria: v.optional(v.array(v.string())),
+    
+    // Tracking and timestamps
     trackedSkillIdHash: v.optional(v.string()),
     createdAt: v.number(), // ms since epoch
     updatedAt: v.number(), // ms since epoch
   })
+    .index("by_user_skill", ["userId", "skillId", "createdAt"])
     .index("by_user_skillHash", ["userId", "skillHash", "createdAt"])
     .index("by_session", ["sessionId"])
     .index("by_group", ["groupId"])
+    .index("by_skillId", ["skillId"])
+    .index("by_level", ["level"])
     .index("by_kind", ["kind"])
     .index("by_createdAt", ["createdAt"]),
 
@@ -59,22 +101,21 @@ export default defineSchema({
     .index("by_session_group", ["sessionId", "groupId"])
     .index("by_expiresAt", ["expiresAt"]),
 
-  // Skill level history — track level changes from v2 assessments
+  // Minimal skill level history - just level progression
   skill_level_history: defineTable({
     userId: v.string(),
     skillId: v.string(),
-    fromLevel: v.number(), // 0..10
-    toLevel: v.number(), // 0..10
-    reason: v.string(), // e.g., "assessment_average"
-    avgSource: v.number(), // average level used
-    sessionId: v.string(),
-    groupId: v.string(),
-    createdAt: v.number(), // ms since epoch
+    fromLevel: v.number(), // 0-10 scale
+    toLevel: v.number(), // 0-10 scale
+    reason: v.string(), // "assessment_average", "manual_adjustment", "admin_override"
+    source: v.string(), // "assessment", "admin", "user", "system"
+    
+    createdAt: v.number(),
   })
-    .index("by_user", ["userId"])
-    .index("by_skillId", ["skillId"])
-    .index("by_createdAt", ["createdAt"])
-    .index("by_session", ["sessionId"]),
+  .index("by_user", ["userId"])
+  .index("by_skillId", ["skillId"])
+  .index("by_user_skill", ["userId", "skillId"])
+  .index("by_createdAt", ["createdAt"]),
 
   // Sessions — minimal state tracking with cost aggregation
   sessions: defineTable({
@@ -166,7 +207,7 @@ export default defineSchema({
     description: v.string(), // brief description of what the skill teaches
     levels: v.array(
       v.object({
-        level: v.number(), // 1-10 scale
+        level: v.number(), // 0-10 scale (0 = not started, 1-10 = skill levels)
         criteria: v.string(), // requirements for achieving this level
         examples: v.optional(v.array(v.string())), // example utterances/behaviors
         rubricHints: v.optional(v.array(v.string())), // hints for assessment

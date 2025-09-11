@@ -686,12 +686,37 @@ export async function recordSkillAssessmentV2(args: {
   userId: string;
   sessionId: string;
   groupId: string;
+  skillId: string;
   skillHash: string;
   level: number; // 0..10
+  confidence?: number; // 0..1
+  levelFeedback: {
+    currentLevel: number;
+    nextLevelCriteria: string[];
+    strengths: string[];
+    improvements: string[];
+    focus: string[];
+    examples?: string[];
+  };
+  assessmentMetadata: {
+    provider?: string;
+    modelId?: string;
+    promptVersion?: string;
+    processingTimeMs?: number;
+    tokenCount?: number;
+    costCents?: number;
+  };
+  sourceContext: {
+    interactionCount?: number;
+    transcriptLength?: number;
+    assessmentType?: string;
+    sessionDuration?: number;
+  };
   rubricVersion: 'v2';
-  feedback: string[];
-  metCriteria: string[];
-  unmetCriteria: string[];
+  // Legacy fields for backward compatibility
+  feedback?: string[];
+  metCriteria?: string[];
+  unmetCriteria?: string[];
   trackedSkillIdHash?: string;
 }) {
   const now = Date.now();
@@ -795,9 +820,33 @@ export async function __seedSkillAssessmentHistoryForTests(params: {
         userId,
         sessionId,
         groupId,
+        skillId,
         skillHash,
         level: fixedLevel,
+        confidence: 0.8,
+        levelFeedback: {
+          currentLevel: fixedLevel,
+          nextLevelCriteria: [`Meet criteria for level ${Math.min(10, fixedLevel + 1)}`],
+          strengths: ['Good progress'],
+          improvements: ['Continue practicing'],
+          focus: ['Keep working on this skill'],
+          examples: ['Example from speech']
+        },
+        assessmentMetadata: {
+          provider: 'mock',
+          modelId: 'mock-model',
+          processingTimeMs: 1000,
+          tokenCount: 200,
+          costCents: 1
+        },
+        sourceContext: {
+          interactionCount: 5,
+          transcriptLength: 500,
+          assessmentType: 'roleplay_scenario',
+          sessionDuration: 1800000
+        },
         rubricVersion: 'v2',
+        // Legacy fields
         feedback: [],
         metCriteria: [],
         unmetCriteria: [],

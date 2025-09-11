@@ -62,7 +62,23 @@ describe('API: POST /api/assessments/convex/finalize (v2)', () => {
       rubricVersion: 'v2',
       summary: {
         skillAssessments: [
-          { skillHash: '', level: 5, metCriteria: [], unmetCriteria: [], feedback: [] }
+          { 
+            skillId: 'test',
+            skillHash: '', 
+            level: 5, 
+            confidence: 0.8,
+            levelFeedback: {
+              currentLevel: 5,
+              nextLevelCriteria: [],
+              strengths: [],
+              improvements: [],
+              focus: []
+            },
+            assessmentMetadata: {
+              provider: 'test'
+            },
+            sourceContext: {}
+          }
         ]
       },
     };
@@ -83,7 +99,23 @@ describe('API: POST /api/assessments/convex/finalize (v2)', () => {
       rubricVersion: 'v2',
       summary: {
         skillAssessments: [
-          { skillHash: 'sh_test', level: 15, metCriteria: [], unmetCriteria: [], feedback: [] }
+          { 
+            skillId: 'test',
+            skillHash: 'sh_test', 
+            level: 15, 
+            confidence: 0.8,
+            levelFeedback: {
+              currentLevel: 15,
+              nextLevelCriteria: [],
+              strengths: [],
+              improvements: [],
+              focus: []
+            },
+            assessmentMetadata: {
+              provider: 'test'
+            },
+            sourceContext: {}
+          }
         ]
       },
     };
@@ -111,11 +143,31 @@ describe('API: POST /api/assessments/convex/finalize (v2)', () => {
       summary: {
         skillAssessments: [
           {
+            skillId: 'communication',
             skillHash: 'sh_communication',
             level: 6,
-            metCriteria: ['Clear'],
-            unmetCriteria: ['Concise'],
-            feedback: ['Good work']
+            confidence: 0.85,
+            levelFeedback: {
+              currentLevel: 6,
+              nextLevelCriteria: ['Be more concise'],
+              strengths: ['Clear communication'],
+              improvements: ['Work on brevity'],
+              focus: ['Practice concise responses'],
+              examples: ['Good work']
+            },
+            assessmentMetadata: {
+              provider: 'google',
+              modelId: 'gemini-1.5-flash',
+              processingTimeMs: 1200,
+              tokenCount: 450,
+              costCents: 2
+            },
+            sourceContext: {
+              interactionCount: 5,
+              transcriptLength: 800,
+              assessmentType: 'roleplay_scenario',
+              sessionDuration: 1800000
+            }
           }
         ]
       },
@@ -137,13 +189,31 @@ describe('API: POST /api/assessments/convex/finalize (v2)', () => {
         userId: 'u1',
         sessionId: 's_fin_ok',
         groupId: 'g_fin_ok',
+        skillId: 'communication',
         skillHash: 'sh_communication',
         level: 6,
+        confidence: 0.85,
+        levelFeedback: expect.objectContaining({
+          currentLevel: 6,
+          nextLevelCriteria: ['Be more concise'],
+          strengths: ['Clear communication'],
+          improvements: ['Work on brevity'],
+          focus: ['Practice concise responses'],
+          examples: ['Good work']
+        }),
+        assessmentMetadata: expect.objectContaining({
+          provider: 'google',
+          modelId: 'gemini-1.5-flash'
+        }),
+        sourceContext: expect.objectContaining({
+          interactionCount: 5,
+          transcriptLength: 800
+        }),
         rubricVersion: 'v2',
       }),
     );
     expect(client.mutation).toHaveBeenCalledWith(
-      'skills:updateLevelFromRecentAssessments',
+      'functions/skills:updateLevelFromRecentAssessments',
       expect.objectContaining({
         userId: 'u1',
         sessionId: 's_fin_ok',

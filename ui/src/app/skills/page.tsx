@@ -11,9 +11,9 @@ type Skill = {
   description?: string;
   category?: string;
   isActive?: boolean;
-  currentLevel?: number; // optional, per-user selection not yet implemented
+  currentLevel?: number; // 0-10 scale (0 = not started, 1-10 = skill levels)
   levels?: Array<{
-    level: number;
+    level: number; // 0-10 scale (0 = not started, 1-10 = skill levels)
     criteria: string;
     examples?: string[];
     rubricHints?: string[];
@@ -23,7 +23,7 @@ type Skill = {
 type TrackedSkill = {
   userId: string;
   skillId: string;
-  currentLevel: number;
+  currentLevel: number; // 0-10 scale (0 = not started, 1-10 = skill levels)
   order: number;
   createdAt: number;
   updatedAt: number;

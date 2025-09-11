@@ -9,6 +9,7 @@ import * as mockConvex from "../../lib/mockConvex";
 import { clientKeyFromHeaders, rateLimit } from "../../lib/ratelimit";
 import { generateSummaryText } from "../../lib/summarizer";
 import { getLatestSummary, upsertSummary } from "../../lib/summaries";
+import { sha256Hex } from "../../lib/hash";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -269,6 +270,119 @@ export async function POST(request: Request) {
         } catch (e) {
           try { console.warn(JSON.stringify({ where: 'summary.pre.triage.error', sessionId, error: String(e) })); } catch {}
           // Proceed regardless; triage is best-effort but intended to run first
+        }
+
+        // Assessments step (best-effort): after triage, before summary
+        try {
+          const assessEnabled = String(process.env.AI_ASSESS_ENABLED || '').toLowerCase();
+          if (assessEnabled === '1' || assessEnabled === 'true') {
+            const maxGroups = Math.max(1, Math.min(20, Number(process.env.ASSESS_MAX_GROUPS || 5)));
+            const maxSkills = Math.max(1, Math.min(50, Number(process.env.ASSESS_MAX_SKILLS || 8)));
+            const assessTimeoutMs = Math.max(500, Math.min(8000, Number(process.env.ASSESS_TIMEOUT_MS || 5000)));
+            const salt = (process.env.SKILL_HASH_SALT || 'test_salt').trim();
+            try { console.log(JSON.stringify({ where: 'summary.pre.assess.start', sessionId, maxGroups, maxSkills, assessTimeoutMs })); } catch {}
+
+            // Determine slice between previous cutoff and this reservation cutoffIndex
+            let prevCut: number | undefined = undefined;
+            try {
+              const prevLatest: any = await convex.query("functions/summaries:getLatest", { sessionId }).catch(() => null);
+              const cut = Number(prevLatest?.cutoffIndex);
+              if (Number.isFinite(cut)) prevCut = cut as number;
+            } catch {}
+            // Prefer interactions with triage annotations (groupId, triageProcessedAt)
+            let groupIds: string[] = [];
+            try {
+              let docs: Array<any> = await convex.query("functions/interactions:listBySession", { sessionId, limit: 300 }).catch(() => []) as any[];
+              docs = Array.isArray(docs) ? docs : [];
+              // Restrict to window between previous cutoff and reserved cutoffIndex when available
+              let windowed = docs.map((d, i) => ({ i, d }))
+                .filter(({ i }) => (typeof prevCut === 'number' ? i > prevCut : true) && i <= Number(val.cutoffIndex))
+                .map(({ d }) => d);
+              if (windowed.length === 0) windowed = docs.slice(-50);
+              const annotated = windowed
+                .filter((d: any) => typeof d?.groupId === 'string' && d.groupId.trim().length > 0)
+                .sort((a: any, b: any) => Number(b?.triageProcessedAt || 0) - Number(a?.triageProcessedAt || 0));
+              groupIds = Array.from(new Set(annotated.map((d: any) => String(d.groupId)))).slice(0, maxGroups);
+              try { console.log(JSON.stringify({ where: 'summary.pre.assess.groups', sessionId, docs: docs.length, windowed: windowed.length, annotated: annotated.length, groupIds })); } catch {}
+            } catch {}
+
+            // Resolve userId and load tracked skills
+            const sessionDoc: any = await convex.query("functions/sessions:getBySessionId", { sessionId }).catch(() => null);
+            const userId = String(sessionDoc?.userId || auth.userId || 'unknown');
+            const rows: any[] = await convex.query("functions/skills:getTrackedSkillsForUser", { userId }).catch(() => []) as any[];
+            const trackedList = Array.isArray(rows) ? rows : [];
+            const skills = trackedList.map((r) => ({
+              id: String(r?.skillId || r?.skill?.id || r?.id || ''),
+              level: (() => { const lv = Number(r?.currentLevel); return Number.isFinite(lv) && lv >= 0 && lv <= 10 ? lv : 5; })(),
+            })).filter((s) => s.id).slice(0, maxSkills);
+            try { console.log(JSON.stringify({ where: 'summary.pre.assess.skills', sessionId, userId, skillsCount: skills.length, sample: skills.slice(0,3) })); } catch {}
+
+            if (groupIds.length > 0 && skills.length > 0) {
+              try { console.log(JSON.stringify({ where: 'summary.pre.assess.ready', sessionId, groups: groupIds.length, skills: skills.length })); } catch {}
+              // Prefer server-to-server secret for finalize endpoint if configured; fallback to incoming auth
+              const authz = headersIn.get('authorization') || headersIn.get('Authorization') || '';
+              const s2sSecret = (process.env.PERSIST_ASSESSMENTS_SECRET || '').trim();
+              const headers: Record<string, string> = { 'content-type': 'application/json', 'x-request-id': requestId };
+              if (s2sSecret) {
+                headers['authorization'] = `Bearer ${s2sSecret}`;
+              } else if (authz) {
+                headers['authorization'] = authz;
+              }
+
+              // Log attempt
+              try {
+                await convex.mutation("functions/events:logEvent", {
+                  userId,
+                  sessionId,
+                  requestId,
+                  kind: 'assess_cadence_started',
+                  payload: { groups: groupIds.length, skills: skills.length, cutoffIndex: val.cutoffIndex }
+                });
+              } catch {}
+
+              let completed = 0;
+              for (const gid of groupIds) {
+                const skillAssessments = skills.map((s) => ({
+                  skillHash: sha256Hex(`${salt}:${s.id}`),
+                  level: s.level,
+                  metCriteria: [],
+                  unmetCriteria: [],
+                  feedback: [],
+                }));
+                const payload = { sessionId, groupId: gid, rubricVersion: 'v2' as const, summary: { skillAssessments } };
+                const ctrl = new AbortController();
+                const to = setTimeout(() => ctrl.abort(), assessTimeoutMs);
+                try {
+                  try { console.log(JSON.stringify({ where: 'summary.pre.assess.finalize.attempt', sessionId, groupId: gid, skills: skills.length })); } catch {}
+                  const res = await fetch('/api/assessments/convex/finalize', {
+                    method: 'POST', headers, body: JSON.stringify(payload), cache: 'no-store', signal: ctrl.signal,
+                  });
+                  const txt = await res.text().catch(() => '');
+                  try { console.log(JSON.stringify({ where: 'summary.pre.assess.finalize.result', sessionId, groupId: gid, status: res.status, len: txt.length })); } catch {}
+                  completed++;
+                } catch (e) {
+                  try { console.warn(JSON.stringify({ where: 'summary.pre.assess.finalize.error', sessionId, groupId: gid, error: String(e) })); } catch {}
+                }
+                try { clearTimeout(to); } catch {}
+              }
+
+              // Log completion
+              try {
+                await convex.mutation("functions/events:logEvent", {
+                  userId,
+                  sessionId,
+                  requestId,
+                  kind: 'assess_cadence_completed',
+                  payload: { groups: groupIds.length, skills: skills.length, completed, cutoffIndex: val.cutoffIndex }
+                });
+              } catch {}
+            } else {
+              try { console.log(JSON.stringify({ where: 'summary.pre.assess.skipped', sessionId, reason: groupIds.length === 0 ? 'no_groups' : 'no_skills', groups: groupIds.length, skills: skills.length })); } catch {}
+            }
+          }
+        } catch (e) {
+          try { console.warn(JSON.stringify({ where: 'summary.pre.assess.error', sessionId, error: String(e) })); } catch {}
+          // Proceed regardless
         }
 
         const resp = { status: 'accepted', accepted: true, version: val.version, cutoffIndex: val.cutoffIndex };

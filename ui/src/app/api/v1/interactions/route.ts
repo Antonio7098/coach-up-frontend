@@ -409,11 +409,81 @@ export async function POST(request: Request) {
     userId: obj.userId !== undefined && obj.userId !== null ? String(obj.userId) : undefined,
   };
 
+  // Enhanced sessionId observability logging
+  try {
+    console.log(JSON.stringify({
+      level: 'info',
+      where: 'interactions.post.session_debug',
+      requestId,
+      receivedSessionId: body.sessionId,
+      sessionIdFormat: body.sessionId.startsWith('sess_') ? 'convex_generated' : (body.sessionId.includes('-') ? 'uuid_format' : 'other'),
+      userId: body.userId,
+      role: body.role,
+      messageId: body.messageId
+    }));
+  } catch {}
+
   const convexUrl = convexBaseUrl();
 
   try {
     const authedUserId = authRes.userId && authRes.userId !== 'anonymous' ? authRes.userId : undefined;
     const effectiveUserId = String(authedUserId || body.userId || 'unknown');
+    
+    // Check if session exists and belongs to this user (for observability)
+    let sessionExists = false;
+    let sessionBelongsToUser = false;
+    try {
+      if (process.env.MOCK_CONVEX !== '1') {
+        const client = makeConvex(convexUrl);
+        const sessionDoc = await client.query("functions/sessions:getBySessionId", { sessionId: body.sessionId });
+        const session: any = (sessionDoc as { value?: any })?.value || null;
+        sessionExists = !!session;
+        sessionBelongsToUser = session && session.userId === effectiveUserId;
+        
+        // Log session validation results
+        console.log(JSON.stringify({
+          level: 'info',
+          where: 'interactions.post.session_validation',
+          requestId,
+          sessionId: body.sessionId,
+          sessionExists,
+          sessionBelongsToUser,
+          effectiveUserId,
+          sessionUserId: session?.userId || null
+        }));
+        
+        // Warn if session doesn't exist or doesn't belong to user
+        if (!sessionExists) {
+          console.warn(JSON.stringify({
+            level: 'warn',
+            where: 'interactions.post.session_not_found',
+            requestId,
+            sessionId: body.sessionId,
+            effectiveUserId,
+            message: 'Interaction posted to non-existent session - this may cause new session creation'
+          }));
+        } else if (!sessionBelongsToUser) {
+          console.warn(JSON.stringify({
+            level: 'warn',
+            where: 'interactions.post.session_user_mismatch',
+            requestId,
+            sessionId: body.sessionId,
+            effectiveUserId,
+            sessionUserId: session?.userId,
+            message: 'Session belongs to different user'
+          }));
+        }
+      }
+    } catch (sessionCheckError) {
+      // Don't fail the request if session check fails
+      console.warn(JSON.stringify({
+        level: 'warn',
+        where: 'interactions.post.session_check_failed',
+        requestId,
+        sessionId: body.sessionId,
+        error: String(sessionCheckError)
+      }));
+    }
     if (process.env.MOCK_CONVEX === '1') {
       // Skip empty or meaningless text content
       const text = body.text?.trim();
@@ -572,6 +642,111 @@ export async function POST(request: Request) {
               try { console.log(JSON.stringify({ level: 'info', where: 'interactions.triage.pre', sessionId: body.sessionId })); } catch {}
             }
           } catch {}
+
+          // Best-effort assessments step: after triage, before summary
+          try {
+            const assessEnabled = String(process.env.AI_ASSESS_ENABLED || '').toLowerCase();
+            if (assessEnabled === '1' || assessEnabled === 'true') {
+              const maxGroups = Math.max(1, Math.min(20, Number(process.env.ASSESS_MAX_GROUPS || 5)));
+              const maxSkills = Math.max(1, Math.min(50, Number(process.env.ASSESS_MAX_SKILLS || 8)));
+              const assessTimeoutMs = Math.max(500, Math.min(8000, Number(process.env.ASSESS_TIMEOUT_MS || 5000)));
+              const salt = (process.env.SKILL_HASH_SALT || 'test_salt').trim();
+
+              // Resolve cutoff (from latest summary) and recent interactions
+              const latest: any = await client.query("functions/summaries:getLatest", { sessionId: body.sessionId }).catch(() => null);
+              const cutoffTs = Number(latest?.lastMessageTs || 0);
+              let interactions: Array<any> = await client.query("functions/interactions:listBySession", { sessionId: body.sessionId, limit: 200 }).catch(() => []) as any[];
+              interactions = Array.isArray(interactions) ? interactions : [];
+              let recent = interactions.filter((d: any) => (Number(d?.ts || 0) > cutoffTs));
+              if (recent.length === 0) {
+                // Fallback to last few if cutoff not available
+                recent = interactions.slice(-20);
+              }
+              // Build groupIds (non-empty) in recent slice
+              const groupIds = Array.from(new Set(recent.map((d: any) => String(d?.groupId || '').trim()).filter((g: string) => g.length > 0))).slice(0, maxGroups);
+
+              // Fetch tracked skills for the user
+              const rows: any[] = await client.query("functions/skills:getTrackedSkillsForUser", { userId: effectiveUserId }).catch(() => []) as any[];
+              const trackedList = Array.isArray(rows) ? rows : [];
+              const pickSkillId = (r: any) => (r?.skillId || r?.skill?.id || r?.id || '').toString();
+              const pickLevel = (r: any) => {
+                const lv = Number(r?.currentLevel);
+                return Number.isFinite(lv) && lv >= 0 && lv <= 10 ? lv : 5;
+              };
+              const skills = trackedList.map((r) => ({ id: pickSkillId(r), level: pickLevel(r) }))
+                .filter((s) => s.id)
+                .slice(0, maxSkills);
+
+              if (groupIds.length > 0 && skills.length > 0) {
+                const authz = (request.headers.get('authorization') || request.headers.get('Authorization') || '') as string;
+                const headers: Record<string, string> = { 'content-type': 'application/json', 'x-request-id': requestId };
+                if (authz) headers['authorization'] = authz;
+
+                // Log attempt
+                try {
+                  await client.mutation("functions/events:logEvent", {
+                    userId: effectiveUserId,
+                    sessionId: body.sessionId,
+                    groupId: undefined,
+                    requestId,
+                    trackedSkillIdHash,
+                    kind: 'assess_cadence_started',
+                    payload: { groups: groupIds.length, skills: skills.length }
+                  });
+                } catch {}
+
+                // Dispatch one finalize per group (batch skills per group)
+                let completed = 0;
+                for (const gid of groupIds) {
+                  const skillAssessments = skills.map((s) => ({
+                    skillHash: sha256Hex(`${salt}:${s.id}`),
+                    level: s.level,
+                    metCriteria: [],
+                    unmetCriteria: [],
+                    feedback: [],
+                  }));
+                  const payload = {
+                    sessionId: body.sessionId,
+                    groupId: gid,
+                    rubricVersion: 'v2' as const,
+                    summary: { skillAssessments },
+                  };
+                  const ctrl = new AbortController();
+                  const to = setTimeout(() => ctrl.abort(), assessTimeoutMs);
+                  try {
+                    const res = await fetch('/api/assessments/convex/finalize', {
+                      method: 'POST',
+                      headers,
+                      body: JSON.stringify(payload),
+                      cache: 'no-store',
+                      signal: ctrl.signal,
+                    });
+                    // consume response text but ignore errors
+                    await res.text().catch(() => '');
+                    completed++;
+                  } catch {}
+                  try { clearTimeout(to); } catch {}
+                }
+
+                // Log completion
+                try {
+                  await client.mutation("functions/events:logEvent", {
+                    userId: effectiveUserId,
+                    sessionId: body.sessionId,
+                    groupId: undefined,
+                    requestId,
+                    trackedSkillIdHash,
+                    kind: 'assess_cadence_completed',
+                    payload: { groups: groupIds.length, skills: skills.length, completed }
+                  });
+                } catch {}
+
+              }
+            }
+          } catch (e) {
+            try { console.warn(JSON.stringify({ level: 'warn', where: 'interactions.assess.pre.error', sessionId: body.sessionId, error: String(e) })); } catch {}
+            // Never block summary on assess errors
+          }
 
           // Call AI API to generate summary (LLM-backed)
           let text = "";

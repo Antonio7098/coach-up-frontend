@@ -32,19 +32,42 @@ export async function GET(
           return client.query("assessments:getLatestAssessmentSummary", { sessionId });
         })();
     if (!latest) {
-      return new Response(JSON.stringify({ sessionId, summary: null }), {
-        status: 404,
-        headers: { "content-type": "application/json; charset=utf-8" },
-      });
+      // No summary persisted yet; try to fetch the session to provide latestGroupId so UI can still render
+      const client = makeConvex(convexUrl);
+      try {
+        const sess = await client.query("functions/sessions:getBySessionId", { sessionId });
+        const latestGroupId = (sess as any)?.latestGroupId ?? null;
+        return new Response(JSON.stringify({ sessionId, latestGroupId, summary: null }), {
+          status: 200,
+          headers: { "content-type": "application/json; charset=utf-8" },
+        });
+      } catch {
+        return new Response(JSON.stringify({ sessionId, summary: null }), {
+          status: 404,
+          headers: { "content-type": "application/json; charset=utf-8" },
+        });
+      }
     }
     return new Response(JSON.stringify(latest), {
       status: 200,
       headers: { "content-type": "application/json; charset=utf-8" },
     });
-  } catch {
-    return new Response(JSON.stringify({ error: "Convex query failed" }), {
-      status: 502,
-      headers: { "content-type": "application/json; charset=utf-8" },
-    });
+  } catch (e) {
+    // Fallback: if assessments query is not present, try sessions for latestGroupId before returning empty
+    try { console.warn('[assessments/convex] getLatestAssessmentSummary failed', e); } catch {}
+    try {
+      const client = makeConvex(convexUrl);
+      const sess = await client.query("functions/sessions:getBySessionId", { sessionId });
+      const latestGroupId = (sess as any)?.latestGroupId ?? null;
+      return new Response(JSON.stringify({ sessionId, latestGroupId, summary: null }), {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+      });
+    } catch {
+      return new Response(JSON.stringify({ sessionId, summary: null }), {
+        status: 404,
+        headers: { "content-type": "application/json; charset=utf-8" },
+      });
+    }
   }
 }

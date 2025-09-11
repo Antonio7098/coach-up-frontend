@@ -278,7 +278,7 @@ export const updateLevelFromRecentAssessments = mutation({
     const THRESH = Number(process.env.SKILL_LEVEL_INCREMENT_THRESHOLD) || 1.0;
 
     // Resolve skillId from hash
-    const skillId = await ctx.runQuery("skills:resolveSkillIdFromHash", { skillHash });
+    const skillId = await ctx.runQuery("functions/skills:resolveSkillIdFromHash", { skillHash });
     if (!skillId) throw new Error("skillHash not found");
 
     // Get current level

@@ -94,51 +94,95 @@ export async function POST(request: Request) {
     }
   }
 
+  // Configurable idle threshold (default 10 minutes)
+  const idleThresholdMs = (() => {
+    const raw = process.env.UI_SESSION_IDLE_MS;
+    const n = raw ? Number(raw) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : 10 * 60 * 1000;
+  })();
+
+  const nowMs = Date.now();
   const convexUrl = convexBaseUrl();
   try {
     const authedUserId = authRes.userId && authRes.userId !== 'anonymous' ? authRes.userId : undefined;
     const effectiveUserId = (v: unknown) => String(authedUserId || v || 'unknown');
+
+    // 1) Ensure/rotate active session first
+    let effectiveSessionId = String(obj.sessionId);
+    let rotated = false;
+
     if (process.env.MOCK_CONVEX === '1') {
+      // Simulate ensureActiveSession in mock mode using the in-memory store
+      try {
+        const existing = await mockConvex.getSessionById?.({ sessionId: String(obj.sessionId) });
+        const belongs = existing && String(existing.userId) === effectiveUserId(obj.userId);
+        const idleOk = existing ? (nowMs - Number(existing.lastActivityAt || 0)) <= idleThresholdMs : false;
+        if (!existing || !belongs || !idleOk) {
+          effectiveSessionId = `sess_${nowMs}_${Math.random().toString(36).slice(2)}`;
+          rotated = true;
+        }
+      } catch {}
+
+      // 2) Update session state with effective session id (creates if new)
       const result = await mockConvex.updateSessionState({
         userId: effectiveUserId(obj.userId),
-        sessionId: String(obj.sessionId),
+        sessionId: effectiveSessionId,
         state: (obj.state as Record<string, unknown> | undefined) ?? {},
         latestGroupId: obj.latestGroupId ? String(obj.latestGroupId) : undefined,
       });
       // Optional event log for observability
       await mockConvex.logEvent({
         userId: effectiveUserId(obj.userId),
-        sessionId: String(obj.sessionId),
+        sessionId: effectiveSessionId,
         groupId: obj.latestGroupId ? String(obj.latestGroupId) : undefined,
         requestId,
         trackedSkillIdHash,
-        kind: 'session_state_updated',
-        payload: { latestGroupId: (obj.latestGroupId as string | undefined) ?? null },
+        kind: rotated ? 'session_rotated' : 'session_state_updated',
+        payload: { latestGroupId: (obj.latestGroupId as string | undefined) ?? null, rotated },
       });
-      return new Response(JSON.stringify(result ?? { ok: true }), {
+      return new Response(JSON.stringify({ ...(result ?? { ok: true }), effectiveSessionId, rotated }), {
         status: 200,
         headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
       });
     }
 
+    // Real Convex path: call ensureActiveSession first
     const client = makeConvex(convexUrl);
+    try {
+      const ensured = await client.mutation("functions/sessions:ensureActiveSession", {
+        userId: effectiveUserId(obj.userId),
+        sessionIdHint: String(obj.sessionId),
+        nowMs,
+        idleThresholdMs,
+      });
+      const val: any = (ensured as { value?: any })?.value || null;
+      const sid = val && typeof val === 'object' ? String(val.sessionId || '') : '';
+      if (sid && sid !== effectiveSessionId) {
+        effectiveSessionId = sid;
+        rotated = Boolean(val?.isNew);
+      }
+    } catch (e) {
+      // Best-effort: fall back to provided sessionId
+    }
+
+    // 2) Update session state with the effective session id
     const result = await client.mutation("functions/sessions:updateSessionState", {
       userId: effectiveUserId(obj.userId),
-      sessionId: String(obj.sessionId),
+      sessionId: effectiveSessionId,
       state: (obj.state as Record<string, unknown> | undefined) ?? {},
       latestGroupId: obj.latestGroupId ? String(obj.latestGroupId) : undefined,
     });
     await client.mutation("functions/events:logEvent", {
       userId: effectiveUserId(obj.userId),
-      sessionId: String(obj.sessionId),
+      sessionId: effectiveSessionId,
       groupId: obj.latestGroupId ? String(obj.latestGroupId) : undefined,
       requestId,
       trackedSkillIdHash,
-      kind: 'session_state_updated',
-      payload: { latestGroupId: (obj.latestGroupId as string | undefined) ?? null },
+      kind: rotated ? 'session_rotated' : 'session_state_updated',
+      payload: { latestGroupId: (obj.latestGroupId as string | undefined) ?? null, rotated },
     });
 
-    return new Response(JSON.stringify(result ?? { ok: true }), {
+    return new Response(JSON.stringify({ ...(result ?? { ok: true }), effectiveSessionId, rotated }), {
       status: 200,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
     });

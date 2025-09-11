@@ -170,6 +170,12 @@ function Content({
   const [profileDisplayName, setProfileDisplayName] = React.useState<string>('');
   const [profileBio, setProfileBio] = React.useState<string>('');
 
+  // Skills UI state (dashboard panel)
+  const [skillsLoading, setSkillsLoading] = React.useState<boolean>(false);
+  const [skillsError, setSkillsError] = React.useState<string>('');
+  const [trackedSkillsDash, setTrackedSkillsDash] = React.useState<Array<{ skillId: string; title?: string; currentLevel?: number }>>([]);
+  const [allSkillsDash, setAllSkillsDash] = React.useState<Array<{ id: string; title: string; category?: string }>>([]);
+
   // Get userId from Clerk authentication
   const userId = user?.id || "anonymous";
 
@@ -198,6 +204,47 @@ function Content({
   const [triageHasGroups, setTriageHasGroups] = React.useState<boolean>(false);
   const [triageStatus, setTriageStatus] = React.useState<string>("");
   const [triageOpenMap, setTriageOpenMap] = React.useState<Record<string, boolean>>({});
+
+  // ASSESS debug state
+  const [assessStatus, setAssessStatus] = React.useState<string>("");
+  const [assessEvents, setAssessEvents] = React.useState<Array<{ createdAt?: number; kind?: string; payload?: any }>>([]);
+  const [assessLatestGroup, setAssessLatestGroup] = React.useState<string | null>(null);
+  const [trackedSkills, setTrackedSkills] = React.useState<Array<{ id: string; title?: string; currentLevel?: number }>>([]);
+  const [assessSummary, setAssessSummary] = React.useState<{
+    highlights: string[];
+    recommendations: string[];
+    rubricKeyPoints: string[];
+    meta?: { provider?: string; modelId?: string; skillsCount?: number };
+    // New V2 structure
+    skillAssessments?: Array<{
+      skillId: string;
+      skillHash: string;
+      level: number;
+      confidence?: number;
+      levelFeedback: {
+        currentLevel: number;
+        nextLevelCriteria: string[];
+        strengths: string[];
+        improvements: string[];
+        focus: string[];
+        examples?: string[];
+      };
+      assessmentMetadata: {
+        provider?: string;
+        modelId?: string;
+        promptVersion?: string;
+        processingTimeMs?: number;
+        tokenCount?: number;
+        costCents?: number;
+      };
+      sourceContext: {
+        interactionCount?: number;
+        transcriptLength?: number;
+        assessmentType?: string;
+        sessionDuration?: number;
+      };
+    }>;
+  } | null>(null);
 
   // Manual chat state
   const [manualChatInput, setManualChatInput] = React.useState<string>("");
@@ -283,6 +330,46 @@ function Content({
       setTriageStatus(`ok: updated=${Number(data?.updated || 0)} inferred=${String(data?.inferred || '')}`);
     } catch (e: any) {
       setTriageStatus(e?.message || 'error');
+    }
+  }, [sessionId, buildAuthHeaders]);
+
+  const refreshAssessPanel = React.useCallback(async () => {
+    if (!sessionId) return;
+    setAssessStatus('loading');
+    try {
+      const reqId = Math.random().toString(36).slice(2);
+      const headers = await buildAuthHeaders({ accept: 'application/json', 'x-request-id': reqId });
+      // 1) Latest assessment summary (to get latestGroupId)
+      const resLatest = await fetch(`/api/assessments/convex/${encodeURIComponent(sessionId)}`, { method: 'GET', headers, cache: 'no-store' });
+      const latestJson = await resLatest.json().catch(() => ({}));
+      const latestGroupId = typeof latestJson?.latestGroupId === 'string' ? latestJson.latestGroupId : null;
+      setAssessLatestGroup(latestGroupId);
+      const sum = latestJson && latestJson.summary && Array.isArray(latestJson.summary.highlights) && Array.isArray(latestJson.summary.recommendations) && Array.isArray(latestJson.summary.rubricKeyPoints)
+        ? {
+            highlights: latestJson.summary.highlights || [],
+            recommendations: latestJson.summary.recommendations || [],
+            rubricKeyPoints: latestJson.summary.rubricKeyPoints || [],
+            meta: latestJson.summary.meta || undefined,
+            // Include V2 skill assessments if available
+            skillAssessments: Array.isArray(latestJson.summary.skillAssessments) ? latestJson.summary.skillAssessments : undefined,
+          }
+        : null;
+      setAssessSummary(sum);
+      // 2) Tracked skills
+      const resTracked = await fetch(`/api/v1/skills/tracked`, { method: 'GET', headers, cache: 'no-store' });
+      const trackedJson = await resTracked.json().catch(() => ({}));
+      const rows = Array.isArray(trackedJson?.tracked) ? trackedJson.tracked : [];
+      const list = rows.map((r: any) => ({ id: String(r?.skillId || r?.skill?.id || ''), title: String(r?.skill?.title || r?.title || ''), currentLevel: Number(r?.currentLevel ?? r?.level ?? 0) }));
+      setTrackedSkills(list);
+      // 3) Recent events (filter assess_*)
+      const resEvents = await fetch(`/api/v1/events?sessionId=${encodeURIComponent(sessionId)}&limit=100`, { method: 'GET', headers, cache: 'no-store' });
+      const evJson = await resEvents.json().catch(() => ({}));
+      const evs = Array.isArray(evJson?.events) ? evJson.events : [];
+      const assessEvs = evs.filter((e: any) => typeof e?.kind === 'string' && e.kind.startsWith('assess_')).map((e: any) => ({ createdAt: Number(e?.createdAt || Date.now()), kind: String(e?.kind || ''), payload: e?.payload || {} }));
+      setAssessEvents(assessEvs);
+      setAssessStatus('ready');
+    } catch (e: any) {
+      setAssessStatus(e?.message || 'error');
     }
   }, [sessionId, buildAuthHeaders]);
 
@@ -383,7 +470,7 @@ function Content({
   }, [fetchSessionMetrics, fetchSessionCosts]);
 
   // Tab management for collapsible panel
-  const [activeTab, setActiveTab] = React.useState<'status' | 'chat' | 'summary' | 'session' | 'triage'>('status');
+  const [activeTab, setActiveTab] = React.useState<'status' | 'chat' | 'summary' | 'session' | 'triage' | 'assess'>('status');
   const [panelCollapsed, setPanelCollapsed] = React.useState<boolean>(true);
   // Keep the latest prompt preview from SSE in sync automatically
   const lastSsePreview = convo.promptPreview;
@@ -689,6 +776,57 @@ function Content({
     }
   }, [userId, fetchProfile, fetchGoals]);
 
+  // Skills: fetch all active + tracked
+  const fetchSkills = React.useCallback(async () => {
+    setSkillsLoading(true);
+    setSkillsError('');
+    try {
+      const headers = await buildAuthHeaders({ accept: 'application/json' });
+      // Fetch tracked
+      const resTracked = await fetch('/api/v1/skills/tracked', { method: 'GET', headers, cache: 'no-store' });
+      const trackedJson = await resTracked.json().catch(() => ({}));
+      const trackedArr = Array.isArray(trackedJson?.tracked) ? trackedJson.tracked : [];
+      const trackedMapped = trackedArr.map((r: any) => ({ skillId: String(r?.skillId || r?.skill?.id || ''), title: String(r?.skill?.title || r?.title || ''), currentLevel: Number(r?.currentLevel ?? r?.level ?? 0) }));
+      setTrackedSkillsDash(trackedMapped);
+      // Fetch all skills
+      const resAll = await fetch('/api/v1/skills', { method: 'GET', headers, cache: 'no-store' });
+      const allJson = await resAll.json().catch(() => ({}));
+      const skills = Array.isArray(allJson?.skills) ? allJson.skills : [];
+      const allMapped = skills.map((s: any) => ({ id: String(s?.id || ''), title: String(s?.title || ''), category: typeof s?.category === 'string' ? s.category : undefined }));
+      setAllSkillsDash(allMapped);
+    } catch (e) {
+      setSkillsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSkillsLoading(false);
+    }
+  }, [buildAuthHeaders]);
+
+  // Track a skill (max 2 enforced server-side)
+  const trackSkill = React.useCallback(async (skillId: string) => {
+    try {
+      const headers = await buildAuthHeaders({ 'content-type': 'application/json' });
+      const res = await fetch('/api/v1/skills/track', { method: 'POST', headers, body: JSON.stringify({ skillId }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `track failed: ${res.status}`);
+      await fetchSkills();
+    } catch (e) {
+      setSkillsError(e instanceof Error ? e.message : String(e));
+    }
+  }, [buildAuthHeaders, fetchSkills]);
+
+  // Untrack a skill
+  const untrackSkill = React.useCallback(async (skillId: string) => {
+    try {
+      const headers = await buildAuthHeaders({ 'content-type': 'application/json' });
+      const res = await fetch('/api/v1/skills/untrack', { method: 'POST', headers, body: JSON.stringify({ skillId }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `untrack failed: ${res.status}`);
+      await fetchSkills();
+    } catch (e) {
+      setSkillsError(e instanceof Error ? e.message : String(e));
+    }
+  }, [buildAuthHeaders, fetchSkills]);
+
 
 
   // Add new goal
@@ -780,6 +918,30 @@ function Content({
   }, [userId, fetchProfile, buildAuthHeaders]);
 
   // Manual chat function - skips STT and calls chatToTextStreaming directly
+  // Ensure/rotate session and return effectiveSessionId
+  const ensureEffectiveSessionId = React.useCallback(async (): Promise<string | null> => {
+    try {
+      if (!sessionId) return null;
+      const headers = await buildAuthHeaders({ 'content-type': 'application/json' });
+      const res = await fetch('/api/v1/sessions/state', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ userId: user?.id || 'anonymous', sessionId })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        console.debug('[ManualChat] ensureSession failed', res.status, data?.error || data);
+        return sessionId;
+      }
+      const eff = typeof data?.effectiveSessionId === 'string' && data.effectiveSessionId.trim() ? data.effectiveSessionId : sessionId;
+      console.debug('[ManualChat] ensureSession ok', { effectiveSessionId: eff, rotated: Boolean(data?.rotated) });
+      return eff;
+    } catch (e) {
+      console.debug('[ManualChat] ensureSession error', e);
+      return sessionId || null;
+    }
+  }, [sessionId, user?.id, buildAuthHeaders]);
+
   const sendManualChat = React.useCallback(async () => {
     console.log('[ManualChat] FUNCTION CALLED - sendManualChat started');
     if (!manualChatInput.trim() || manualChatStatus !== "idle") {
@@ -839,10 +1001,45 @@ function Content({
 
       // Call chatToTextStreaming with history
       console.log('[ManualChat] Starting chat request:', inputText);
+      // Persist manual user interaction to Convex before streaming
+      try {
+        const effSid = await ensureEffectiveSessionId();
+        if (effSid && inputText) {
+          const now = Date.now();
+          const reqId = Math.random().toString(36).slice(2);
+          const payload = { sessionId: effSid, messageId: `ui_${now}`, role: 'user', contentHash: `${now}_${inputText.length}`, text: inputText, ts: now };
+          const headers = await buildAuthHeaders({ 'content-type': 'application/json', 'x-request-id': reqId });
+          const res = await fetch('/api/v1/interactions', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload),
+          }).catch(() => null);
+          try { console.debug('[ManualChat] persist user status', res?.status); } catch {}
+        }
+      } catch (e) { console.debug('[ManualChat] persist user failed', e); }
+
       const reply = await convo.chatToTextStreaming(inputText, (chunk) => {
         console.log('[ManualChat] Received chunk:', chunk);
       }, chatOptions);
       console.log('[ManualChat] Chat response:', reply);
+
+      // Persist assistant interaction after streaming completes
+      try {
+        const replyText = (reply || '').trim();
+        const effSid2 = await ensureEffectiveSessionId();
+        if (effSid2 && replyText) {
+          const now2 = Date.now();
+          const reqId2 = Math.random().toString(36).slice(2);
+          const payload2 = { sessionId: effSid2, messageId: `ai_${now2}`, role: 'assistant', contentHash: `${now2}_${replyText.length}`, text: replyText, ts: now2 };
+          const headers2 = await buildAuthHeaders({ 'content-type': 'application/json', 'x-request-id': reqId2 });
+          const res2 = await fetch('/api/v1/interactions', {
+            method: 'POST',
+            headers: headers2,
+            body: JSON.stringify(payload2),
+          }).catch(() => null);
+          try { console.debug('[ManualChat] persist assistant status', res2?.status); } catch {}
+        }
+      } catch (e) { console.debug('[ManualChat] persist assistant failed', e); }
 
       if (!reply || reply.trim().length === 0) {
         throw new Error('Empty response from chat API');
@@ -902,6 +1099,7 @@ function Content({
       // Fetch data when dashboard opens
       fetchProfile();
       fetchGoals();
+      fetchSkills();
     } else {
       setDashAnim(false);
       // After animation completes, unmount dashboard
@@ -1043,6 +1241,96 @@ function Content({
                     >
                       Create Profile
                     </button>
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* Skills Section */}
+            <section
+              className="transform-gpu will-change-transform transition-all duration-[700ms] ease-out"
+              style={{
+                opacity: dashAnim ? 1 : 0,
+                transform: dashAnim ? "translateY(0)" : "translateY(-120vh)",
+                transitionDelay: dashAnim ? "60ms" : "0ms"
+              }}
+            >
+              <div className="rounded-2xl border-2 border-gray-300 bg-white p-4 shadow-sm">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-lg font-semibold">Skills</h3>
+                  <button
+                    type="button"
+                    onClick={() => fetchSkills()}
+                    className="px-2 py-1 text-xs border border-gray-300 rounded text-gray-700 hover:bg-gray-50"
+                  >
+                    Refresh
+                  </button>
+                </div>
+                {skillsLoading ? (
+                  <div className="text-center py-4 text-gray-500">Loading skills…</div>
+                ) : skillsError ? (
+                  <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">{skillsError}</div>
+                ) : (
+                  <div className="space-y-4">
+                    {/* Tracked */}
+                    <div>
+                      <div className="text-sm font-medium text-gray-800 mb-2">Tracked ({trackedSkillsDash.length}/2)</div>
+                      {trackedSkillsDash.length === 0 ? (
+                        <div className="text-sm text-gray-500">No tracked skills yet.</div>
+                      ) : (
+                        <div className="space-y-2">
+                          {trackedSkillsDash.map((t) => (
+                            <div key={t.skillId} className="flex items-center justify-between border border-gray-200 rounded p-2 bg-gray-50">
+                              <div className="text-sm text-gray-800">
+                                {t.title || t.skillId}
+                                <span className="ml-2 text-xs text-gray-500">Lv {Number.isFinite(Number(t.currentLevel)) ? t.currentLevel : '-'}</span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => untrackSkill(t.skillId)}
+                                className="px-2 py-1 text-xs border border-gray-300 rounded text-gray-700 hover:bg-white"
+                              >
+                                Untrack
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {/* Available */}
+                    <div>
+                      <div className="text-sm font-medium text-gray-800 mb-2">Available</div>
+                      {(() => {
+                        const trackedIds = new Set(trackedSkillsDash.map((t) => t.skillId));
+                        const untracked = allSkillsDash.filter((s) => s.id && !trackedIds.has(s.id));
+                        if (untracked.length === 0) return <div className="text-sm text-gray-500">No more available skills.</div>;
+                        const reachedMax = trackedSkillsDash.length >= 2;
+                        return (
+                          <div className="space-y-2">
+                            {untracked.slice(0, 20).map((s) => (
+                              <div key={s.id} className="flex items-center justify-between border border-gray-200 rounded p-2">
+                                <div className="text-sm text-gray-800">
+                                  {s.title || s.id}
+                                  {s.category ? <span className="ml-2 text-xs text-gray-500">{s.category}</span> : null}
+                                </div>
+                                <button
+                                  type="button"
+                                  disabled={reachedMax}
+                                  onClick={() => trackSkill(s.id)}
+                                  className={`px-2 py-1 text-xs border border-gray-300 rounded ${reachedMax ? 'text-gray-400 bg-gray-50 cursor-not-allowed' : 'text-gray-700 hover:bg-white'}`}
+                                  title={reachedMax ? 'Maximum of 2 tracked skills reached' : 'Track'}
+                                >
+                                  Track
+                                </button>
+                              </div>
+                            ))}
+                            {untracked.length > 20 ? (
+                              <div className="text-xs text-gray-500">Showing first 20. Use /skills for full list.</div>
+                            ) : null}
+                          </div>
+                        );
+                      })()}
+                    </div>
                   </div>
                 )}
               </div>
@@ -1314,6 +1602,17 @@ function Content({
                   }`}
                 >
                   TRIAGE
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('assess')}
+                  className={`px-4 py-2 text-sm font-mono border-b-2 transition-colors whitespace-nowrap ${
+                    activeTab === 'assess'
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  ASSESS
                 </button>
               </div>
             </div>
@@ -1769,6 +2068,229 @@ function Content({
                           ))}
                         </div>
                       )
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {activeTab === 'assess' && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-mono text-blue-600 font-semibold">[ASSESS_OBSERVABILITY]</div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={async () => { await refreshAssessPanel(); }}
+                        className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-50"
+                      >[REFRESH]</button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          // Test with mock V2 data
+                          setAssessSummary({
+                            highlights: ['Test highlight 1', 'Test highlight 2'],
+                            recommendations: ['Test recommendation 1', 'Test recommendation 2'],
+                            rubricKeyPoints: ['Test rubric point 1'],
+                            meta: { provider: 'test', modelId: 'test-model', skillsCount: 1 },
+                            skillAssessments: [{
+                              skillId: 'clarity_eloquence',
+                              skillHash: 'test_hash_123',
+                              level: 4,
+                              confidence: 0.85,
+                              levelFeedback: {
+                                currentLevel: 4,
+                                nextLevelCriteria: ['Meet criteria for level 5', 'Reduce filler words'],
+                                strengths: ['Clear speech structure', 'Good logical flow'],
+                                improvements: ['Work on reducing awkward phrasing', 'Eliminate remaining fillers'],
+                                focus: ['Practice transitional phrases', 'Focus on smoother transitions'],
+                                examples: ['Clear speech structure example', 'Good logical flow example']
+                              },
+                              assessmentMetadata: {
+                                provider: 'google',
+                                modelId: 'gemini-2.5-flash',
+                                processingTimeMs: 1200,
+                                tokenCount: 450,
+                                costCents: 2
+                              },
+                              sourceContext: {
+                                interactionCount: 5,
+                                transcriptLength: 800,
+                                assessmentType: 'roleplay_scenario',
+                                sessionDuration: 1800000
+                              }
+                            }]
+                          });
+                        }}
+                        className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-50"
+                      >[TEST_V2]</button>
+                    </div>
+                  </div>
+                  <div className="text-xs text-gray-600">{assessStatus || '(idle)'}</div>
+
+                  {/* Latest group + tracked skills snapshot */}
+                  <div className="bg-white border border-gray-200 rounded p-2">
+                    <div className="text-[11px] text-gray-700"><span className="text-gray-500">latest_group:</span> {assessLatestGroup || '-'}</div>
+                    <div className="mt-2">
+                      <div className="text-blue-600 font-semibold text-[12px]">tracked_skills ({trackedSkills.length}):</div>
+                      {trackedSkills.length === 0 ? (
+                        <div className="text-gray-500 text-[12px]">(none)</div>
+                      ) : (
+                        <div className="mt-1 grid grid-cols-2 gap-1">
+                          {trackedSkills.map((s, i) => (
+                            <div key={i} className="text-[11px] text-gray-700 bg-gray-50 border border-gray-200 rounded px-2 py-1">
+                              <span className="text-gray-500">id:</span> {s.id} {s.title ? (<span className="text-gray-400">— {s.title}</span>) : null}
+                              <span className="ml-2 text-gray-500">level:</span> <span className="font-semibold">{Number.isFinite(Number(s.currentLevel)) ? s.currentLevel : '-'}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Latest Assess Summary */}
+                  <div className="bg-white border border-gray-200 rounded p-2">
+                    <div className="text-blue-600 font-semibold text-[12px] mb-1">latest_summary (schema)</div>
+                    {!assessSummary ? (
+                      <div className="text-gray-500 text-[12px]">(none)</div>
+                    ) : (
+                      <div className="text-[11px] text-gray-700 space-y-2">
+                        {/* V2 Skill Assessments */}
+                        {assessSummary.skillAssessments && assessSummary.skillAssessments.length > 0 ? (
+                          <div>
+                            <div className="text-gray-600 font-semibold mb-2">V2 Skill Assessments ({assessSummary.skillAssessments.length}):</div>
+                            <div className="space-y-3">
+                              {assessSummary.skillAssessments.map((skill, idx) => (
+                                <div key={idx} className="bg-gray-50 border border-gray-200 rounded p-2">
+                                  <div className="flex items-center justify-between mb-2">
+                                    <div className="text-gray-600 font-semibold">Skill: {skill.skillId}</div>
+                                    <div className="text-gray-500">
+                                      Level: <span className="font-semibold">{skill.level}</span>
+                                      {skill.confidence && (
+                                        <span className="ml-2">
+                                          Confidence: <span className="font-semibold">{(skill.confidence * 100).toFixed(1)}%</span>
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                  
+                                  {/* Level Feedback */}
+                                  <div className="mb-2">
+                                    <div className="text-gray-600 font-semibold text-[10px] mb-1">Level Feedback:</div>
+                                    <div className="grid grid-cols-1 gap-1 text-[10px]">
+                                      <div><span className="text-gray-500">Current Level:</span> {skill.levelFeedback.currentLevel}</div>
+                                      <div><span className="text-gray-500">Next Criteria:</span> {skill.levelFeedback.nextLevelCriteria.join(', ')}</div>
+                                      <div><span className="text-gray-500">Strengths:</span> {skill.levelFeedback.strengths.join(', ')}</div>
+                                      <div><span className="text-gray-500">Improvements:</span> {skill.levelFeedback.improvements.join(', ')}</div>
+                                      <div><span className="text-gray-500">Focus:</span> {skill.levelFeedback.focus.join(', ')}</div>
+                                      {skill.levelFeedback.examples && skill.levelFeedback.examples.length > 0 && (
+                                        <div><span className="text-gray-500">Examples:</span> {skill.levelFeedback.examples.join(', ')}</div>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {/* Assessment Metadata */}
+                                  <div className="mb-2">
+                                    <div className="text-gray-600 font-semibold text-[10px] mb-1">Metadata:</div>
+                                    <div className="grid grid-cols-2 gap-1 text-[10px]">
+                                      <div><span className="text-gray-500">Provider:</span> {skill.assessmentMetadata.provider || '-'}</div>
+                                      <div><span className="text-gray-500">Model:</span> {skill.assessmentMetadata.modelId || '-'}</div>
+                                      {skill.assessmentMetadata.processingTimeMs && (
+                                        <div><span className="text-gray-500">Time:</span> {skill.assessmentMetadata.processingTimeMs}ms</div>
+                                      )}
+                                      {skill.assessmentMetadata.tokenCount && (
+                                        <div><span className="text-gray-500">Tokens:</span> {skill.assessmentMetadata.tokenCount}</div>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {/* Source Context */}
+                                  <div>
+                                    <div className="text-gray-600 font-semibold text-[10px] mb-1">Source Context:</div>
+                                    <div className="grid grid-cols-2 gap-1 text-[10px]">
+                                      {skill.sourceContext.interactionCount && (
+                                        <div><span className="text-gray-500">Interactions:</span> {skill.sourceContext.interactionCount}</div>
+                                      )}
+                                      {skill.sourceContext.transcriptLength && (
+                                        <div><span className="text-gray-500">Transcript:</span> {skill.sourceContext.transcriptLength} chars</div>
+                                      )}
+                                      {skill.sourceContext.assessmentType && (
+                                        <div><span className="text-gray-500">Type:</span> {skill.sourceContext.assessmentType}</div>
+                                      )}
+                                      {skill.sourceContext.sessionDuration && (
+                                        <div><span className="text-gray-500">Duration:</span> {Math.floor(skill.sourceContext.sessionDuration / 60000)}m</div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {/* Legacy V1 Summary */}
+                        <div className="border-t border-gray-200 pt-2">
+                          <div className="text-gray-600 font-semibold text-[10px] mb-1">Legacy V1 Summary:</div>
+                          <div>
+                            <div className="text-gray-600">highlights:</div>
+                            {assessSummary.highlights.length === 0 ? (
+                              <div className="text-gray-500 text-[12px]">(none)</div>
+                            ) : (
+                              <ul className="list-disc list-inside">
+                                {assessSummary.highlights.map((h, i) => (
+                                  <li key={i}>{h}</li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                          <div>
+                            <div className="text-gray-600">recommendations:</div>
+                            {assessSummary.recommendations.length === 0 ? (
+                              <div className="text-gray-500 text-[12px]">(none)</div>
+                            ) : (
+                              <ul className="list-disc list-inside">
+                                {assessSummary.recommendations.map((h, i) => (
+                                  <li key={i}>{h}</li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                          <div>
+                            <div className="text-gray-600">rubricKeyPoints:</div>
+                            {assessSummary.rubricKeyPoints.length === 0 ? (
+                              <div className="text-gray-500 text-[12px]">(none)</div>
+                            ) : (
+                              <ul className="list-disc list-inside">
+                                {assessSummary.rubricKeyPoints.map((h, i) => (
+                                  <li key={i}>{h}</li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                          <div className="text-gray-600">meta: <span className="text-gray-800">{(() => { try { return JSON.stringify(assessSummary.meta || {}); } catch { return '{}'; } })()}</span></div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Recent assess_* events */}
+                  <div className="bg-white border border-gray-200 rounded p-2">
+                    <div className="text-blue-600 font-semibold text-[12px] mb-1">events (assess_*)</div>
+                    {assessEvents.length === 0 ? (
+                      <div className="text-gray-500 text-[12px]">(none)</div>
+                    ) : (
+                      <div className="space-y-1">
+                        {assessEvents.map((e, i) => (
+                          <div key={i} className="text-[11px] text-gray-700 bg-gray-50 border border-gray-200 rounded px-2 py-1">
+                            <div className="flex items-center justify-between">
+                              <div><span className="text-gray-500">kind:</span> <span className="font-semibold">{e.kind}</span></div>
+                              <div className="text-gray-500">{e.createdAt ? new Date(e.createdAt).toLocaleTimeString() : ''}</div>
+                            </div>
+                            {e.payload ? (
+                              <div className="text-[10px] text-gray-600 mt-1 whitespace-pre overflow-x-auto">{(() => { try { return JSON.stringify(e.payload); } catch { return ''; } })()}</div>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
                     )}
                   </div>
                 </div>

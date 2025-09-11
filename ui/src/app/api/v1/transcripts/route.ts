@@ -113,7 +113,17 @@ export async function GET(request: Request) {
       ...(cursor ? { nextCursor: undefined } : {}),
     } as const;
 
-    console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, sessionId, groupId, limit, mode, itemsReturned: items.length, latencyMs: Date.now() - started }));
+    // Debug: role breakdown for returned items
+    try {
+      const roleCounts = items.reduce((acc: Record<string, number>, it: any) => {
+        const r = (it.role || 'unknown') as string;
+        acc[r] = (acc[r] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, sessionId, groupId, limit, mode, itemsReturned: items.length, roleCounts, latencyMs: Date.now() - started }));
+    } catch {
+      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, sessionId, groupId, limit, mode, itemsReturned: items.length, latencyMs: Date.now() - started }));
+    }
     return respond(200, payload);
   } catch (err: unknown) {
     try { console.error('[transcripts] GET failed', err); } catch {}

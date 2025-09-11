@@ -6,7 +6,7 @@ import { getLatestConvexClientMock, setConvexMockBehavior } from '../setup.vites
  * Verifies the "real path" (MOCK_CONVEX=0) finalize calls Convex mutations
  * in the expected order for a single skill assessment:
  * 1) assessments:recordSkillAssessmentV2
- * 2) skills:updateLevelFromRecentAssessments
+ * 2) functions/skills:updateLevelFromRecentAssessments
  * 3) assessments:markFinalizeCompleted
  */
 describe('API: finalize v2 (real path) — mutation order', () => {
@@ -50,7 +50,7 @@ describe('API: finalize v2 (real path) — mutation order', () => {
     // Must contain these in this order as a subsequence
     const expected = [
       'assessments:recordSkillAssessmentV2',
-      'skills:updateLevelFromRecentAssessments',
+      'functions/skills:updateLevelFromRecentAssessments',
       'assessments:markFinalizeCompleted',
     ];
 
