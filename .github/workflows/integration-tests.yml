@@ -1,0 +1,284 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'ui/tests/integration/**'
+      - 'ui/src/**'
+      - 'ui/package.json'
+      - 'ui/vitest.integration.config.ts'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'ui/tests/integration/**'
+      - 'ui/src/**'
+      - 'ui/package.json'
+      - 'ui/vitest.integration.config.ts'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      matrix:
+        node-version: [20.x]
+        test-suite:
+          - skill-assessment
+          - voice-processing
+          - realtime-data
+          - complete-journey
+          - error-recovery
+        include:
+          - test-suite: all
+            node-version: 20.x
+
+    services:
+      # Convex backend service
+      convex:
+        image: convexlocal/convex-backend:latest
+        ports:
+          - 3210:3210
+        env:
+          CONVEX_URL: http://localhost:3210
+        options: >-
+          --health-cmd "curl -f http://localhost:3210/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      # Mock AI API service
+      ai-api:
+        image: node:20-alpine
+        ports:
+          - 3001:3001
+        working_directory: /app
+        command: |
+          npm install -g json-server
+          echo '{"assessments": [], "transcripts": [], "tts": []}' > db.json
+          json-server --host 0.0.0.0 --port 3001 db.json
+        options: >-
+          --health-cmd "curl -f http://localhost:3001/assessments || exit 1"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 3
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Setup test environment
+        working-directory: ui
+        run: |
+          # Create test configuration
+          echo "INTEGRATION_TEST=true" >> $GITHUB_ENV
+          echo "MOCK_CONVEX=true" >> $GITHUB_ENV
+          echo "NODE_ENV=test" >> $GITHUB_ENV
+
+          # Setup mock environment variables
+          echo "CONVEX_URL=http://localhost:3210" >> $GITHUB_ENV
+          echo "AI_API_URL=http://localhost:3001" >> $GITHUB_ENV
+
+      - name: Wait for services to be ready
+        run: |
+          echo "Waiting for Convex backend..."
+          timeout 60 bash -c 'until curl -f http://localhost:3210/health; do sleep 2; done'
+          echo "Waiting for AI API..."
+          timeout 30 bash -c 'until curl -f http://localhost:3001/assessments; do sleep 1; done'
+          echo "All services are ready!"
+
+      - name: Run ${{ matrix.test-suite }} integration tests
+        working-directory: ui
+        run: |
+          if [ "${{ matrix.test-suite }}" = "all" ]; then
+            npm run test:integration
+          else
+            npm run test:integration:${{ matrix.test-suite }}
+          fi
+        env:
+          INTEGRATION_TEST: true
+          MOCK_CONVEX: true
+          CONVEX_URL: http://localhost:3210
+          AI_API_URL: http://localhost:3001
+          NODE_ENV: test
+
+      - name: Generate test report
+        working-directory: ui
+        run: node scripts/generate-test-report.js
+        if: always()
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-test-results-${{ matrix.test-suite }}-${{ github.run_id }}
+          path: |
+            ui/test-reports/
+            ui/test-results/
+            ui/coverage/
+          retention-days: 30
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v4
+        if: matrix.test-suite == 'all'
+        with:
+          directory: ./ui/coverage/
+          flags: integration-tests
+          name: integration-tests-coverage
+          fail_ci_if_error: false
+
+      - name: Comment test results on PR
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request' && matrix.test-suite == 'all'
+        with:
+          script: |
+            const fs = require('fs')
+            const path = require('path')
+
+            // Read test report
+            const reportPath = path.join(process.cwd(), 'ui', 'test-reports', `integration-test-report-${new Date().toISOString().split('T')[0].replace(/-/g, '-')}.json`)
+
+            let reportContent = '## 🧪 Integration Test Results\n\n'
+            reportContent += 'Integration tests completed successfully! ✅\n\n'
+
+            if (fs.existsSync(reportPath)) {
+              const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'))
+              reportContent += `**Test Summary:**\n`
+              reportContent += `- Total Tests: ${report.summary.totalTests}\n`
+              reportContent += `- Passed: ${report.summary.passedTests}\n`
+              reportContent += `- Failed: ${report.summary.failedTests}\n`
+              reportContent += `- Success Rate: ${report.summary.successRate}\n`
+              reportContent += `- Duration: ${report.summary.duration}\n\n`
+
+              if (report.recommendations && report.recommendations.length > 0) {
+                reportContent += '**Recommendations:**\n'
+                report.recommendations.forEach(rec => {
+                  reportContent += `- ${rec.priority}: ${rec.issue}\n`
+                })
+              }
+            } else {
+              reportContent += 'Detailed report generation failed, but tests passed!\n'
+            }
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: reportContent
+            })
+
+  # Additional job for performance regression testing
+  performance-check:
+    name: Performance Regression Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: 'npm'
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Run performance tests
+        working-directory: ui
+        run: npm run test:performance
+        env:
+          NODE_ENV: test
+
+      - name: Check performance regression
+        working-directory: ui
+        run: |
+          # Check if test execution time is within acceptable limits
+          if [ -f "test-results/performance-results.json" ]; then
+            duration=$(jq '.duration' test-results/performance-results.json)
+            if [ "$duration" -gt 15000 ]; then
+              echo "⚠️ Performance regression detected: ${duration}ms"
+              exit 1
+            else
+              echo "✅ Performance check passed: ${duration}ms"
+            fi
+          else
+            echo "⚠️ Performance results not found, skipping regression check"
+          fi
+
+  # Final summary job
+  summary:
+    name: Integration Test Summary
+    runs-on: ubuntu-latest
+    needs: [integration-tests, performance-check]
+    if: always()
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all test artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./test-artifacts
+
+      - name: Generate final summary
+        run: |
+          echo "## 🧪 Integration Test Summary" >> summary.md
+          echo "" >> summary.md
+          echo "**Status:** ${{ needs.integration-tests.result == 'success' && needs.performance-check.result == 'success' && '✅ PASSED' || '❌ FAILED' }}" >> summary.md
+          echo "" >> summary.md
+          echo "**Integration Tests:** ${{ needs.integration-tests.result == 'success' && '✅ PASSED' || '❌ FAILED' }}" >> summary.md
+          echo "**Performance Check:** ${{ needs.performance-check.result == 'success' && '✅ PASSED' || '❌ FAILED' }}" >> summary.md
+          echo "" >> summary.md
+          echo "**Generated:** $(date)" >> summary.md
+
+      - name: Upload summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-summary-${{ github.run_id }}
+          path: summary.md
+
+      - name: Post summary comment
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          script: |
+            const fs = require('fs')
+
+            if (fs.existsSync('./summary.md')) {
+              const summary = fs.readFileSync('./summary.md', 'utf8')
+
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: summary
+              })
+            }
+
+

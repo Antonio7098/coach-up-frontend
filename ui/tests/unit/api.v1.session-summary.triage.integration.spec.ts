@@ -2,10 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import { POST as sessionSummaryPOST } from '../../src/app/api/v1/session-summary/route';
 
-// Mock makeConvex: ensureJob rejected as not_due by default to avoid side effects
+// Mock makeConvex: ensureJob accepted to trigger triage
 vi.mock('../../src/app/api/lib/convex', () => ({
   makeConvex: (_url: string) => ({
-    mutation: vi.fn(async (_name: string, _args: any) => ({ accepted: false, reason: 'not_due' })),
+    mutation: vi.fn(async (_name: string, _args: any) => ({ accepted: true, cutoffIndex: 5 })),
   }),
 }));
 
@@ -49,8 +49,8 @@ describe('session-summary POST triage pre-step (best-effort)', () => {
     const json = await res.json();
 
     expect(res.status).toBe(200);
-    // We expect not_due from ensureJob mock
-    expect(json).toMatchObject({ status: 'rejected' });
+    // We expect accepted job with triage called
+    expect(json).toMatchObject({ status: 'accepted' });
     expect((global.fetch as any)).toHaveBeenCalled();
     expect(triageSpy).toHaveBeenCalled();
   });

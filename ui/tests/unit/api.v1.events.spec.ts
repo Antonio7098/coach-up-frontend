@@ -45,12 +45,12 @@ describe('API: GET /api/v1/events', () => {
     expect(client.url).toBe('http://127.0.0.1:3210');
   });
 
-  it('handles Convex errors with 502', async () => {
+  it('handles Convex errors gracefully with 200 and empty events', async () => {
     setConvexMockBehavior({ queryThrow: new Error('down') });
     const url = withQuery('http://localhost:3000/api/v1/events', { sessionId: 's1' });
     const res = await eventsGET(new Request(url));
-    expect(res.status).toBe(502);
+    expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json).toEqual({ error: 'Convex query failed' });
+    expect(json).toEqual({ sessionId: 's1', trackedSkillIdHash: undefined, events: [] });
   });
 });

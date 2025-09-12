@@ -117,7 +117,11 @@ export async function POST(request: Request) {
         const existing = await mockConvex.getSessionById?.({ sessionId: String(obj.sessionId) });
         const belongs = existing && String(existing.userId) === effectiveUserId(obj.userId);
         const idleOk = existing ? (nowMs - Number(existing.lastActivityAt || 0)) <= idleThresholdMs : false;
-        if (!existing || !belongs || !idleOk) {
+        if (!existing) {
+          // For new sessions in mock mode, use the provided sessionId (don't rotate)
+          rotated = false;
+        } else if (!belongs || !idleOk) {
+          // For existing sessions that don't belong or are idle, rotate
           effectiveSessionId = `sess_${nowMs}_${Math.random().toString(36).slice(2)}`;
           rotated = true;
         }

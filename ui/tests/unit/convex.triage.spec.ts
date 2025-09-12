@@ -53,9 +53,15 @@ describe('Convex triage functions', () => {
       { messageId: 'm2', role: 'assistant', ts: 2 },
     ];
     const ctx = {
-      db: {
-        query: vi.fn(() => ({ withIndex: (_n: string, _cb: any) => ({ collect: async () => recent }) })),
-      },
+      runQuery: vi.fn(async (name: string, args: any) => {
+        if (name === "functions/summaries:getLatest") {
+          return { cutoffIndex: 0 };
+        }
+        if (name === "functions/triage:listBySession") {
+          return recent;
+        }
+        return [];
+      }),
       runMutation: vi.fn(async (_name: string, _args: any) => ({ updated: recent.length })),
     } as any;
 
@@ -69,6 +75,7 @@ describe('Convex triage functions', () => {
   it('runForSession uses provider=mock by default and delegates to runMockForSession', async () => {
     vi.stubEnv('TRIAGE_PROVIDER', 'mock');
     const ctx = {
+      runQuery: vi.fn(async () => ({ cutoffIndex: 0 })),
       runAction: vi.fn(async (_name: string, _args: any) => ({ updated: 5, inferred: 'general_chatter' })),
     } as any;
     const out = await (runForSession as any).handler(ctx, { sessionId: 's1', limit: 10 });
@@ -80,6 +87,15 @@ describe('Convex triage functions', () => {
     vi.stubEnv('AI_API_BASE_URL', 'http://127.0.0.1:8000');
     const fetchSpy = vi.spyOn(global as any, 'fetch').mockRejectedValueOnce(new Error('network'));
     const ctx = {
+      runQuery: vi.fn(async (name: string, args: any) => {
+        if (name === "functions/summaries:getLatest") {
+          return { cutoffIndex: 0 };
+        }
+        if (name === "functions/triage:listBySession") {
+          return []; // Return empty array instead of undefined
+        }
+        return [];
+      }),
       runAction: vi.fn(async (_name: string, _args: any) => ({ updated: 3, inferred: 'roleplay_scenario' })),
       runMutation: vi.fn(async () => ({ updated: 0 })),
     } as any;

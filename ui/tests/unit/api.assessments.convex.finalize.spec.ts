@@ -244,8 +244,24 @@ describe('API: POST /api/assessments/convex/finalize (v2)', () => {
       summary: {
         skillAssessments: [
           {
+            skillId: 'test_skill_dup',
             skillHash: 'sh_test',
             level: 5,
+            levelFeedback: {
+              currentLevel: 5,
+              nextLevelCriteria: ['Next level'],
+              strengths: ['Strength'],
+              improvements: ['Improvement'],
+              focus: ['Focus']
+            },
+            assessmentMetadata: {
+              provider: 'test',
+              processingTimeMs: 50
+            },
+            sourceContext: {
+              interactionCount: 2,
+              assessmentType: 'duplicate'
+            },
             metCriteria: [],
             unmetCriteria: [],
             feedback: []

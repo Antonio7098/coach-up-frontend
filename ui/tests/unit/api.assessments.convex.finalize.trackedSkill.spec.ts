@@ -23,8 +23,24 @@ describe('API: finalize v2 — trackedSkillIdHash + metrics smoke', () => {
       summary: {
         skillAssessments: [
           {
+            skillId: 'test_skill_hash',
             skillHash: 'sh_1',
             level: 3,
+            levelFeedback: {
+              currentLevel: 3,
+              nextLevelCriteria: ['Next criteria'],
+              strengths: ['Good'],
+              improvements: ['Better'],
+              focus: ['Focus']
+            },
+            assessmentMetadata: {
+              provider: 'test',
+              processingTimeMs: 100
+            },
+            sourceContext: {
+              interactionCount: 5,
+              assessmentType: 'hash_test'
+            },
             metCriteria: ['a'],
             unmetCriteria: ['b'],
             feedback: ['f1'],

@@ -26,7 +26,29 @@ describe('API: finalize v2 (real path) — mutation order', () => {
       rubricVersion: 'v2' as const,
       summary: {
         skillAssessments: [
-          { skillHash: 'sh_x', level: 4, metCriteria: [], unmetCriteria: [], feedback: [] },
+          {
+            skillId: 'test_skill',
+            skillHash: 'sh_x',
+            level: 4,
+            levelFeedback: {
+              currentLevel: 4,
+              nextLevelCriteria: ['Next level criteria'],
+              strengths: ['Good work'],
+              improvements: ['Can improve'],
+              focus: ['Focus here']
+            },
+            assessmentMetadata: {
+              provider: 'test',
+              processingTimeMs: 50
+            },
+            sourceContext: {
+              interactionCount: 3,
+              assessmentType: 'test'
+            },
+            metCriteria: [],
+            unmetCriteria: [],
+            feedback: []
+          },
         ],
       },
     };

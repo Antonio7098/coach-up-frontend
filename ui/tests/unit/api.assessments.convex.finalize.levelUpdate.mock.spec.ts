@@ -51,11 +51,121 @@ describe('API: finalize v2 (mock) — assessment creation triggers level calc', 
       rubricVersion: 'v2' as const,
       summary: {
         skillAssessments: [
-          { skillHash, level: 3, metCriteria: [], unmetCriteria: [], feedback: [] },
-          { skillHash, level: 3, metCriteria: [], unmetCriteria: [], feedback: [] },
-          { skillHash, level: 3, metCriteria: [], unmetCriteria: [], feedback: [] },
-          { skillHash, level: 3, metCriteria: [], unmetCriteria: [], feedback: [] },
-          { skillHash, level: 3, metCriteria: [], unmetCriteria: [], feedback: [] },
+          {
+            skillId: 'clarity_eloquence',
+            skillHash,
+            level: 3,
+            levelFeedback: {
+              currentLevel: 3,
+              nextLevelCriteria: ['Improve clarity', 'Work on eloquence'],
+              strengths: ['Good structure'],
+              improvements: ['Better word choice'],
+              focus: ['Practice more']
+            },
+            assessmentMetadata: {
+              provider: 'mock',
+              processingTimeMs: 100
+            },
+            sourceContext: {
+              interactionCount: 5,
+              assessmentType: 'mock'
+            },
+            metCriteria: [],
+            unmetCriteria: [],
+            feedback: []
+          },
+          {
+            skillId: 'clarity_eloquence',
+            skillHash,
+            level: 3,
+            levelFeedback: {
+              currentLevel: 3,
+              nextLevelCriteria: ['Improve clarity', 'Work on eloquence'],
+              strengths: ['Good structure'],
+              improvements: ['Better word choice'],
+              focus: ['Practice more']
+            },
+            assessmentMetadata: {
+              provider: 'mock',
+              processingTimeMs: 100
+            },
+            sourceContext: {
+              interactionCount: 5,
+              assessmentType: 'mock'
+            },
+            metCriteria: [],
+            unmetCriteria: [],
+            feedback: []
+          },
+          {
+            skillId: 'clarity_eloquence',
+            skillHash,
+            level: 3,
+            levelFeedback: {
+              currentLevel: 3,
+              nextLevelCriteria: ['Improve clarity', 'Work on eloquence'],
+              strengths: ['Good structure'],
+              improvements: ['Better word choice'],
+              focus: ['Practice more']
+            },
+            assessmentMetadata: {
+              provider: 'mock',
+              processingTimeMs: 100
+            },
+            sourceContext: {
+              interactionCount: 5,
+              assessmentType: 'mock'
+            },
+            metCriteria: [],
+            unmetCriteria: [],
+            feedback: []
+          },
+          {
+            skillId: 'clarity_eloquence',
+            skillHash,
+            level: 3,
+            levelFeedback: {
+              currentLevel: 3,
+              nextLevelCriteria: ['Improve clarity', 'Work on eloquence'],
+              strengths: ['Good structure'],
+              improvements: ['Better word choice'],
+              focus: ['Practice more']
+            },
+            assessmentMetadata: {
+              provider: 'mock',
+              processingTimeMs: 100
+            },
+            sourceContext: {
+              interactionCount: 5,
+              assessmentType: 'mock'
+            },
+            metCriteria: [],
+            unmetCriteria: [],
+            feedback: []
+          },
+          {
+            skillId: 'clarity_eloquence',
+            skillHash,
+            level: 3,
+            levelFeedback: {
+              currentLevel: 3,
+              nextLevelCriteria: ['Improve clarity', 'Work on eloquence'],
+              strengths: ['Good structure'],
+              improvements: ['Better word choice'],
+              focus: ['Practice more']
+            },
+            assessmentMetadata: {
+              provider: 'mock',
+              processingTimeMs: 100
+            },
+            sourceContext: {
+              interactionCount: 5,
+              assessmentType: 'mock'
+            },
+            metCriteria: [],
+            unmetCriteria: [],
+            feedback: []
+          },
         ],
       },
     };
