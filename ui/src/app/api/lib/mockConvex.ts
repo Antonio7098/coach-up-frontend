@@ -190,7 +190,7 @@ export async function finalizeAssessmentSummary(args: {
   return { ok: true } as const;
 }
 
-export async function getLatestAssessmentSummary(args: { sessionId: string }) {
+export async function getLatestAssessmentResults(args: { sessionId: string }) {
   const bySession = _db.filter((d) => d.sessionId === args.sessionId);
   const summaries = bySession.filter((d) => d.kind === 'summary');
   summaries.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
@@ -199,7 +199,6 @@ export async function getLatestAssessmentSummary(args: { sessionId: string }) {
     return {
       sessionId: args.sessionId,
       latestGroupId: latestSummary.groupId ?? null,
-      summary: latestSummary.summary ?? null,
       rubricVersion: latestSummary.rubricVersion,
     } as const;
   }
@@ -236,11 +235,53 @@ export async function listInteractionsBySession(args: { sessionId: string; limit
   return docs.length > lim ? docs.slice(docs.length - lim) : docs;
 }
 
+export async function listTailBySession(args: { sessionId: string; limit?: number }) {
+  const lim = Math.max(1, Math.min(500, Number.isFinite(Number(args.limit)) ? Number(args.limit) : 200));
+  const docs = _interactions.filter((i) => i.sessionId === args.sessionId);
+  docs.sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0)); // Most recent first
+  return docs.length > lim ? docs.slice(0, lim) : docs;
+}
+
+// Optimized tail query - get the most recent N message IDs for a session (minimal data transfer)
+export async function listIdsTail(args: { sessionId: string; limit?: number }) {
+  const lim = Math.max(1, Math.min(500, Number.isFinite(Number(args.limit)) ? Number(args.limit) : 200));
+  const docs = _interactions.filter((i) => i.sessionId === args.sessionId);
+  docs.sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
+  const recentDocs = docs.length > lim ? docs.slice(docs.length - lim) : docs;
+
+  // Return only messageId and ts for minimal data transfer
+  return recentDocs.map(doc => ({
+    messageId: doc.messageId,
+    ts: doc.ts
+  }));
+}
+
 export async function listInteractionsByGroup(args: { groupId: string; limit?: number }) {
   const lim = Math.max(1, Math.min(500, Number.isFinite(Number(args.limit)) ? Number(args.limit) : 200));
   const docs = _interactions.filter((i) => i.groupId === args.groupId);
   docs.sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
   return docs.length > lim ? docs.slice(docs.length - lim) : docs;
+}
+
+// -------------------- Triage (mock) --------------------
+export async function setTriageResults(args: { sessionId: string; updates: Array<{ messageId: string; assessmentType: string; groupId?: string }> }) {
+  const now = Date.now();
+  let updated = 0;
+  const sid = String(args.sessionId);
+  const idxs = new Map(args.updates.map(u => [String(u.messageId), u]));
+  for (let i = 0; i < _interactions.length; i++) {
+    const row = _interactions[i];
+    if (!row || String(row.sessionId) !== sid) continue;
+    const u = idxs.get(String(row.messageId || ''));
+    if (!u) continue;
+    (row as any).assessmentType = String(u.assessmentType || 'unknown');
+    (row as any).triageProcessedAt = now;
+    if (typeof u.groupId === 'string' && u.groupId.trim().length > 0) {
+      (row as any).groupId = u.groupId;
+    }
+    updated++;
+  }
+  return { ok: true, updated } as const;
 }
 
 export async function logEvent(args: {
@@ -742,6 +783,7 @@ export async function recordSkillAssessmentV2(args: {
   return { ok: true } as const;
 }
 
+
 function __resolveSkillIdFromHash(skillHash: string): string | null {
   const salt = (process.env.SKILL_HASH_SALT || 'test_salt').trim();
   for (const s of _skills) {
@@ -793,6 +835,24 @@ export async function updateLevelFromRecentAssessments(args: {
     return { ok: true, updated: true, toLevel: tracked.currentLevel } as const;
   }
   return { ok: true, updated: false } as const;
+}
+
+
+// -------------------- Idempotency & Finalization (mock) --------------------
+export async function checkFinalizeIdempotency(args: {
+  sessionId: string;
+  groupId: string;
+}) {
+  // Mock idempotency check - return false to indicate not yet finalized
+  return false;
+}
+
+export async function markFinalizeCompleted(args: {
+  sessionId: string;
+  groupId: string;
+}) {
+  // Mock finalize completion - just return success
+  return { ok: true } as const;
 }
 
 // Test-only: bulk seed per-skill assessments and trigger level updates
@@ -923,6 +983,34 @@ export async function deleteGoal(args: { userId: string; goalId: string }) {
   if (idx === -1) return { ok: true, deleted: false } as const;
   _userGoals.splice(idx, 1);
   return { ok: true, deleted: true } as const;
+}
+
+// Dev-only: seed user profile/goals for a specific user (idempotent)
+export async function __devSeedUserDataFor(userId: string) {
+  const now = Date.now();
+  if (!_usersProfile[userId]) {
+    _usersProfile[userId] = {
+      userId,
+      displayName: 'Antonio',
+      email: `${userId}@example.com`,
+      bio: 'Working on clarity, eloquence, and reducing filler words.',
+      createdAt: now,
+      updatedAt: now,
+    } as any;
+  }
+  const defaults = [
+    { goalId: 'improve_clarity', title: 'Improve communication clarity', description: 'Be more clear and concise in sessions', status: 'active' as const, tags: ['communication'] },
+    { goalId: 'reduce_filler_words', title: 'Reduce filler words', description: 'Minimize "um", "uh", "like"', status: 'active' as const, tags: ['speaking'] },
+  ];
+  for (const g of defaults) {
+    const exists = _userGoals.find(row => row.userId === userId && row.goalId === g.goalId);
+    if (!exists) {
+      _userGoals.push({ userId, ...g, createdAt: now, updatedAt: now });
+    }
+  }
+  // Ensure skills exist and 2 are tracked for the user
+  try { __devSeedDefaultSkills(); } catch {}
+  try { __devEnsureTrackedForUser({ userId }); } catch {}
 }
 
 // Dev-only: seed user profile and goals for testing (idempotent)

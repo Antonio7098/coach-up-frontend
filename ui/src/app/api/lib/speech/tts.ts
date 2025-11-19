@@ -3,6 +3,7 @@
 */
 import crypto from 'node:crypto'
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
+import { devLog } from "../observability";
 
 export type TtsInput = {
   text: string
@@ -345,7 +346,7 @@ async function uploadToS3(data: Uint8Array, contentType: string): Promise<string
     await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: data, ContentType: contentType }))
   } catch (e) {
     // Fail-open for privacy-first and local dev: if storage is unavailable, skip upload.
-    try { console.warn('[tts] uploadToS3 failed; falling back to data URL', { message: (e as any)?.message }) } catch {}
+    devLog("warn", "tts: uploadToS3 failed, falling back to data URL", { message: (e as any)?.message });
     return null
   }
   // Construct a URL if endpoint is public-ish; otherwise caller will know to use bucket access. For LocalStack/minio, endpoint works.

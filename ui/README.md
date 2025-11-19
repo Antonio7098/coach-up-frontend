@@ -158,7 +158,7 @@ AUTH_BEARER="<jwt>" npm run smoke:skills
 
 Never generate random values (e.g., IDs) at module scope or during SSR for components rendered on both server and client. Doing so can cause hydration mismatches because the server HTML differs from the client render.
 
-Pattern used in `ui/src/app/chat/page.tsx`:
+Pattern used in `ui/src/app/coach-min/page.tsx`:
 
 - Generate the value only on the client inside `useEffect`.
 - Store it in component state and persist to `sessionStorage` for stability across reloads.

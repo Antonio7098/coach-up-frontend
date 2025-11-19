@@ -3,6 +3,7 @@
 import React, { createContext, useCallback, useContext, useMemo, useRef } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useMinimalAudio } from "./MinimalAudioContext";
+import { devLog } from "../../app/api/lib/observability";
 
 export type MinimalVoiceContextValue = {
   enqueueTTSSegment: (text: string) => Promise<void>;

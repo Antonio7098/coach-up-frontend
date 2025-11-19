@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useChat } from "../../../context/ChatContext";
 import HeroCard from "../../components/HeroCard";
 import SectionCard from "../../components/SectionCard";
+import { devLog } from "../../../app/api/lib/observability";
 
 type Skill = {
   id: string;
@@ -107,7 +108,7 @@ export default function SkillDetailPage() {
     setAssessLoading(true);
     setAssessError(null);
     try {
-      console.debug("[skill] fetch assessments start", { sessionId, skillId });
+      devLog("debug", "skill-page: fetch assessments start", { sessionId, skillId });
       const res = await fetch(`/api/assessments/${encodeURIComponent(sessionId)}`, {
         headers: {
           accept: "application/json",
@@ -127,18 +128,18 @@ export default function SkillDetailPage() {
         const raw: any = data;
         const arr: any[] = Array.isArray(raw?.skillAssessments)
           ? raw.skillAssessments
-          : Array.isArray(raw?.summary?.skillAssessments)
-          ? raw.summary.skillAssessments
+          : Array.isArray(raw?.results?.skillAssessments)
+          ? raw.results.skillAssessments
           : [];
         const total = Array.isArray(arr) ? arr.length : 0;
         const matched = Array.isArray(arr)
           ? arr.filter((it) => String((it?.skill?.id ?? "")).trim() === String(skillId)).length
           : 0;
         const reqId = res.headers.get("x-request-id") || undefined;
-        console.debug("[skill] fetch assessments ok", { sessionId, skillId, total, matched, filteredServerSide: matched === total, requestId: reqId });
+        devLog("debug", "skill-page: fetch assessments ok", { sessionId, skillId, total, matched, filteredServerSide: matched === total, requestId: reqId });
       } catch {}
     } catch (e) {
-      console.error("[skill] fetch assessments error", e);
+      devLog("error", "skill-page: fetch assessments error", { sessionId, skillId, error: String(e) });
       setAssessError(e instanceof Error ? e.message : String(e ?? "Unknown error"));
     } finally {
       setAssessLoading(false);
@@ -159,14 +160,14 @@ export default function SkillDetailPage() {
       const raw = assessments as any;
       const arr: any[] = Array.isArray(raw?.skillAssessments)
         ? raw.skillAssessments
-        : Array.isArray(raw?.summary?.skillAssessments)
-        ? raw.summary.skillAssessments
+        : Array.isArray(raw?.results?.skillAssessments)
+        ? raw.results.skillAssessments
         : [];
       if (!Array.isArray(arr)) return [];
       const filtered = arr.filter((it) => String((it?.skill?.id ?? "")).trim() === String(skillId));
       if (filtered.length !== arr.length) {
         try {
-          console.debug("[skill] client filter applied", { sessionId, skillId, before: arr.length, after: filtered.length });
+          devLog("debug", "skill-page: client filter applied", { sessionId, skillId, before: arr.length, after: filtered.length });
         } catch {}
       }
       return filtered as Array<{ level?: number; metCriteria?: string[]; unmetCriteria?: string[]; feedback?: string[] }>;

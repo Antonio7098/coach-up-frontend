@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef } from "react";
+import { devLog } from "../app/api/lib/observability";
 import { useVoice } from "./VoiceContext";
 import { useAudio } from "./AudioContext";
 import { useChat } from "./ChatContext";
@@ -21,7 +22,7 @@ export type ConversationContextValue = {
   interactionState: "active" | "idle";
   interactionGroupId?: string;
   interactionTurnCount: number;
-  assessmentChips: Array<{ id: string; status: "queued" | "done" | "error"; createdAt: number; summary?: any }>;
+  assessmentChips: Array<{ id: string; status: "queued" | "done" | "error"; createdAt: number; summary?: Record<string, unknown> }>;
 };
 
 const ConversationCtx = createContext<ConversationContextValue | undefined>(undefined);
@@ -37,6 +38,12 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
   const { summary } = useSessionSummary(sessionId, { autoloadOnMount: false });
   const { enqueueTTSSegment, cancelTTS } = useVoice();
   const { stopPlaybackAndClear } = useAudio();
+
+  devLog("debug", "ConversationContext: initializing conversation provider", {
+    sessionId,
+    hasSummary: !!summary,
+    timestamp: new Date().toISOString()
+  });
 
   // Local history ring (10 msgs) — mirrors MicContext shape for compatibility
   const historyRef = useRef<{ role: "user" | "assistant"; content: string }[]>([]);
@@ -63,7 +70,7 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
         const arr = JSON.parse(raw);
         if (Array.isArray(arr)) {
           historyRef.current = arr
-            .filter((x: any) => x && typeof x.content === "string" && (x.role === "user" || x.role === "assistant"))
+            .filter((x: { role?: string; content?: string }) => x && typeof x.content === "string" && (x.role === "user" || x.role === "assistant"))
             .slice(-10);
         }
       }
@@ -112,7 +119,7 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
     const items = [...sys, ...base];
     
     // Debug logging
-    console.log("[ConversationContext] buildHistoryParam:", {
+    devLog("debug", "ConversationContext: buildHistoryParam", {
       maxN,
       historyLength: historyRef.current.length,
       baseLength: base.length,
@@ -124,17 +131,17 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
     try {
       const json = JSON.stringify(items);
       const encoded = toBase64Url(json);
-      console.log("[ConversationContext] buildHistoryParam result:", {
+      devLog("debug", "ConversationContext: buildHistoryParam result", {
         jsonLength: json.length,
         encodedLength: encoded.length,
         encodedPreview: encoded.substring(0, 100) + "..."
       });
       return encoded;
     } catch (error) {
-      console.error("[ConversationContext] buildHistoryParam error:", error);
+      devLog("error", "ConversationContext: buildHistoryParam error", { error });
       return "";
     }
-  }, [summary]);
+  }, [summary, MAX_HISTORY_FOR_CONVO]);
 
   const sendPrompt = useCallback(async (prompt: string): Promise<string> => {
     if (!prompt || !prompt.trim() || !sessionId) return "";
@@ -151,7 +158,7 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
         const qs = `?prompt=${encodeURIComponent(prompt)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""}${hist ? `&history=${encodeURIComponent(hist)}` : ""}`;
         
         // Debug logging
-        console.log("[ConversationContext] sendPrompt URL construction:", {
+        devLog("debug", "ConversationContext: sendPrompt URL construction", {
           prompt: prompt.substring(0, 50) + "...",
           sessionId,
           histLength: hist.length,
@@ -195,8 +202,8 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
             resolve(null);
           }
         };
-      } catch (e: any) {
-        reject(new Error(e?.message || "chat stream failed"));
+      } catch (e: unknown) {
+        reject(new Error(e instanceof Error ? e.message : "chat stream failed"));
       }
     });
 
@@ -206,7 +213,7 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
       if (attempt < MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, BASE_DELAY_MS * Math.pow(5, attempt - 1)));
     }
     throw new Error("chat stream failed");
-  }, [buildHistoryParam, sessionId]);
+  }, [buildHistoryParam, sessionId, saveHistory]);
 
   const chatToTextWithTTS = useCallback(async (promptText: string, opts?: { includeHistory?: boolean }): Promise<string> => {
     if (!promptText || !promptText.trim() || !sessionId) return "";
@@ -315,13 +322,13 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
             reject(new Error("chat stream failed"));
           }
         };
-      } catch (e: any) {
-        reject(new Error(e?.message || "chat stream failed"));
+      } catch (e: unknown) {
+        reject(new Error(e instanceof Error ? e.message : "chat stream failed"));
       }
     });
 
     return attempt(MAX_ATTEMPTS - 1, BASE_DELAY_MS);
-  }, [buildHistoryParam, enqueueTTSSegment, sessionId]);
+  }, [buildHistoryParam, enqueueTTSSegment, sessionId, saveHistory]);
 
   const cancelActiveChatStream = useCallback(() => {
     try { activeChatEsRef.current?.close(); } catch {}

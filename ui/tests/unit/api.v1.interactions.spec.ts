@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { POST as interactionsPOST } from '../../src/app/api/v1/interactions/route';
 import { getLatestConvexClientMock, setConvexMockBehavior } from '../setup.vitest';
 import { sha256Hex } from '../../src/app/api/lib/hash';
@@ -130,5 +130,52 @@ describe('API: POST /api/v1/interactions', () => {
     };
     const res = await interactionsPOST(jsonRequest('http://localhost:3000/api/v1/interactions', body));
     expect(res.status).toBe(400);
+  });
+
+  it('fires triage on user ingest with last two messageIds when enabled', async () => {
+    // Ensure Convex (non-mock) path is used
+    delete (process.env as any).MOCK_CONVEX;
+
+    // Set Convex client behavior: return two latest interactions
+    const now = Date.now();
+    setConvexMockBehavior({
+      queryReturn: [
+        { sessionId: 's1', messageId: 'm0', role: 'assistant', ts: now - 10 },
+        { sessionId: 's1', messageId: 'm1', role: 'user', ts: now },
+      ],
+      mutationReturn: { ok: true },
+    });
+
+    // Spy on fetch to capture triage call
+    const spy = vi.spyOn(global as any, 'fetch').mockImplementation((input: any, init?: any) => {
+      if (typeof input === 'string' && input.startsWith('/api/v1/triage')) {
+        return Promise.resolve(new Response(JSON.stringify({ updated: 0 }), { status: 200 })) as any;
+      }
+      return Promise.resolve(new Response(JSON.stringify({}), { status: 200 })) as any;
+    });
+
+    // Enable triage on user ingest
+    (process.env as any).AI_TRIAGE_ENABLED = '1';
+    (process.env as any).TRIAGE_ON_USER_INGEST = '1';
+
+    const body = {
+      userId: 'u1',
+      sessionId: 's1',
+      groupId: 'g1',
+      messageId: 'm1',
+      role: 'user',
+      contentHash: 'deadbeef',
+      text: 'hello',
+      ts: now,
+    };
+    const res = await interactionsPOST(jsonRequest('http://localhost:3000/api/v1/interactions', body));
+    expect(res.status).toBe(200);
+
+    expect(spy).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/triage?sessionId=s1'),
+      expect.objectContaining({ method: 'POST' })
+    );
+
+    spy.mockRestore();
   });
 });

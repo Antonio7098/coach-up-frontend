@@ -253,7 +253,7 @@ export const resolveSkillIdFromHash = query({
     for (const skill of skills) {
       const expectedHash = await crypto.subtle.digest(
         "SHA-256",
-        new TextEncoder().encode(skill.id + salt)
+        new TextEncoder().encode(`${salt}:${skill.id}`)
       ).then(hash => Array.from(new Uint8Array(hash))
         .map(b => b.toString(16).padStart(2, '0'))
         .join(''));
@@ -272,13 +272,29 @@ export const updateLevelFromRecentAssessments = mutation({
     sessionId: v.string(),
     groupId: v.string(),
     skillHash: v.string(),
+    // Optional fallback to handle environments where hash lookup may fail
+    skillId: v.optional(v.string()),
   },
-  handler: async (ctx, { userId, sessionId, groupId, skillHash }) => {
+  handler: async (ctx, { userId, sessionId, groupId, skillHash, skillId: skillIdOptional }) => {
     const N = Number(process.env.SKILL_LEVEL_AVERAGE_COUNT) || 5;
     const THRESH = Number(process.env.SKILL_LEVEL_INCREMENT_THRESHOLD) || 1.0;
 
     // Resolve skillId from hash
-    const skillId = await ctx.runQuery("functions/skills:resolveSkillIdFromHash", { skillHash });
+    let skillId = await ctx.runQuery("functions/skills:resolveSkillIdFromHash", { skillHash });
+    if (!skillId && skillIdOptional) {
+      // Fallback: accept explicit skillId and validate that its computed hash matches provided hash
+      const salt = process.env.SKILL_HASH_SALT;
+      if (!salt) throw new Error("SKILL_HASH_SALT not configured");
+      const computed = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(`${salt}:${skillIdOptional}`)
+      ).then(hash => Array.from(new Uint8Array(hash))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join(''));
+      if (computed === skillHash) {
+        skillId = skillIdOptional;
+      }
+    }
     if (!skillId) throw new Error("skillHash not found");
 
     // Get current level
@@ -289,9 +305,9 @@ export const updateLevelFromRecentAssessments = mutation({
     if (!tracked) throw new Error("skill not tracked by user");
     const currentLevel = tracked.currentLevel;
 
-    // Query last N assessments for this (userId, skillHash)
+    // Query last N v3 assessments for this (userId, skillHash)
     const assessments = await ctx.db
-      .query("assessments")
+      .query("skill_assessment_v3")
       .withIndex("by_user_skillHash", (q) => q.eq("userId", userId).eq("skillHash", skillHash))
       .take(N);
 

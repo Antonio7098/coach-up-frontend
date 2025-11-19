@@ -6,6 +6,7 @@ import { makeConvex } from "../../../lib/convex";
 import * as mockConvex from "../../../lib/mockConvex";
 import { promMetrics } from "../../../lib/metrics";
 import { requireAuth } from "../../../lib/auth";
+import { devLog } from "../../../lib/observability";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -56,7 +57,7 @@ export async function GET(request: Request) {
 
   const authRes = await requireAuth(request);
   if (!authRes.ok) {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 401, msg: 'Unauthorized', mode, latencyMs: Date.now() - started }));
+    devLog("warn", "skills-tracked: authentication failed", { requestId, status: 401, latencyMs: Date.now() - started });
     return respond(401, { error: "Unauthorized" });
   }
   const effectiveUserId = String(authRes.userId || 'anonymous');
@@ -66,20 +67,21 @@ export async function GET(request: Request) {
   try {
     if (process.env.MOCK_CONVEX === '1') {
       try { mockConvex.__devSeedDefaultSkills(); } catch {}
+      try { mockConvex.__devEnsureTrackedForUser({ userId: effectiveUserId }); } catch {}
       const rows = await mockConvex.listTrackedSkillsForUser({ userId: effectiveUserId });
       const payload = { tracked: Array.isArray(rows) ? rows : [] };
-      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, itemsReturned: payload.tracked.length, mode, latencyMs: Date.now() - started }));
+      devLog("info", "skills-tracked: tracked skills retrieved (mock)", { requestId, status: 200, itemsReturned: payload.tracked.length, latencyMs: Date.now() - started });
       return respond(200, payload);
     }
 
     const client = makeConvex(convexUrl);
     const rows = await client.query("functions/skills:getTrackedSkillsForUser", { userId: effectiveUserId }) as unknown as Array<Record<string, unknown>> | null | undefined;
     const payload = { tracked: Array.isArray(rows) ? rows : [] };
-    console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, itemsReturned: payload.tracked.length, mode, latencyMs: Date.now() - started }));
+    devLog("info", "skills-tracked: tracked skills retrieved (convex)", { requestId, status: 200, itemsReturned: payload.tracked.length, latencyMs: Date.now() - started });
     return respond(200, payload);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e ?? 'Convex query failed');
-    console.log(JSON.stringify({ level: 'error', route: routePath, requestId, status: 502, error: msg, mode, latencyMs: Date.now() - started }));
+    devLog("error", "skills-tracked: convex query failed", { requestId, status: 502, error: msg, latencyMs: Date.now() - started });
     return respond(502, { error: "Convex query failed" });
   }
 }

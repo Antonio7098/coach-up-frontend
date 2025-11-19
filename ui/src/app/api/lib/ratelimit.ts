@@ -2,6 +2,8 @@
  * Not production-grade (doesn't work across instances), but fine for local/dev.
  */
 
+import { devLog } from "./observability";
+
 export type RateLimitOk = { ok: true; limit: number; remaining: number; resetSec: number };
 export type RateLimitFail = { ok: false; retryAfterSec: number; limit: number; remaining: number; resetSec: number };
 export type RateLimitResult = RateLimitOk | RateLimitFail;
@@ -22,6 +24,7 @@ export function rateLimit(key: string): RateLimitResult {
   const now = Date.now();
   let b = buckets.get(key);
   if (!b) {
+    devLog("debug", "ratelimit: creating new bucket", { key, capacity: _config.burst, refillPerSec: _config.maxRps });
     b = { tokens: _config.burst, lastRefill: now, capacity: _config.burst, refillPerSec: _config.maxRps };
     buckets.set(key, b);
   }
@@ -29,17 +32,32 @@ export function rateLimit(key: string): RateLimitResult {
   const elapsedSec = Math.max(0, (now - b.lastRefill) / 1000);
   const refill = elapsedSec * b.refillPerSec;
   if (refill > 0) {
+    const oldTokens = b.tokens;
     b.tokens = Math.min(b.capacity, b.tokens + refill);
     b.lastRefill = now;
+    devLog("debug", "ratelimit: tokens refilled", {
+      key,
+      elapsedSec: elapsedSec.toFixed(2),
+      refill: refill.toFixed(2),
+      oldTokens: oldTokens.toFixed(2),
+      newTokens: b.tokens.toFixed(2)
+    });
   }
   if (b.tokens >= 1) {
     b.tokens -= 1;
     const remaining = Math.floor(Math.max(0, b.tokens));
+    devLog("debug", "ratelimit: request allowed", { key, remaining, capacity: b.capacity });
     return { ok: true, limit: b.capacity, remaining, resetSec: 1 };
   }
   const needed = 1 - b.tokens;
   const retryAfterSec = Math.ceil(needed / b.refillPerSec);
   const remaining = 0;
+  devLog("warn", "ratelimit: request denied", {
+    key,
+    retryAfterSec,
+    needed: needed.toFixed(2),
+    refillRate: b.refillPerSec
+  });
   return { ok: false, retryAfterSec, limit: b.capacity, remaining, resetSec: retryAfterSec };
 }
 

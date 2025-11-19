@@ -35,6 +35,10 @@ const eslintConfig = [
       "@typescript-eslint/no-explicit-any": "off",
     },
   },
+  // No files to ignore
+  {
+    ignores: [],
+  },
 ];
 
 export default eslintConfig;

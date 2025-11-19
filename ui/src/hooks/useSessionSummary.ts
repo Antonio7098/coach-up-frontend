@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
+import { devLog } from "../app/api/lib/observability";
 
 export type SessionSummary = {
   text: string;
@@ -81,13 +82,13 @@ export function useSessionSummary(sessionId?: string | null, opts?: UseSessionSu
         const parsed = JSON.parse(raw) as SessionSummary;
         if (parsed && typeof parsed.text === "string" && typeof parsed.updatedAt === "number") {
           const ageSec = Math.floor((nowMs() - parsed.updatedAt) / 1000);
-          try { console.log(JSON.stringify({ type: "summary.cache", event: "hit", sessionId, updatedAt: parsed.updatedAt, ageSec })); } catch {}
+          devLog("debug", "useSessionSummary: cache hit", { sessionId, updatedAt: parsed.updatedAt, ageSec });
           setSummary(parsed);
           setStatus("ready");
           return;
         }
       }
-      try { console.log(JSON.stringify({ type: "summary.cache", event: "miss", sessionId })); } catch {}
+      devLog("debug", "useSessionSummary: cache miss", { sessionId });
     } catch {}
     // If nothing cached, optionally kick off a background fetch
     if (autoloadOnMount) {
@@ -105,7 +106,7 @@ export function useSessionSummary(sessionId?: string | null, opts?: UseSessionSu
     setStatus((cur) => (cur === "ready" ? cur : "loading"));
     setError(undefined);
     const t0 = nowMs();
-    try { console.log(JSON.stringify({ type: "summary.refresh", event: "start", sessionId })); } catch {}
+    devLog("info", "useSessionSummary: refresh start", { sessionId });
     let ok = false;
     try {
       const reqId = Math.random().toString(36).slice(2);
@@ -125,7 +126,7 @@ export function useSessionSummary(sessionId?: string | null, opts?: UseSessionSu
       };
       if (res.status === 404) {
         // No summary yet (cacheable-miss). Schedule a short, capped retry in case backend is finalizing.
-        try { console.log(JSON.stringify({ type: "summary.refresh", event: "not_found", sessionId, status: res.status, rl })); } catch {}
+        devLog("debug", "useSessionSummary: not found", { sessionId, status: res.status, rl });
         setStatus("ready");
         setSummary(null);
         ok = true;
@@ -135,14 +136,14 @@ export function useSessionSummary(sessionId?: string | null, opts?: UseSessionSu
           retryAttemptsRef.current = attempt;
           try { if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); } } catch {}
           retryTimerRef.current = setTimeout(() => {
-            try { console.log(JSON.stringify({ type: "summary.refresh", event: "retry", attempt, sessionId })); } catch {}
+            devLog("debug", "useSessionSummary: retry", { attempt, sessionId });
             void doFetch();
           }, retryDelayMs);
         }
         return;
       }
       if (!res.ok) {
-        try { console.log(JSON.stringify({ type: "summary.refresh", event: "http_error", sessionId, status: res.status, rl })); } catch {}
+        devLog("error", "useSessionSummary: http error", { sessionId, status: res.status, rl });
         throw new Error(data?.error || `summary fetch failed: ${res.status}`);
       }
       const next: SessionSummary = {
@@ -165,7 +166,7 @@ export function useSessionSummary(sessionId?: string | null, opts?: UseSessionSu
       try { if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; } } catch {}
       retryAttemptsRef.current = 0;
     } finally {
-      try { console.log(JSON.stringify({ type: "summary.refresh", event: "end", ok, dtMs: nowMs() - t0, sessionId })); } catch {}
+      devLog("info", "useSessionSummary: refresh end", { ok, dtMs: nowMs() - t0, sessionId });
       turnsSinceRefreshRef.current = 0;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -178,7 +179,7 @@ export function useSessionSummary(sessionId?: string | null, opts?: UseSessionSu
     const turns = (turnsSinceRefreshRef.current = (turnsSinceRefreshRef.current || 0) + 1);
     const ageSec = summary ? Math.floor((nowMs() - (summary.updatedAt || 0)) / 1000) : Number.MAX_SAFE_INTEGER;
     const should = turns >= thresholds.turns || ageSec >= thresholds.seconds;
-    try { console.log(JSON.stringify({ type: "summary.turn", turns, ageSec, should })); } catch {}
+    devLog("debug", "useSessionSummary: turn", { turns, ageSec, should });
     if (should) void doFetch();
   }, [doFetch, sessionId, summary, thresholds.seconds, thresholds.turns]);
 

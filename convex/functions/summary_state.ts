@@ -52,20 +52,42 @@ export const onAssistantMessage = mutation({
           const assistantMsgSince = (doc.assistantMsgSince ?? 0) + 1;
 
           // Use replace instead of patch for atomic update with version check
-          const updateResult = await ctx.db.replace(doc._id, {
-            ...doc,
-            turnsSince,
-            assistantMsgSince,
-            updatedAt: nowMs,
-            version: newVersion,
-          });
+          // Retry up to 3 times for concurrent modification handling
+          let updateResult = false;
+          let retryCount = 0;
+          const maxRetries = 3;
 
-          if (!updateResult) {
-            // Replace failed (likely due to concurrent modification)
-            throw new Error("Concurrent modification detected");
+          while (!updateResult && retryCount < maxRetries) {
+            try {
+              updateResult = await ctx.db.replace(doc._id, {
+                ...doc,
+                turnsSince,
+                assistantMsgSince,
+                updatedAt: nowMs,
+                version: newVersion,
+              });
+
+              if (updateResult) {
+                doc = { ...doc, turnsSince, assistantMsgSince, updatedAt: nowMs, version: newVersion };
+                break;
+              }
+            } catch (error) {
+              // Replace failed, try to get fresh document
+              const freshDoc = await ctx.db.get(doc._id);
+              if (freshDoc) {
+                doc = freshDoc;
+                retryCount++;
+                // Retry immediately without delay (Convex doesn't allow setTimeout)
+              } else {
+                break; // Document no longer exists
+              }
+            }
           }
 
-          doc = { ...doc, turnsSince, assistantMsgSince, updatedAt: nowMs, version: newVersion };
+          if (!updateResult) {
+            // All retries failed
+            throw new Error("Concurrent modification detected - all retries exhausted");
+          }
         }
 
         const moduloDue = doc.assistantMsgSince > 0 && everyN > 0 && (doc.assistantMsgSince % everyN === 0);
@@ -75,19 +97,39 @@ export const onAssistantMessage = mutation({
         if (dueNow) {
           const lockUntil = typeof doc.lockUntil === "number" ? doc.lockUntil : 0;
           if (nowMs >= lockUntil) {
-            // Update lock with optimistic locking
+            // Update lock with optimistic locking (retry for concurrent modifications)
             const currentVersion = doc.version ?? 0;
-            const newVersion = currentVersion + 1;
-            const updateResult = await ctx.db.replace(doc._id, {
-              ...doc,
-              lockUntil: nowMs + lockMs,
-              updatedAt: nowMs,
-              version: newVersion,
-            });
+            let newVersion = currentVersion + 1;
+            let updateResult = false;
+            let lockRetryCount = 0;
+            const maxLockRetries = 3;
 
-            if (updateResult) {
-              locked = true;
-              doc = { ...doc, lockUntil: nowMs + lockMs, updatedAt: nowMs, version: newVersion };
+            while (!updateResult && lockRetryCount < maxLockRetries) {
+              try {
+                updateResult = await ctx.db.replace(doc._id, {
+                  ...doc,
+                  lockUntil: nowMs + lockMs,
+                  updatedAt: nowMs,
+                  version: newVersion,
+                });
+
+                if (updateResult) {
+                  locked = true;
+                  doc = { ...doc, lockUntil: nowMs + lockMs, updatedAt: nowMs, version: newVersion };
+                  break;
+                }
+              } catch (error) {
+                // Replace failed, try to get fresh document
+                const freshDoc = await ctx.db.get(doc._id);
+                if (freshDoc) {
+                  doc = freshDoc;
+                  newVersion = (doc.version ?? 0) + 1;
+                  lockRetryCount++;
+                  // Retry immediately without delay (Convex doesn't allow setTimeout)
+                } else {
+                  break; // Document no longer exists
+                }
+              }
             }
           }
         }

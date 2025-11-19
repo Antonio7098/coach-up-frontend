@@ -2,6 +2,7 @@
   STT Provider interfaces and registry
 */
 import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3'
+import { devLog } from "../observability";
 
 export type SttInput = {
   audioUrl?: string | null
@@ -337,7 +338,7 @@ const deepgramStt: SttProvider = {
           const err = new Error(`Deepgram STT HTTP ${res.status}: ${t}`)
           if (!shouldRetry || attempt === maxAttempts) throw err
           const delay = baseDelayMs * Math.pow(2, attempt - 1)
-          try { console.warn('[stt][deepgram] http error, retrying', { attempt, status: res.status, delay }) } catch {}
+          devLog("warn", "stt-deepgram: http error, retrying", { attempt, status: res.status, delay });
           await sleep(delay)
           continue
         }
@@ -350,11 +351,11 @@ const deepgramStt: SttProvider = {
         const msg = String(e?.message || e)
         const isNetwork = msg.includes('fetch failed') || msg.includes('network') || msg.includes('ECONN') || msg.includes('ETIMEDOUT')
         if (attempt === maxAttempts || !isNetwork) {
-          try { console.error('[stt][deepgram] fatal error', { attempt, message: msg }) } catch {}
+          devLog("error", "stt-deepgram: fatal error", { attempt, message: msg });
           throw e
         }
         const delay = baseDelayMs * Math.pow(2, attempt - 1)
-        try { console.warn('[stt][deepgram] network error, retrying', { attempt, delay, message: msg }) } catch {}
+        devLog("warn", "stt-deepgram: network error, retrying", { attempt, delay, message: msg });
         await sleep(delay)
       }
     }

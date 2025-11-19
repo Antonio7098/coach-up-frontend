@@ -4,6 +4,7 @@ import { ClerkProvider } from "@clerk/nextjs";
 import "./globals.css";
 import "../styles/theme.css";
 import AuthGuard from "./AuthGuard";
+import { devLog } from "../app/api/lib/observability";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -26,6 +27,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   const publishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+
+  devLog("info", "layout: initializing root layout", {
+    hasPublishableKey: !!publishableKey,
+    signInUrl: "/sign-in",
+    signUpUrl: "/sign-up"
+  });
+
   return (
     <ClerkProvider
       publishableKey={publishableKey}
@@ -38,7 +46,15 @@ export default function RootLayout({
         <body
           className={`${geistSans.variable} ${geistMono.variable} antialiased`}
         >
-          <AuthGuard>{children}</AuthGuard>
+          <AuthGuard>
+            {children}
+          </AuthGuard>
+
+          {process.env.NODE_ENV === 'development' && (
+            <div style={{ position: 'fixed', bottom: 0, right: 0, background: 'rgba(0,0,0,0.8)', color: 'white', padding: '4px', fontSize: '10px', zIndex: 9999 }}>
+              Layout initialized
+            </div>
+          )}
         </body>
       </html>
     </ClerkProvider>

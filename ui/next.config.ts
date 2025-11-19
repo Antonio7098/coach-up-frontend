@@ -15,6 +15,7 @@ const nextConfig: NextConfig = {
     // Development-specific settings (fixes the build file issues)
     ...(process.env.NODE_ENV !== 'production' && {
       externalDir: true,
+      nextScriptWorkers: false,
     }),
   },
 
@@ -24,6 +25,9 @@ const nextConfig: NextConfig = {
     // We'll fix remaining lint issues in follow-up commits.
     ignoreDuringBuilds: true,
   },
+
+  // Ensure asset URLs resolve correctly in dev when behind proxies
+  assetPrefix: process.env.NEXT_PUBLIC_ASSET_PREFIX || undefined,
 };
 
 export default nextConfig;

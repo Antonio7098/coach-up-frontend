@@ -1,4 +1,5 @@
  
+import { devLog } from "./observability";
 
 export type SummaryRow = {
   sessionId: string;
@@ -25,8 +26,19 @@ function ensureStore(): Store {
 export function getLatestSummary(sessionId: string): SummaryRow | null {
   const store = ensureStore();
   const arr = store.bySession.get(sessionId);
-  if (!arr || arr.length === 0) return null;
-  return arr[0] ?? null;
+  if (!arr || arr.length === 0) {
+    devLog("debug", "summaries: no summaries found for session", { sessionId });
+    return null;
+  }
+
+  const latest = arr[0] ?? null;
+  devLog("debug", "summaries: latest summary retrieved", {
+    sessionId,
+    version: latest?.version,
+    textLength: latest?.text?.length
+  });
+
+  return latest;
 }
 
 export function upsertSummary(row: Omit<SummaryRow, "createdAt" | "updatedAt" | "version"> & { version?: number }): SummaryRow {
@@ -47,7 +59,12 @@ export function upsertSummary(row: Omit<SummaryRow, "createdAt" | "updatedAt" | 
   arr.unshift(next);
   while (arr.length > 5) arr.pop();
   store.bySession.set(row.sessionId, arr);
-  try { console.log("[summaries] upsert", { sessionId: row.sessionId, version: next.version, len: next.text.length }); } catch {}
+  devLog("info", "summaries: upsert summary", {
+    sessionId: row.sessionId,
+    version: next.version,
+    textLength: next.text.length,
+    lastMessageTs: next.lastMessageTs
+  });
   return next;
 }
 

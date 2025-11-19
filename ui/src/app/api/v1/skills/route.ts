@@ -5,6 +5,7 @@ export const dynamic = "force-dynamic";
 import { makeConvex } from "../../lib/convex";
 import * as mockConvex from "../../lib/mockConvex";
 import { promMetrics } from "../../lib/metrics";
+import { devLog } from "../../lib/observability";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -57,7 +58,7 @@ export async function GET(request: Request) {
   }
 
   if (id !== null && id.trim().length === 0) {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, id, category, status: 400, msg: 'Empty id parameter', mode, latencyMs: Date.now() - started }));
+    devLog("warn", "skills: empty id parameter", { requestId, id, category, status: 400, latencyMs: Date.now() - started });
     return respond(400, { error: "id must be a non-empty string" });
   }
 
@@ -69,40 +70,71 @@ export async function GET(request: Request) {
       try { mockConvex.__devSeedDefaultSkills(); } catch {}
       if (id) {
         const skill = await mockConvex.getSkillById({ id });
-        console.log(JSON.stringify({ level: 'info', route: routePath, requestId, id, category, status: 200, itemsReturned: skill ? 1 : 0, mode, latencyMs: Date.now() - started }));
+        devLog("info", "skills: get skill by id (mock)", { requestId, id, category, status: 200, itemsReturned: skill ? 1 : 0, latencyMs: Date.now() - started });
         return respond(200, { skill: skill ?? null });
       }
       if (category) {
         const skills = await mockConvex.listSkillsByCategory({ category });
         const payload = { skills: Array.isArray(skills) ? skills : [] };
-        console.log(JSON.stringify({ level: 'info', route: routePath, requestId, id, category, status: 200, itemsReturned: payload.skills.length, mode, latencyMs: Date.now() - started }));
+        devLog("info", "skills: list skills by category (mock)", { requestId, id, category, status: 200, itemsReturned: payload.skills.length, latencyMs: Date.now() - started });
         return respond(200, payload);
       }
       const skills = await mockConvex.listActiveSkills();
       const payload = { skills: Array.isArray(skills) ? skills : [] };
-      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, id, category, status: 200, itemsReturned: payload.skills.length, mode, latencyMs: Date.now() - started }));
+      devLog("info", "skills: list all active skills (mock)", { requestId, id, category, status: 200, itemsReturned: payload.skills.length, latencyMs: Date.now() - started });
       return respond(200, payload);
     }
 
     const client = makeConvex(convexUrl);
+
+    // Add timeout to prevent hanging queries (30 second timeout)
+    const queryTimeout = 30000; // 30 seconds
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Convex query timeout')), queryTimeout);
+    });
+
     if (id) {
-      const skill = await client.query("functions/skills:getSkillById", { id });
-      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, id, category, status: 200, itemsReturned: skill ? 1 : 0, mode, latencyMs: Date.now() - started }));
-      return respond(200, { skill: skill ?? null });
+      try {
+        const skill = await Promise.race([
+          client.query("functions/skills:getSkillById", { id }),
+          timeoutPromise
+        ]);
+        devLog("info", "skills: get skill by id (convex)", { requestId, id, category, status: 200, itemsReturned: skill ? 1 : 0, latencyMs: Date.now() - started });
+        return respond(200, { skill: skill ?? null });
+      } catch (queryError: any) {
+        devLog("warn", "skills: convex query failed for id", { id, requestId, error: queryError.message, mode });
+        throw queryError; // Let the outer catch handle it
+      }
     }
     if (category) {
-      const skills = await client.query("functions/skills:getSkillsByCategory", { category }) as unknown as Array<Record<string, unknown>> | null | undefined;
-      const payload = { skills: Array.isArray(skills) ? skills : [] };
-      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, id, category, status: 200, itemsReturned: payload.skills.length, mode, latencyMs: Date.now() - started }));
-      return respond(200, payload);
+      try {
+        const skills = await Promise.race([
+          client.query("functions/skills:getSkillsByCategory", { category }),
+          timeoutPromise
+        ]) as unknown as Array<Record<string, unknown>> | null | undefined;
+        const payload = { skills: Array.isArray(skills) ? skills : [] };
+        devLog("info", "skills: list skills by category (convex)", { requestId, id, category, status: 200, itemsReturned: payload.skills.length, latencyMs: Date.now() - started });
+        return respond(200, payload);
+      } catch (queryError: any) {
+        devLog("warn", "skills: convex query failed for category", { category, requestId, error: queryError.message, mode });
+        throw queryError; // Let the outer catch handle it
+      }
     }
-    const skills = await client.query("functions/skills:getAllActiveSkills", {}) as unknown as Array<Record<string, unknown>> | null | undefined;
-    const payload = { skills: Array.isArray(skills) ? skills : [] };
-    console.log(JSON.stringify({ level: 'info', route: routePath, requestId, id, category, status: 200, itemsReturned: payload.skills.length, mode, latencyMs: Date.now() - started }));
-    return respond(200, payload);
+    try {
+      const skills = await Promise.race([
+        client.query("functions/skills:getAllActiveSkills", {}),
+        timeoutPromise
+      ]) as unknown as Array<Record<string, unknown>> | null | undefined;
+      const payload = { skills: Array.isArray(skills) ? skills : [] };
+        devLog("info", "skills: list all active skills (convex)", { requestId, id, category, status: 200, itemsReturned: payload.skills.length, latencyMs: Date.now() - started });
+      return respond(200, payload);
+    } catch (queryError: any) {
+      devLog("warn", "skills: convex query failed for all skills", { requestId, error: queryError.message, mode });
+      throw queryError; // Let the outer catch handle it
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e ?? 'Convex query failed');
-    console.log(JSON.stringify({ level: 'error', route: routePath, requestId, id, category, status: 502, error: msg, mode, latencyMs: Date.now() - started }));
+    devLog("error", "skills: convex query failed", { requestId, id, category, status: 502, error: msg, latencyMs: Date.now() - started });
     return respond(502, { error: "Convex query failed" });
   }
 }

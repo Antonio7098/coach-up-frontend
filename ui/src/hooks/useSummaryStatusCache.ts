@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
 import { fetchWithRetry } from '../app/api/lib/retry';
+import { devLog } from '../app/api/lib/observability';
 
 export interface SummaryStatus {
   sessionId: string;
@@ -35,7 +36,7 @@ export interface UseSummaryStatusOptions {
 export function useSummaryStatusCache(options: UseSummaryStatusOptions) {
   const { sessionId, staleTime = 3000, revalidateOnFocus = true, useLiteEndpoint = true } = options;
   const { getToken } = useAuth();
-  try { console.debug('[summary.status] init', { sessionId, staleTime, revalidateOnFocus, useLiteEndpoint }); } catch {}
+  devLog('debug', 'useSummaryStatusCache: init', { sessionId, staleTime, revalidateOnFocus, useLiteEndpoint });
 
   const [cache, setCache] = useState<SummaryStatusCache>({
     status: null,
@@ -71,10 +72,10 @@ export function useSummaryStatusCache(options: UseSummaryStatusOptions) {
 
 const fetchSummaryStatus = useCallback(async (force = false) => {
     if (!sessionId || (!force && !cache.isStale && Date.now() - cache.lastFetched < staleTime)) {
-      try { console.debug('[summary.status] skip fetch', { reason: 'fresh', sessionId, force, isStale: cache.isStale, ageMs: Date.now() - cache.lastFetched, staleTime }); } catch {}
+      devLog('debug', 'useSummaryStatusCache: skip fetch', { reason: 'fresh', sessionId, force, isStale: cache.isStale, ageMs: Date.now() - cache.lastFetched, staleTime });
       return;
     }
-    try { console.debug('[summary.status] fetch start', { sessionId, force }); } catch {}
+    devLog('debug', 'useSummaryStatusCache: fetch start', { sessionId, force });
 
     // Cancel any ongoing request
     if (abortControllerRef.current) {
@@ -108,7 +109,7 @@ const fetchSummaryStatus = useCallback(async (force = false) => {
 
 const data = await response.json();
       const newEtag = response.headers.get('etag');
-      try { console.debug('[summary.status] fetch ok', { sessionId, version: (data?.lastSummary?.version ?? null), updatedAt: (data?.lastSummary?.updatedAt ?? null), turnsSince: (data?.turnsSince ?? null) }); } catch {}
+      devLog('debug', 'useSummaryStatusCache: fetch ok', { sessionId, version: (data?.lastSummary?.version ?? null), updatedAt: (data?.lastSummary?.updatedAt ?? null), turnsSince: (data?.turnsSince ?? null) });
 
       if (!isMountedRef.current) return;
 
@@ -124,7 +125,7 @@ const data = await response.json();
 
       if (err instanceof Error && err.name !== 'AbortError') {
         setError(err);
-        console.error('Failed to fetch summary status:', err);
+        devLog('error', 'useSummaryStatusCache: Failed to fetch summary status', { error: err });
       }
     } finally {
       if (isMountedRef.current) {
@@ -137,7 +138,7 @@ const data = await response.json();
 // Initial fetch when sessionId changes
   useEffect(() => {
     if (sessionId) {
-      try { console.debug('[summary.status] sessionId changed -> initial fetch', { sessionId }); } catch {}
+      devLog('debug', 'useSummaryStatusCache: sessionId changed -> initial fetch', { sessionId });
       void fetchSummaryStatus(true);
     }
   }, [sessionId]);

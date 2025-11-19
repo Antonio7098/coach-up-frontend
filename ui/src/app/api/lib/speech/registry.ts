@@ -3,6 +3,7 @@
 */
 import { getSttProvider, type SttProvider } from './stt'
 import { getTtsProvider, type TtsProvider } from './tts'
+import { devLog } from "../observability";
 
 export type ProviderKind = 'stt' | 'tts'
 
@@ -22,13 +23,33 @@ export function resolveProvider(
   const requested = (opts.allowOverride ? (opts.requestedName || '') : '').toLowerCase().trim()
   const specificEnv = (opts.envName || '').toLowerCase().trim()
   const profile = (process.env.SPEECH_PROFILE || '').toLowerCase().trim()
+
   // Precedence: requested override > specific env var > profile > mock
   const name = (requested || specificEnv || profile || 'mock') as string
+
+  devLog("debug", "speech-registry: resolving provider", {
+    kind,
+    requested,
+    specificEnv,
+    profile,
+    resolvedName: name
+  });
+
   if (kind === 'stt') {
     const provider = getSttProvider(name)
+    devLog("info", "speech-registry: STT provider resolved", {
+      kind,
+      name: provider.name,
+      availableProviders: ['mock', 'deepgram', 'google'] // Add actual available providers
+    });
     return { kind, name: provider.name, provider }
   } else {
     const provider = getTtsProvider(name)
+    devLog("info", "speech-registry: TTS provider resolved", {
+      kind,
+      name: provider.name,
+      availableProviders: ['mock', 'google', 'aws'] // Add actual available providers
+    });
     return { kind, name: provider.name, provider }
   }
 }

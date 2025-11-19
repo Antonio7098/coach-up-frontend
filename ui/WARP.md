@@ -38,6 +38,12 @@ Environment and services
   - MOCK_CONVEX=0|1 (1 = in-memory mock Convex)
   - CONVEX_URL and NEXT_PUBLIC_CONVEX_URL (for real Convex)
   - AI_API_BASE_URL and NEXT_PUBLIC_AI_API_BASE_URL (FastAPI base; defaults to http://127.0.0.1:8000)
+  - Triage:
+    - AI_TRIAGE_ENABLED=0|1 (enable triage routes)
+    - TRIAGE_ON_USER_INGEST=0|1 (run triage every user message; sends last two interactions)
+    - TRIAGE_ON_SUMMARY=0|1 (legacy pre-summary triage; off by default)
+    - TRIAGE_PROVIDER=mock|external (mock for local dev; external calls AI API /triage/batch)
+    - TRIAGE_TIMEOUT_MS (e.g., 1200 for user-ingest path)
   - Clerk (optional): NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY, CLERK_SECRET_KEY, CLERK_PROTECT_ALL=0|1
 - Local backends
   - Convex dev (from repo root coach-up-frontend/): npx convex dev

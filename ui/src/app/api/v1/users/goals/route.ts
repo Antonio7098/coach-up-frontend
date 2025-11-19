@@ -6,6 +6,7 @@ import { makeConvex } from "../../../lib/convex";
 import * as mockConvex from "../../../lib/mockConvex";
 import { promMetrics } from "../../../lib/metrics";
 import { clientKeyFromHeaders, rateLimit } from "../../../lib/ratelimit";
+import { devLog } from "../../../lib/observability";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -71,11 +72,12 @@ export async function GET(request: Request) {
 
   try {
     if (process.env.MOCK_CONVEX === '1') {
+      try { await mockConvex.__devSeedUserDataFor(userId); } catch {}
       const goals = await mockConvex.listUserGoals({ userId });
-      return respond(200, { goals }, rateHeaders);
+      return respond(200, { goals: Array.isArray(goals) ? goals : [] }, rateHeaders);
     }
     const client = makeConvex(convexBaseUrl());
-    const goals = await client.query("functions/users:listGoals", { userId }) as any[];
+    const goals = await client.query("functions/users:listUserGoals", { userId }) as any[];
     return respond(200, { goals: Array.isArray(goals) ? goals : [] }, rateHeaders);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e ?? 'Convex query failed');
@@ -106,23 +108,23 @@ export async function POST(request: Request) {
   try { body = await request.json(); } catch {}
   const { userId, goalId, title, description, status, targetDateMs, tags } = body || {};
   if (!userId || !goalId || !title || !status) {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 400, msg: 'Missing required fields', mode, latencyMs: Date.now() - started }));
+    devLog("warn", "users-goals: missing required fields", { requestId, status: 400, latencyMs: Date.now() - started });
     return respond(400, { error: "userId, goalId, title, status are required" }, rateHeaders);
   }
 
   try {
     if (process.env.MOCK_CONVEX === '1') {
       const res = await mockConvex.addOrUpdateGoal({ userId, goalId, title, description, status, targetDateMs, tags });
-      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, userId, goalId, status: 200, created: !!res?.created, mode, latencyMs: Date.now() - started }));
+      devLog("info", "users-goals: create/update goal (mock)", { requestId, userId, goalId, status: 200, created: !!res?.created, latencyMs: Date.now() - started });
       return respond(200, { ok: true, created: !!res?.created }, rateHeaders);
     }
     const client = makeConvex(convexBaseUrl());
-    const res = await client.mutation("functions/users:addGoal", { userId, goalId, title, description, status, targetDateMs, tags }) as any;
-    console.log(JSON.stringify({ level: 'info', route: routePath, requestId, userId, goalId, status: 200, created: !!res?.created, mode, latencyMs: Date.now() - started }));
+    const res = await client.mutation("functions/users:addOrUpdateGoal", { userId, goalId, title, description, status, targetDateMs, tags }) as any;
+    devLog("info", "users-goals: create/update goal (mock)", { requestId, userId, goalId, status: 200, created: !!res?.created, latencyMs: Date.now() - started });
     return respond(200, { ok: true, created: !!res?.created }, rateHeaders);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e ?? 'Convex mutation failed');
-    console.log(JSON.stringify({ level: 'error', route: routePath, requestId, userId, goalId, status: 502, error: msg, mode, latencyMs: Date.now() - started }));
+    devLog("error", "users-goals: convex mutation failed", { requestId, userId, goalId, status: 502, error: msg, latencyMs: Date.now() - started });
     return respond(502, { error: "Convex mutation failed" }, rateHeaders);
   }
 }
@@ -150,23 +152,23 @@ export async function PATCH(request: Request) {
   try { body = await request.json(); } catch {}
   const { userId, goalId, ...updates } = body || {};
   if (!userId || !goalId) {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 400, msg: 'Missing userId or goalId', mode, latencyMs: Date.now() - started }));
+    devLog("warn", "users-goals: missing userId or goalId", { requestId, status: 400, latencyMs: Date.now() - started });
     return respond(400, { error: "userId and goalId are required" }, rateHeaders);
   }
 
   try {
     if (process.env.MOCK_CONVEX === '1') {
-      const res = await mockConvex.updateGoal({ userId, goalId, ...updates });
-      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, userId, goalId, status: 200, ok: !!res?.ok, mode, latencyMs: Date.now() - started }));
+      await mockConvex.addOrUpdateGoal({ userId, goalId, ...updates });
+      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, userId, goalId, status: 200, ok: true, mode, latencyMs: Date.now() - started }));
       return respond(200, { ok: true }, rateHeaders);
     }
     const client = makeConvex(convexBaseUrl());
-    await client.mutation("functions/users:updateGoal", { userId, goalId, ...updates });
+    await client.mutation("functions/users:addOrUpdateGoal", { userId, goalId, ...updates });
     console.log(JSON.stringify({ level: 'info', route: routePath, requestId, userId, goalId, status: 200, ok: true, mode, latencyMs: Date.now() - started }));
     return respond(200, { ok: true }, rateHeaders);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e ?? 'Convex mutation failed');
-    console.log(JSON.stringify({ level: 'error', route: routePath, requestId, userId, goalId, status: 502, error: msg, mode, latencyMs: Date.now() - started }));
+    devLog("error", "users-goals: convex mutation failed", { requestId, userId, goalId, status: 502, error: msg, latencyMs: Date.now() - started });
     return respond(502, { error: "Convex mutation failed" }, rateHeaders);
   }
 }
@@ -194,23 +196,23 @@ export async function DELETE(request: Request) {
   const rateHeaders = { "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) };
 
   if (!userId || !goalId) {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 400, msg: 'Missing userId or goalId', mode, latencyMs: Date.now() - started }));
+    devLog("warn", "users-goals: missing userId or goalId", { requestId, status: 400, latencyMs: Date.now() - started });
     return respond(400, { error: "userId and goalId are required" }, rateHeaders);
   }
 
   try {
     if (process.env.MOCK_CONVEX === '1') {
       const res = await mockConvex.deleteGoal({ userId, goalId });
-      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, userId, goalId, status: 200, deleted: !!res?.deleted, mode, latencyMs: Date.now() - started }));
+      devLog("info", "users-goals: delete goal", { requestId, userId, goalId, status: 200, deleted: !!res?.deleted, latencyMs: Date.now() - started });
       return respond(200, { ok: true, deleted: !!res?.deleted }, rateHeaders);
     }
     const client = makeConvex(convexBaseUrl());
     const res = await client.mutation("functions/users:deleteGoal", { userId, goalId }) as any;
-    console.log(JSON.stringify({ level: 'info', route: routePath, requestId, userId, goalId, status: 200, deleted: !!res?.deleted, mode, latencyMs: Date.now() - started }));
+    devLog("info", "users-goals: delete goal", { requestId, userId, goalId, status: 200, deleted: !!res?.deleted, latencyMs: Date.now() - started });
     return respond(200, { ok: true, deleted: !!res?.deleted }, rateHeaders);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e ?? 'Convex mutation failed');
-    console.log(JSON.stringify({ level: 'error', route: routePath, requestId, userId, goalId, status: 502, error: msg, mode, latencyMs: Date.now() - started }));
+    devLog("error", "users-goals: convex mutation failed", { requestId, userId, goalId, status: 502, error: msg, latencyMs: Date.now() - started });
     return respond(502, { error: "Convex mutation failed" }, rateHeaders);
   }
 }

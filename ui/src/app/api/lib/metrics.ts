@@ -1,5 +1,6 @@
  
 import * as client from "prom-client";
+import { devLog } from "./observability";
 
 // Ensure a singleton registry across hot reloads in Next.js
 const g = globalThis as unknown as {
@@ -29,8 +30,17 @@ const g = globalThis as unknown as {
 };
 
 function createMetrics() {
+  devLog("debug", "metrics: initializing Prometheus metrics registry", {
+    timestamp: new Date().toISOString()
+  });
+
   const registry = new client.Registry();
   client.collectDefaultMetrics({ register: registry });
+
+  devLog("info", "metrics: Prometheus metrics registry initialized", {
+    metricCount: registry.getMetricsAsArray().length,
+    timestamp: new Date().toISOString()
+  });
 
   const labelNames = ["route", "method", "status", "mode"] as const;
 

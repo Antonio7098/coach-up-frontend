@@ -8,6 +8,7 @@ import { makeConvex } from "../../../lib/convex";
 import * as mockConvex from "../../../lib/mockConvex";
 import { clientKeyFromHeaders, rateLimit } from "../../../lib/ratelimit";
 import { getLatestSummary } from "../../../lib/summaries";
+import { devLog } from "../../../lib/observability";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -41,6 +42,16 @@ export async function GET(request: Request) {
   const mode = process.env.MOCK_CONVEX === '1' ? 'mock' : 'convex';
   const endTimer = promMetrics.requestDurationSeconds.startTimer();
 
+  const url = new URL(request.url);
+  const sessionId = url.searchParams.get("sessionId") || "";
+
+  devLog("debug", "session-summary-lite: GET request initiated", {
+    requestId,
+    sessionId,
+    mode,
+    timestamp: new Date().toISOString()
+  });
+
   const respond = (status: number, body: unknown, extraHeaders?: Record<string, string>) => {
     const labels = { route: routePath, method, status: String(status), mode } as const;
     promMetrics.requestsTotal.labels(labels.route, labels.method, labels.status, labels.mode).inc();
@@ -69,8 +80,6 @@ export async function GET(request: Request) {
     return respond(401, { error: "Unauthorized" }, { "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) });
   }
 
-  const url = new URL(request.url);
-  const sessionId = url.searchParams.get("sessionId") || "";
   if (!sessionId) {
     return respond(400, { error: "sessionId is required" }, { "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) });
   }
@@ -123,7 +132,7 @@ export async function GET(request: Request) {
 
     return respond(200, litePayload, { "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) });
   } catch (err: unknown) {
-    try { console.error('[session-summary-lite] GET failed', err); } catch {}
+    devLog("error", "session-summary-lite: GET failed", { sessionId, requestId, error: String(err), mode });
     return respond(502, { error: "Backend query failed" });
   }
 }

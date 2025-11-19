@@ -9,6 +9,9 @@ import { makeConvex } from "../../lib/convex";
 import * as mockConvex from "../../lib/mockConvex";
 import { ProviderNotConfiguredError, getTtsProvider } from "../../lib/speech/tts";
 import { CostCalculator } from "../../lib/cost-calculator";
+import { getEnvString, getEnvBool } from "../../lib/env";
+import { json, badRequest, unauthorized, withTimeout, serverBaseUrl } from "../../lib/http";
+import { devLog } from "../../lib/observability";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -29,15 +32,15 @@ async function persistInteraction(opts: {
   ttsCostCents?: number;
   ttsCharacters?: number;
 }) {
+  const { sessionId, groupId, text } = opts;
   try {
-    const { sessionId, groupId, text } = opts;
     // Persist when sessionId is present; groupId is optional metadata
     if (!sessionId) return;
     
     // Skip empty or meaningless text content
     const trimmedText = text?.trim();
     if (!trimmedText || trimmedText.length === 0) {
-      console.log("[tts] Skipping empty interaction - no meaningful text content");
+      devLog("warn", "tts: skipping empty interaction - no meaningful text content", { sessionId });
       return;
     }
     const messageId = safeUUID();
@@ -49,12 +52,12 @@ async function persistInteraction(opts: {
     } catch {
       contentHash = String(Math.abs(trimmedText.length * 2654435761 % 2 ** 31));
     }
-    const useMock = process.env.MOCK_CONVEX === "1";
+    const useMock = getEnvString("MOCK_CONVEX") === "1";
     if (useMock) {
       await mockConvex.appendInteraction({ sessionId, groupId, messageId, role, contentHash, text: trimmedText, audioUrl: opts.audioUrl ?? undefined, ts });
       return;
     }
-    const convexUrl = process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || "http://127.0.0.1:3210";
+    const convexUrl = getEnvString("CONVEX_URL") || getEnvString("NEXT_PUBLIC_CONVEX_URL") || "http://127.0.0.1:3210";
     const client = makeConvex(convexUrl);
     await client.mutation("functions/interactions:appendInteraction", { 
       sessionId, 
@@ -69,7 +72,7 @@ async function persistInteraction(opts: {
       ts 
     });
   } catch (e) {
-    try { console.error("[tts] persistInteraction failed", e); } catch {}
+    devLog("error", "tts: persistInteraction failed", { sessionId, error: String(e) });
   }
 }
 
@@ -95,7 +98,7 @@ async function calculateTTSCost(provider: string, modelId: string | undefined, c
       characters: result.usage.characters || characters,
     };
   } catch (error) {
-    console.error('[tts] Cost calculation failed:', error);
+    devLog("error", "tts: cost calculation failed", { error: String(error) });
     return { costCents: 0, characters };
   }
 }
@@ -106,9 +109,15 @@ export async function POST(request: Request) {
   const routePath = "/api/v1/tts";
   const method = "POST";
   const started = Date.now();
-  let provider = getTtsProvider(process.env.TTS_PROVIDER);
+  let provider = getTtsProvider(getEnvString("TTS_PROVIDER"));
   let mode = provider.name;
   const endTimer = promMetrics.requestDurationSeconds.startTimer();
+
+  devLog("debug", "tts: POST request initiated", {
+    requestId,
+    mode,
+    timestamp: new Date().toISOString()
+  });
 
   function respond(status: number, body: unknown) {
     const labels = { route: routePath, method, status: String(status), mode } as const;
@@ -125,19 +134,19 @@ export async function POST(request: Request) {
 
   const auth = await requireAuth(request);
   if (!auth.ok) {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 401, reason: auth.reason, latencyMs: Date.now() - started }));
+    devLog("warn", "tts: authentication failed", { requestId, status: 401, reason: auth.reason, latencyMs: Date.now() - started });
     return respond(401, { error: "Unauthorized" });
   }
 
   let body: any;
   try { body = await request.json(); }
   catch {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 400, msg: 'Invalid JSON', latencyMs: Date.now() - started }));
+    devLog("warn", "tts: invalid JSON", { requestId, status: 400, latencyMs: Date.now() - started });
     return respond(400, { error: "Invalid JSON" });
   }
 
   // Optional provider override for dev/testing
-  if (process.env.ALLOW_PROVIDER_OVERRIDE === '1') {
+  if (getEnvString("ALLOW_PROVIDER_OVERRIDE") === '1') {
     const requested = typeof body?.provider === 'string' ? body.provider : undefined;
     if (requested) {
       provider = getTtsProvider(requested);
@@ -148,7 +157,7 @@ export async function POST(request: Request) {
   const text = typeof body?.text === 'string' ? body.text : undefined;
   // Let providers apply their own default voice when none is passed
   const voiceId = typeof body?.voiceId === 'string' ? body.voiceId : undefined;
-  const format = typeof body?.format === 'string' ? body.format : (process.env.TTS_FORMAT || 'audio/mpeg');
+  const format = typeof body?.format === 'string' ? body.format : (getEnvString("TTS_FORMAT") || 'audio/mpeg');
   const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : undefined;
   const groupId = typeof body?.groupId === 'string' ? body.groupId : undefined;
 

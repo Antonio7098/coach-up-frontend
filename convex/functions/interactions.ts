@@ -81,14 +81,186 @@ export const listBySession = query({
     const nonEmpty = (s: unknown) => typeof s === 'string' && s.trim().length > 0;
     if (!nonEmpty(args.sessionId)) throw new Error('sessionId required');
     const lim = Math.max(1, Math.min(500, args.limit ?? 200));
+
+    // Use the by_session_ts index for efficient ordering by timestamp
+    // This avoids collecting all docs and sorting in memory
     const docs = await ctx.db
       .query("interactions")
-      .withIndex("by_session", (q: any) => q.eq("sessionId", args.sessionId))
+      .withIndex("by_session_ts", (q: any) => q.eq("sessionId", args.sessionId))
       .collect();
-    // Order by event timestamp ascending (chronological transcript)
-    docs.sort((a: any, b: any) => (a.ts ?? 0) - (b.ts ?? 0));
+
+    // Since by_session_ts orders by [sessionId, ts] ascending,
+    // the most recent items are at the end
     if (docs.length > lim) return docs.slice(docs.length - lim);
     return docs;
+  },
+});
+
+// Optimized tail query - get the most recent N messages for a session
+// Uses projection to only fetch needed fields, reducing bandwidth
+export const listTailBySession = query({
+  args: {
+    sessionId: v.string(),
+    limit: v.optional(v.number()),
+    // Optional field projection to reduce data transfer
+    fields: v.optional(v.array(v.union(
+      v.literal("text"),
+      v.literal("role"),
+      v.literal("messageId"),
+      v.literal("ts"),
+      v.literal("createdAt"),
+      v.literal("groupId"),
+      v.literal("assessmentType"),
+    ))),
+  },
+  handler: async (ctx, args) => {
+    const nonEmpty = (s: unknown) => typeof s === 'string' && s.trim().length > 0;
+    if (!nonEmpty(args.sessionId)) throw new Error('sessionId required');
+    const lim = Math.max(1, Math.min(200, args.limit ?? 50));
+
+    // Use the by_session_ts index for efficient ordering by timestamp
+    // This avoids collecting all docs and sorting in memory
+    const docs = await ctx.db
+      .query("interactions")
+      .withIndex("by_session_ts", (q: any) => q.eq("sessionId", args.sessionId))
+      .collect();
+
+    // Get the most recent items (tail of the list)
+    const tail = docs.slice(-lim);
+
+    // Apply field projection if specified to reduce data transfer
+    if (args.fields && args.fields.length > 0) {
+      return tail.map(doc => {
+        const projected: any = { _id: doc._id };
+        for (const field of args.fields) {
+          if (doc[field] !== undefined) {
+            projected[field] = doc[field];
+          }
+        }
+        return projected;
+      });
+    }
+
+    return tail;
+  },
+});
+
+// Optimized ID-only tail query - get message IDs for recent messages
+// Minimal data transfer, useful for triage operations
+export const listIdsTail = query({
+  args: {
+    sessionId: v.string(),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const nonEmpty = (s: unknown) => typeof s === 'string' && s.trim().length > 0;
+    if (!nonEmpty(args.sessionId)) throw new Error('sessionId required');
+    const lim = Math.max(1, Math.min(200, args.limit ?? 50));
+
+    // Use the by_session_ts index for efficient ordering by timestamp
+    const docs = await ctx.db
+      .query("interactions")
+      .withIndex("by_session_ts", (q: any) => q.eq("sessionId", args.sessionId))
+      .collect();
+
+    // Return only message IDs and timestamps for the tail
+    const tail = docs.slice(-lim);
+    return tail.map(doc => ({
+      messageId: doc.messageId,
+      ts: doc.ts,
+      role: doc.role,
+    }));
+  },
+});
+
+// Optimized query for triage context - get recent messages with role and content
+// Uses projection to avoid fetching expensive fields like audio URLs and costs
+export const listForTriageContext = query({
+  args: {
+    sessionId: v.string(),
+    limit: v.optional(v.number()),
+    cutoffIndex: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const nonEmpty = (s: unknown) => typeof s === 'string' && s.trim().length > 0;
+    if (!nonEmpty(args.sessionId)) throw new Error('sessionId required');
+    const lim = Math.max(1, Math.min(100, args.limit ?? 20));
+
+    const docs = await ctx.db
+      .query("interactions")
+      .withIndex("by_session_ts", (q: any) => q.eq("sessionId", args.sessionId))
+      .collect();
+
+    // Apply cutoff index if specified
+    const filteredDocs = args.cutoffIndex !== undefined
+      ? docs.filter((_, idx) => idx >= args.cutoffIndex!)
+      : docs;
+
+    // Get the most recent items
+    const tail = filteredDocs.slice(-lim);
+
+    // Project only fields needed for triage context
+    return tail.map(doc => ({
+      messageId: doc.messageId,
+      role: doc.role,
+      text: doc.text,
+      ts: doc.ts,
+      groupId: doc.groupId,
+      assessmentType: doc.assessmentType,
+    }));
+  },
+});
+
+// Optimized query for chat context - get conversation history with minimal fields
+export const listForChatContext = query({
+  args: {
+    sessionId: v.string(),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const nonEmpty = (s: unknown) => typeof s === 'string' && s.trim().length > 0;
+    if (!nonEmpty(args.sessionId)) throw new Error('sessionId required');
+    const lim = Math.max(1, Math.min(50, args.limit ?? 20));
+
+    const docs = await ctx.db
+      .query("interactions")
+      .withIndex("by_session_ts", (q: any) => q.eq("sessionId", args.sessionId))
+      .collect();
+
+    // Get the most recent items
+    const tail = docs.slice(-lim);
+
+    // Project only fields needed for chat context
+    return tail.map(doc => ({
+      messageId: doc.messageId,
+      role: doc.role,
+      text: doc.text,
+      ts: doc.ts,
+    }));
+  },
+});
+
+// Count recent interactions efficiently
+export const countRecentInteractions = query({
+  args: {
+    sessionId: v.string(),
+    sinceTs: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const nonEmpty = (s: unknown) => typeof s === 'string' && s.trim().length > 0;
+    if (!nonEmpty(args.sessionId)) throw new Error('sessionId required');
+
+    const docs = await ctx.db
+      .query("interactions")
+      .withIndex("by_session_ts", (q: any) => q.eq("sessionId", args.sessionId))
+      .collect();
+
+    // Filter by timestamp if provided
+    const filtered = args.sinceTs
+      ? docs.filter(doc => doc.ts >= args.sinceTs!)
+      : docs;
+
+    return filtered.length;
   },
 });
 

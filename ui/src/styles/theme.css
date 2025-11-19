@@ -1,104 +1,242 @@
-/* Global theme tokens */
+/* ===========================================
+   GLOBAL THEME TOKENS - LIGHT MODE
+   ===========================================
+
+   These CSS custom properties define the color palette and spacing
+   for the entire coach-up application. All colors use HEX format
+   for consistency and easier editing in design tools.
+
+   FORMAT: All values are hex colors (#RRGGBB) for use with var()
+*/
+
 :root {
-  /* Neutrals */
-  --cu-bg: 250 250 250; /* neutral-50 */
-  --cu-fg: 38 38 38; /* neutral-800 */
-  --cu-fg-muted: 82 82 91;
+  /* ===========================================
+     NEUTRAL COLORS - Base text and backgrounds
+     Affects: body text, card backgrounds, subtle elements
+     =========================================== */
+  --cu-bg: #faf7f4; /* warm off-white background - AFFECTS: page background */
+  --cu-fg: #3f3b3b; /* TEST RED color - AFFECTS: main text color, headings */
+  --cu-fg-muted: #0e0e0f; /* muted text - AFFECTS: secondary text, placeholders */
 
-  /* Surfaces */
-  --cu-surface: 255 255 255;
-  --cu-surface-border: 229 231 235;
-  --cu-elevated-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
+  /* ===========================================
+     SURFACE COLORS - Cards, panels, inputs
+     Affects: component backgrounds, borders, shadows
+     =========================================== */
+  --cu-surface: #ffffff; /* white - AFFECTS: card backgrounds, input fields */
+  --cu-surface-border: #e5e7eb; /* light gray - AFFECTS: borders on cards, inputs */
+  --cu-elevated-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06); /* subtle shadow */
 
-  /* Accents */
-  --cu-accent: 75 85 99; /* gray-600 */
-  --cu-accent-soft: 209 213 219; /* gray-300 */
-  /* Text color on accent/success backgrounds */
-  --cu-on-accent: 255 255 255;
-  --cu-on-success: 255 255 255;
+  /* ===========================================
+     ACCENT COLORS - Interactive elements, highlights
+     Affects: buttons, links, progress bars, focus states
+     =========================================== */
+  --cu-accent: #4b5563; /* gray-600 - AFFECTS: secondary buttons, borders */
+  --cu-accent-soft: #d1d5db; /* gray-300 - AFFECTS: hover states, subtle accents */
 
-  /* Status (semantic) */
-  --cu-error: 220 38 38; /* red-600 */
-  --cu-error-soft: 254 202 202; /* red-200 */
-  --cu-on-error: 255 255 255; /* text on error bg */
-  --cu-success: 22 163 74; /* green-600 */
-  --cu-success-soft: 187 247 208; /* green-200 */
-  --cu-warning: 245 158 11; /* amber-500 */
-  --cu-warning-soft: 254 215 170; /* amber-200 */
+  /* ===========================================
+     TEXT ON DARK BACKGROUNDS
+     Affects: text color when on colored backgrounds
+     =========================================== */
+  --cu-on-accent: #ffffff; /* white text on accent backgrounds */
+  --cu-on-success: #ffffff; /* white text on success backgrounds */
+
+  /* ===========================================
+     SEMANTIC COLORS - Status indicators, alerts
+     Affects: error messages, success states, warnings
+     =========================================== */
+  --cu-error: #dc2626; /* red-600 - AFFECTS: error text, validation messages */
+  --cu-error-soft: #fecaca; /* red-200 - AFFECTS: error backgrounds, soft alerts */
+  --cu-on-error: #ffffff; /* white text on error backgrounds */
+
+  --cu-success: #16a34a; /* green-600 - AFFECTS: success indicators, confirmations */
+  --cu-success-soft: #bbf7d0; /* green-200 - AFFECTS: success backgrounds */
+
+  --cu-warning: #f59e0b; /* amber-500 - AFFECTS: warning indicators */
+  --cu-warning-soft: #fed7aa; /* amber-200 - AFFECTS: warning backgrounds */
 }
+ 
+/* ===========================================
+   DARK MODE THEME TOKENS
+   ===========================================
+
+   Applied when user's system prefers dark mode.
+   All colors are adjusted for dark backgrounds.
+*/
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --cu-bg: 10 10 10; /* align with globals.css dark background */
-    --cu-fg: 237 237 237; /* align with globals.css dark foreground */
-    --cu-fg-muted: 161 161 170;
-    --cu-surface: 24 24 27;
-    --cu-surface-border: 63 63 70;
-    --cu-accent: 156 163 175;
-    --cu-accent-soft: 82 82 91;
-    --cu-on-accent: 255 255 255;
-    --cu-on-success: 255 255 255;
+    /* ===========================================
+       DARK MODE NEUTRALS
+       Affects: Same elements as light mode, but darker
+       =========================================== */
+    --cu-bg: #1f2937; /* gray-800 - AFFECTS: dark page background */
+    --cu-fg: #f9fafb; /* gray-50 - AFFECTS: dark mode text color */
+    --cu-fg-muted: #a1a1aa; /* muted text in dark mode */
 
-    /* Status (semantic) - tuned for dark */
-    --cu-error: 239 68 68; /* red-500 */
-    --cu-error-soft: 127 29 29; /* red-900-ish for soft overlays */
-    --cu-on-error: 255 255 255;
-    --cu-success: 34 197 94; /* green-500 */
-    --cu-success-soft: 20 83 45; /* green-900-ish */
-    --cu-warning: 245 158 11; /* amber-500 */
-    --cu-warning-soft: 120 53 15; /* amber-900-ish */
+    /* ===========================================
+       DARK MODE SURFACES
+       Affects: Cards and components in dark mode
+       =========================================== */
+    --cu-surface: #18181b; /* very dark - AFFECTS: card backgrounds in dark mode */
+    --cu-surface-border: #3f3f46; /* dark gray - AFFECTS: borders in dark mode */
+    --cu-accent: #9ca3af; /* light gray - AFFECTS: buttons, links in dark mode */
+    --cu-accent-soft: #52525b; /* medium gray - AFFECTS: subtle elements in dark mode */
+
+    /* ===========================================
+       DARK MODE TEXT ON BACKGROUNDS
+       =========================================== */
+    --cu-on-accent: #ffffff; /* white text on dark accent backgrounds */
+    --cu-on-success: #ffffff; /* white text on dark success backgrounds */
+
+    /* ===========================================
+       DARK MODE SEMANTIC COLORS
+       Adjusted for better contrast on dark backgrounds
+       =========================================== */
+    --cu-error: #ef4444; /* lighter red for dark mode */
+    --cu-error-soft: #7f1d1d; /* dark red for soft overlays */
+    --cu-on-error: #ffffff; /* white text on error */
+    --cu-success: #22c55e; /* brighter green for dark mode */
+    --cu-success-soft: #14532d; /* dark green for soft overlays */
+    --cu-warning: #f59e0b; /* amber - same in light/dark */
+    --cu-warning-soft: #78330f; /* dark amber for overlays */
   }
 }
 
-/* Convenience utility classes for places we don't want inline tailwind tokens */
+/* ===========================================
+   UTILITY CLASSES - For use in HTML/JSX
+   ===========================================
+
+   These classes provide easy access to theme colors without
+   writing rgb(var(--name)) everywhere in your code.
+*/
+
+/* ===========================================
+   BASIC THEME UTILITIES
+   =========================================== */
+
+/* Full theme surface with text - AFFECTS: any element needing card-like styling */
 .cu-surface {
-  background-color: rgb(var(--cu-surface));
-  color: rgb(var(--cu-fg));
+  background-color: var(--cu-surface); /* uses --cu-surface */
+  color: var(--cu-fg); /* uses --cu-fg */
 }
 
+/* Theme border - AFFECTS: borders on any element */
 .cu-border {
-  border-color: rgb(var(--cu-surface-border));
+  border-color: var(--cu-surface-border); /* uses --cu-surface-border */
 }
 
-/* Match border color to the surface background (visually removes borders) */
+/* Invisible border (matches surface) - AFFECTS: removes visual borders */
 .cu-border-surface {
-  border-color: rgb(var(--cu-surface));
+  border-color: var(--cu-surface); /* uses --cu-surface */
 }
 
+/* Muted text color - AFFECTS: secondary text, placeholders */
 .cu-muted {
-  color: rgb(var(--cu-fg-muted));
+  color: var(--cu-fg-muted); /* uses --cu-fg-muted */
 }
 
+/* Progress/accent background - AFFECTS: progress bars, highlights */
 .cu-progress {
-  background-color: rgb(var(--cu-accent));
+  background-color: var(--cu-accent); /* uses --cu-accent */
 }
 
-/* Semantic helpers */
-.cu-error-bg { background-color: rgb(var(--cu-error)); color: rgb(var(--cu-on-error)); }
-.cu-error-soft-bg { background-color: rgb(var(--cu-error-soft)); }
-.cu-success-text { color: rgb(var(--cu-success)); }
-.cu-warning-text { color: rgb(var(--cu-warning)); }
-.cu-error-text { color: rgb(var(--cu-error)); }
-/* Warning soft background helper, pairs with .cu-warning-text */
-.cu-warning-soft-bg { background-color: rgb(var(--cu-warning-soft)); }
-/* Accent and Success background helpers */
-.cu-accent-bg { background-color: rgb(var(--cu-accent)); color: rgb(var(--cu-on-accent)); }
-.cu-success-bg { background-color: rgb(var(--cu-success)); color: rgb(var(--cu-on-success)); }
-/* Accent soft background and text helpers */
-.cu-accent-soft-bg { background-color: rgb(var(--cu-accent-soft)); }
-.cu-accent-text { color: rgb(var(--cu-accent)); }
-/* Error border helper */
-.cu-error-border { border-color: rgb(var(--cu-error)); }
-/* Hover helpers */
-.cu-hover-accent-soft-bg:hover { background-color: rgb(var(--cu-accent-soft)); }
+/* ===========================================
+   SEMANTIC UTILITIES - Status colors
+   =========================================== */
 
-/* Alpha helpers */
-.cu-accent-bg-20 { background-color: rgba(var(--cu-accent), 0.2); }
-.cu-bg-80 { background-color: rgba(var(--cu-bg), 0.8); }
+/* Error styling - AFFECTS: error messages, validation states */
+.cu-error-bg {
+  background-color: var(--cu-error); /* uses --cu-error */
+  color: var(--cu-on-error); /* uses --cu-on-error */
+}
+.cu-error-soft-bg { background-color: var(--cu-error-soft); } /* uses --cu-error-soft */
+.cu-error-text { color: var(--cu-error); } /* uses --cu-error */
+.cu-error-border { border-color: var(--cu-error); } /* uses --cu-error */
 
+/* Success styling - AFFECTS: success messages, confirmations */
+.cu-success-bg {
+  background-color: var(--cu-success); /* uses --cu-success */
+  color: var(--cu-on-success); /* uses --cu-on-success */
+}
+.cu-success-text { color: var(--cu-success); } /* uses --cu-success */
+
+/* Warning styling - AFFECTS: warnings, cautions */
+.cu-warning-text { color: var(--cu-warning); } /* uses --cu-warning */
+.cu-warning-soft-bg { background-color: var(--cu-warning-soft); } /* uses --cu-warning-soft */
+
+/* Accent styling - AFFECTS: buttons, links, interactive elements */
+.cu-accent-bg {
+  background-color: var(--cu-accent); /* uses --cu-accent */
+  color: var(--cu-on-accent); /* uses --cu-on-accent */
+}
+.cu-accent-soft-bg { background-color: var(--cu-accent-soft); } /* uses --cu-accent-soft */
+.cu-accent-text { color: var(--cu-accent); } /* uses --cu-accent */
+
+/* ===========================================
+   INTERACTION UTILITIES
+   =========================================== */
+
+/* Hover states - AFFECTS: interactive elements on hover */
+.cu-hover-accent-soft-bg:hover {
+  background-color: var(--cu-accent-soft); /* uses --cu-accent-soft */
+}
+
+/* ===========================================
+   TRANSPARENCY UTILITIES
+   =========================================== */
+
+/* Semi-transparent versions - AFFECTS: overlays, subtle backgrounds */
+.cu-accent-bg-20 {
+  background-color: color-mix(in srgb, var(--cu-accent) 20%, transparent 80%);
+} /* 20% opacity accent */
+.cu-bg-80 {
+  background-color: color-mix(in srgb, var(--cu-bg) 80%, transparent 20%);
+} /* 80% opacity background */
+
+/* ===========================================
+   GLOBAL BODY STYLING
+   ===========================================
+
+   This applies the theme to the entire page!
+   AFFECTS: entire page background and default text color
+*/
 body {
-  background-color: rgb(var(--cu-bg));
-  color: rgb(var(--cu-fg));
+  background-color: var(--cu-bg); /* uses --cu-bg - THIS CONTROLS PAGE BACKGROUND */
+  color: var(--cu-fg); /* uses --cu-fg - THIS CONTROLS DEFAULT TEXT COLOR */
+}
+
+/* ===========================================
+   TAILWIND-COMPATIBLE UTILITIES
+   ===========================================
+
+   These classes work like Tailwind utilities but use our theme colors.
+   Used in coach-new page to replace hardcoded Tailwind colors.
+*/
+
+/* Text colors - AFFECTS: text elements, replaces text-gray-* */
+.text-foreground {
+  color: var(--cu-fg); /* uses --cu-fg - THIS IS YOUR TEST RED COLOR */
+}
+
+.text-muted-foreground {
+  color: var(--cu-fg-muted); /* uses --cu-fg-muted */
+}
+
+/* ===========================================
+   THEME-BASED UTILITIES
+   ===========================================
+
+   These replace hardcoded Tailwind colors in coach-new
+*/
+
+/* Border color - AFFECTS: borders, replaces border-gray-300 */
+.border-theme {
+  border-color: var(--cu-surface-border); /* uses --cu-surface-border */
+}
+
+/* Background color - AFFECTS: backgrounds, replaces bg-white */
+.bg-theme {
+  background-color: var(--cu-surface); /* uses --cu-surface */
 }
 
 

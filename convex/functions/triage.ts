@@ -28,6 +28,23 @@ export const setResults = mutation({
   handler: async (ctx, args) => {
     const now = Date.now();
     let updated = 0;
+    const messageIds: string[] = [];
+    let assessCount = 0;
+    let notAssessCount = 0;
+
+    const shouldAssess = (t: string) => {
+      switch (t) {
+        case 'single_qa_pair':
+        case 'roleplay_scenario':
+        case 'multi_step_exercise':
+        case 'progressive_skill_building':
+        case 'skill_practice':
+        case 'practice':
+          return true;
+        default:
+          return false;
+      }
+    };
 
     for (const u of args.updates) {
       // Find target interaction by (sessionId, messageId)
@@ -38,23 +55,30 @@ export const setResults = mutation({
       const target = docs.find((d: any) => String(d?.messageId || "") === u.messageId);
       if (!target) continue;
 
+      const decision = shouldAssess(String(u.assessmentType)) ? 'assess' : 'not_assess';
+      if (decision === 'assess') assessCount++; else notAssessCount++;
+
       const patch: any = {
         assessmentType: u.assessmentType,
+        triageStatus: 'processed',
+        triageDecision: decision,
         triageProcessedAt: now,
       };
       // Only set groupId if provided (do not overwrite existing otherwise)
       if (typeof u.groupId === 'string' && u.groupId.trim().length > 0) {
+        patch.triageGroupId = u.groupId;
         patch.groupId = u.groupId;
       }
       await ctx.db.patch(target._id, patch);
+      messageIds.push(String(u.messageId));
       updated++;
     }
 
-    return { ok: true, updated } as const;
+    return { ok: true, updated, messageIds, decisions: { assess: assessCount, not_assess: notAssessCount } } as const;
   }
 });
 
-export const runForSession = action({
+export const runForSession = mutation({
   args: {
     sessionId: v.string(),
     limit: v.optional(v.number()),
@@ -72,7 +96,7 @@ export const runForSession = action({
     try { console.log(JSON.stringify({ where: 'triage.runForSession.start', sessionId: sid, provider, lim, hasCut, cut })); } catch {}
 
     if (provider === 'mock') {
-      const r = await ctx.runAction("functions/triage:runMockForSession", { sessionId: sid, limit: lim });
+      const r = await ctx.runMutation("functions/triage:runMockForSession", { sessionId: sid, limit: lim });
       try { console.log(JSON.stringify({ where: 'triage.runForSession.mock', sessionId: sid, updated: (r as any)?.updated, inferred: (r as any)?.inferred })); } catch {}
       return { ok: true, updated: (r as any)?.updated ?? 0, provider: 'mock', inferred: (r as any)?.inferred ?? 'general_chatter' } as const;
     }
@@ -92,7 +116,7 @@ export const runForSession = action({
 
     const controller = new AbortController();
     const timeoutMs = Math.max(500, Math.min(5000, Number(process.env.TRIAGE_TIMEOUT_MS || 4000)));
-    const to = setTimeout(() => controller.abort(), timeoutMs);
+    // Note: setTimeout not available in Convex mutations, so we rely on the HTTP timeout
 
     let json: any = null;
     let tookMs = 0;
@@ -110,19 +134,16 @@ export const runForSession = action({
       try { console.log(JSON.stringify({ where: 'triage.runForSession.externalResponse', status: res.status, tookMs, textPreview: String(text).slice(0, 400) })); } catch {}
       if (!res.ok) {
         // Fallback to mock if external fails
-        const r = await ctx.runAction("functions/triage:runMockForSession", { sessionId: sid, limit: lim });
+        const r = await ctx.runMutation("functions/triage:runMockForSession", { sessionId: sid, limit: lim });
         try { console.log(JSON.stringify({ where: 'triage.runForSession.fallback.mock', reason: 'non_200', status: res.status, updated: (r as any)?.updated })); } catch {}
         return { ok: true, updated: (r as any)?.updated ?? 0, provider: 'mock_fallback', inferred: (r as any)?.inferred ?? 'general_chatter' } as const;
       }
     } catch (e) {
-      try { clearTimeout(to); } catch {}
       try { console.log(JSON.stringify({ where: 'triage.runForSession.externalError', error: String(e) })); } catch {}
       // Timeout or network error — fallback to mock
-      const r = await ctx.runAction("functions/triage:runMockForSession", { sessionId: sid, limit: lim });
+      const r = await ctx.runMutation("functions/triage:runMockForSession", { sessionId: sid, limit: lim });
       try { console.log(JSON.stringify({ where: 'triage.runForSession.fallback.mock', reason: 'exception', updated: (r as any)?.updated })); } catch {}
       return { ok: true, updated: (r as any)?.updated ?? 0, provider: 'mock_fallback', inferred: (r as any)?.inferred ?? 'general_chatter' } as const;
-    } finally {
-      try { clearTimeout(to); } catch {}
     }
 
     // Expect AI API to return { updates: [{ messageId, assessmentType, groupId? }], provider?, modelId? }
@@ -139,13 +160,13 @@ export const runForSession = action({
         assessmentType: String(u?.assessmentType || 'unknown') as any,
         ...(u?.groupId ? { groupId: String(u.groupId) } : {}),
       }));
-      const r = await ctx.runMutation("functions/triage:setResults", { updates });
-      try { console.log(JSON.stringify({ where: 'triage.runForSession.persisted', updated: (r as any)?.updated })); } catch {}
-      return { ok: true, updated: (r as any)?.updated ?? updates.length, provider: providerName, modelId, tookMs } as const;
+      const r: any = await ctx.runMutation("functions/triage:setResults", { updates });
+      try { console.log(JSON.stringify({ where: 'triage.runForSession.persisted', updated: r?.updated, messageIds: r?.messageIds, decisions: r?.decisions })); } catch {}
+      return { ok: true, updated: r?.updated ?? updates.length, provider: providerName, modelId, tookMs, messageIds: r?.messageIds ?? [], decisions: r?.decisions ?? null } as const;
     }
 
     try { console.log(JSON.stringify({ where: 'triage.runForSession.noUpdates', providerName, modelId })); } catch {}
-    return { ok: true, updated: 0, provider: providerName, modelId, tookMs } as const;
+    return { ok: true, updated: 0, provider: providerName, modelId, tookMs, messageIds: [], decisions: { assess: 0, not_assess: 0 } } as const;
   }
 });
 
@@ -161,7 +182,75 @@ export const listBySession = query({
   }
 });
 
-export const runMockForSession = action({
+export const enqueueJob = mutation({
+  args: {
+    sessionId: v.string(),
+    reason: v.optional(v.string()),
+    messageIds: v.optional(v.array(v.string())),
+    requestId: v.optional(v.string()),
+    coalesceWindowMs: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const windowMs = Math.max(0, Math.min(5000, args.coalesceWindowMs ?? 500));
+    // Coalesce if a recent queued/running job exists
+    const recent = await ctx.db
+      .query('triage_jobs')
+      .withIndex('by_session_createdAt', (q: any) => q.eq('sessionId', args.sessionId))
+      .collect();
+    const cand = (recent || []).filter((r: any) => ['queued','running'].includes(String(r?.status || '')) && (now - Number(r?.createdAt || 0)) <= windowMs)
+      .sort((a: any, b: any) => Number(b.createdAt || 0) - Number(a.createdAt || 0))[0];
+    if (cand) {
+      return { jobId: String(cand.jobId), reused: true } as const;
+    }
+    // Create new job
+    const jobId = (Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)).slice(0, 24);
+    await ctx.db.insert('triage_jobs', {
+      sessionId: args.sessionId,
+      jobId,
+      status: 'queued',
+      reason: args.reason || 'user_ingest',
+      messageIds: Array.isArray(args.messageIds) ? args.messageIds : [],
+      attempts: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return { jobId, reused: false } as const;
+  }
+});
+
+export const updateJobStatus = mutation({
+  args: {
+    jobId: v.string(),
+    status: v.union(
+      v.literal('queued'),
+      v.literal('running'),
+      v.literal('persisted'),
+      v.literal('skipped'),
+      v.literal('failed'),
+    ),
+    updatedCount: v.optional(v.number()),
+    decisions: v.optional(v.object({ assess: v.number(), not_assess: v.number() })),
+    error: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const rows = await ctx.db
+      .query('triage_jobs')
+      .withIndex('by_jobId', (q: any) => q.eq('jobId', args.jobId))
+      .collect();
+    const row = rows[0];
+    if (!row) return { ok: false, reason: 'not_found' } as const;
+    const patch: any = { status: args.status, updatedAt: now };
+    if (typeof args.updatedCount === 'number') patch.updatedCount = args.updatedCount;
+    if (args.decisions) patch.decisions = args.decisions as any;
+    if (args.error) patch.error = String(args.error);
+    await ctx.db.patch(row._id, patch);
+    return { ok: true } as const;
+  }
+});
+
+export const runMockForSession = mutation({
   args: {
     sessionId: v.string(),
     limit: v.optional(v.number()),

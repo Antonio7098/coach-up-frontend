@@ -2,10 +2,15 @@
 
 import React from "react";
 import { useAudio } from "../context/AudioContext";
+import { devLog } from "../app/api/lib/observability";
 
 export default function AudioUnlockBanner() {
   const audio = useAudio();
   if (!audio?.needsAudioUnlock) return null;
+
+  devLog("debug", "AudioUnlockBanner: rendering banner", {
+    needsAudioUnlock: audio.needsAudioUnlock
+  });
 
   return (
     <div
@@ -29,7 +34,10 @@ export default function AudioUnlockBanner() {
             <button
               type="button"
               onClick={() => {
-                try { audio.unlockAudio(); } catch {}
+                devLog("info", "AudioUnlockBanner: enable button clicked");
+                try { audio.unlockAudio(); } catch (error) {
+                  devLog("error", "AudioUnlockBanner: unlock audio failed", { error: String(error) });
+                }
               }}
               className="px-3 py-1.5 text-sm font-medium rounded-lg cu-accent-soft-bg border cu-border-surface hover:opacity-90 active:scale-[0.98] transition-all"
               aria-label="Enable audio playback"

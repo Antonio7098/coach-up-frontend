@@ -15,21 +15,135 @@ export const persistAssessmentSummary = mutation({...});
 
 // ACTIVE V2 FUNCTIONS (below)
 
-export const persistAssessmentSummaryV2 = mutation({
+// Create a group-level assessment (assessments_v2)
+export const createAssessment = mutation({
+  args: {
+    userId: v.string(),
+    sessionId: v.string(),
+    groupId: v.string(),
+    results: v.object({
+      highlights: v.array(v.string()),
+      recommendations: v.array(v.string()),
+      rubricKeyPoints: v.array(v.string()),
+      meta: v.optional(v.object({
+        skillsCount: v.optional(v.number()),
+        provider: v.optional(v.string()),
+        modelId: v.optional(v.string()),
+      })),
+    }),
+    kpis: v.optional(
+      v.object({ totalScore: v.optional(v.number()), averageLevel: v.optional(v.number()), confidence: v.optional(v.number()) })
+    ),
+    assessmentMetadata: v.optional(
+      v.object({
+        provider: v.optional(v.string()),
+        modelId: v.optional(v.string()),
+        promptVersion: v.optional(v.string()),
+        tokenCount: v.optional(v.number()),
+        costCents: v.optional(v.number()),
+        processingTimeMs: v.optional(v.number()),
+      })
+    ),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const id = await ctx.db.insert("assessments_v2", {
+      userId: args.userId,
+      sessionId: args.sessionId,
+      groupId: args.groupId,
+      results: args.results,
+      kpis: args.kpis,
+      assessmentMetadata: args.assessmentMetadata,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return { assessmentId: id } as const;
+  },
+});
+
+// Bulk insert per-skill rows (skill_assessment)
+export const insertSkillResults = mutation({
+  args: {
+    items: v.array(
+      v.object({
+        assessmentId: v.id("assessments_v2"),
+        userId: v.string(),
+        sessionId: v.string(),
+        groupId: v.string(),
+        skillId: v.string(),
+        skillHash: v.string(),
+        results: v.object({
+          level: v.number(),
+          levelFeedback: v.object({
+            currentLevel: v.number(),
+            strengths: v.array(v.string()),
+            improvements: v.array(v.string()),
+            focus: v.array(v.string()),
+            nextLevelCriteria: v.array(v.string()),
+            examples: v.optional(v.array(v.string())),
+          }),
+          confidence: v.optional(v.number()),
+        }),
+        assessmentMetadata: v.optional(
+          v.object({
+            provider: v.optional(v.string()),
+            modelId: v.optional(v.string()),
+            promptVersion: v.optional(v.string()),
+            tokenCount: v.optional(v.number()),
+            costCents: v.optional(v.number()),
+            processingTimeMs: v.optional(v.number()),
+          })
+        ),
+        sourceContext: v.optional(
+          v.object({
+            assessmentType: v.optional(v.string()),
+            interactionCount: v.optional(v.number()),
+            transcriptLength: v.optional(v.number()),
+            sessionDuration: v.optional(v.number()),
+          })
+        ),
+      })
+    ),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    let inserted = 0;
+    for (const it of args.items) {
+      await ctx.db.insert("skill_assessment", {
+        assessmentId: it.assessmentId,
+        userId: it.userId,
+        sessionId: it.sessionId,
+        groupId: it.groupId,
+        skillId: it.skillId,
+        skillHash: it.skillHash,
+        results: it.results,
+        assessmentMetadata: it.assessmentMetadata,
+        sourceContext: it.sourceContext,
+        createdAt: now,
+        updatedAt: now,
+      });
+      inserted++;
+    }
+    return { inserted } as const;
+  },
+});
+
+// Legacy shim (kept for compatibility if called): persist group-level results
+export const persistAssessmentResultsV2 = mutation({
   args: {
     sessionId: v.string(),
     groupId: v.string(),
-    summary: v.any(),
+    results: v.any(),
     rubricVersion: v.literal("v2"),
   },
-  handler: async (ctx, { sessionId, groupId, summary }) => {
+  handler: async (ctx, { sessionId, groupId, results }) => {
     const now = Date.now();
     const doc = {
       sessionId,
       groupId,
       kind: "summary",
       rubricVersion: "v2",
-      summary,
+      results,
       createdAt: now,
       updatedAt: now,
     } as any;
@@ -108,13 +222,45 @@ export const recordSkillAssessmentV2 = mutation({
   },
 });
 
-// Fetch latest session summary for a given sessionId
-export const getLatestAssessmentSummary = query({
+// New latest-by-session returning assessment_v2 and skill_assessment rows
+export const getLatestBySession = query({
+  args: { sessionId: v.string() },
+  handler: async (ctx, { sessionId }) => {
+    const latest = await ctx.db
+      .query("assessments_v2")
+      .withIndex("by_session_createdAt", (q) => q.eq("sessionId", sessionId))
+      .order("desc")
+      .first();
+    if (!latest) return null as any;
+    const skillResults = await ctx.db
+      .query("skill_assessment")
+      .withIndex("by_assessment", (q) => q.eq("assessmentId", latest._id))
+      .collect();
+    return { assessment: latest, skillResults } as any;
+  },
+});
+
+// Fetch by id for assessment_v2 + per-skill rows
+export const getById = query({
+  args: { assessmentId: v.id("assessments_v2") },
+  handler: async (ctx, { assessmentId }) => {
+    const assessment = await ctx.db.get(assessmentId);
+    if (!assessment) return null as any;
+    const skillResults = await ctx.db
+      .query("skill_assessment")
+      .withIndex("by_assessment", (q) => q.eq("assessmentId", assessmentId))
+      .collect();
+    return { assessment, skillResults } as any;
+  },
+});
+
+// Legacy: Fetch latest summary (kept for old callers)
+export const getLatestAssessmentResults = query({
   args: {
     sessionId: v.string(),
   },
   handler: async (ctx, { sessionId }) => {
-    // Find the latest summary entry in assessments for this session
+    // Find the latest results entry in assessments for this session
     const latest = await ctx.db
       .query("assessments")
       .withIndex("by_session", (q) => q.eq("sessionId", sessionId))
@@ -133,7 +279,7 @@ export const getLatestAssessmentSummary = query({
     return {
       sessionId,
       latestGroupId: sess?.latestGroupId ?? latest.groupId ?? null,
-      summary: latest.summary ?? null,
+      results: latest.results ?? null,
       rubricVersion: latest.rubricVersion ?? "v2",
       createdAt: latest.createdAt,
       updatedAt: latest.updatedAt,

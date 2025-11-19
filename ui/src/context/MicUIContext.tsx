@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useContext, useMemo, useState, useCallback } from "react";
+import { devLog } from "../app/api/lib/observability";
 
 export type MicUIContextValue = {
   inCoach: boolean;
@@ -26,7 +27,15 @@ export function MicUIProvider({ children }: { children: React.ReactNode }) {
   const [onTap, setOnTap] = useState<(() => void) | undefined>(undefined);
   const [onLongPress, setOnLongPress] = useState<(() => void) | undefined>(undefined);
 
+  devLog("debug", "MicUIContext: initializing mic UI provider", {
+    timestamp: new Date().toISOString()
+  });
+
   const setHandlers = useCallback(({ onTap, onLongPress }: { onTap?: () => void; onLongPress?: () => void }) => {
+    devLog("debug", "MicUIContext: updating handlers", {
+      hasOnTap: !!onTap,
+      hasOnLongPress: !!onLongPress
+    });
     setOnTap(() => onTap);
     setOnLongPress(() => onLongPress);
   }, []);

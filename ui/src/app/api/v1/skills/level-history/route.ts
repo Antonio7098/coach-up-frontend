@@ -6,6 +6,7 @@ import { makeConvex } from "../../../lib/convex";
 import * as mockConvex from "../../../lib/mockConvex";
 import { promMetrics } from "../../../lib/metrics";
 import { requireAuth } from "../../../lib/auth";
+import { devLog } from "../../../lib/observability";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -56,7 +57,7 @@ export async function GET(request: Request) {
 
   const authRes = await requireAuth(request);
   if (!authRes.ok) {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 401, msg: 'Unauthorized', mode, latencyMs: Date.now() - started }));
+    devLog("warn", "skills-level-history: authentication failed", { requestId, status: 401, latencyMs: Date.now() - started });
     return respond(401, { error: "Unauthorized" });
   }
   const effectiveUserId = String(authRes.userId || 'anonymous');
@@ -89,18 +90,18 @@ export async function GET(request: Request) {
         historyData[skillId] = history;
       }
 
-      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, skillsReturned: Object.keys(historyData).length, mode, latencyMs: Date.now() - started }));
+      devLog("info", "skills-level-history: history data retrieved", { requestId, status: 200, skillsReturned: Object.keys(historyData).length, latencyMs: Date.now() - started });
       return respond(200, { history: historyData });
     }
 
     const client = makeConvex(convexUrl);
     // This would need to be implemented in the Convex backend
     // For now, return empty data
-    console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, skillsReturned: 0, mode, latencyMs: Date.now() - started }));
+    devLog("info", "skills-level-history: no history data available", { requestId, status: 200, skillsReturned: 0, latencyMs: Date.now() - started });
     return respond(200, { history: {} });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e ?? 'Convex query failed');
-    console.log(JSON.stringify({ level: 'error', route: routePath, requestId, status: 502, error: msg, mode, latencyMs: Date.now() - started }));
+    devLog("error", "skills-level-history: convex query failed", { requestId, status: 502, error: msg, latencyMs: Date.now() - started });
     return respond(502, { error: "Convex query failed" });
   }
 }

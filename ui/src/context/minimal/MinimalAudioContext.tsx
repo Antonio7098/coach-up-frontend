@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
+import { devLog } from "../../app/api/lib/observability";
 
 export type MinimalAudioContextValue = {
   enqueueAudio: (url: string) => Promise<void>;
@@ -30,6 +31,10 @@ export function MinimalAudioProvider({ children }: { children: React.ReactNode }
   const [isPaused, setIsPaused] = useState(false);
   const pausedRef = useRef(false);
   const [isPlaybackActive, setIsPlaybackActive] = useState(false);
+
+  devLog("debug", "MinimalAudioContext: initializing minimal audio provider", {
+    timestamp: new Date().toISOString()
+  });
 
   const attachAndWait = useCallback(async (el: HTMLAudioElement) => {
     await new Promise<void>((resolve) => {
@@ -61,8 +66,8 @@ export function MinimalAudioProvider({ children }: { children: React.ReactNode }
         await el.play();
         setIsPlaybackActive(true);
         await attachAndWait(el);
-      } catch (e: any) {
-        if (e && (e.name === "NotAllowedError" || e.code === 0)) {
+      } catch (e: unknown) {
+        if (e instanceof Error && (e.name === "NotAllowedError" || (e as any).code === 0)) {
           blockedRef.current = true;
           setNeedsAudioUnlock(true);
           // Leave playingRef true; unlock will resume and finish the cycle
@@ -80,10 +85,16 @@ export function MinimalAudioProvider({ children }: { children: React.ReactNode }
         if (queueRef.current.length > 0) void ensureWorker();
       }
     }
-  }, []);
+  }, [attachAndWait]);
 
   const play = useCallback(async (url: string) => {
-    if (!url) return;
+    if (!url) {
+      devLog("warn", "MinimalAudioContext: empty URL provided to play");
+      return;
+    }
+
+    devLog("debug", "MinimalAudioContext: enqueuing audio for playback", { url, queueLength: queueRef.current.length });
+
     return new Promise<void>((resolve) => {
       queueRef.current.push({ url, resolve });
       void ensureWorker();

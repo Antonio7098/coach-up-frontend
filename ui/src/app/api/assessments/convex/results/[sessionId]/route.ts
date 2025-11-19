@@ -1,8 +1,8 @@
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-import { makeConvex } from "../../../lib/convex";
-import * as mockConvex from "../../../lib/mockConvex";
+import { makeConvex } from "../../../../lib/convex";
+import * as mockConvex from "../../../../lib/mockConvex";
 
 export async function GET(
   _request: Request,
@@ -26,23 +26,23 @@ export async function GET(
 
   try {
     const latest = process.env.MOCK_CONVEX === '1'
-      ? await mockConvex.getLatestAssessmentSummary({ sessionId })
+      ? await mockConvex.getLatestAssessmentResults({ sessionId })
       : await ((): Promise<unknown> => {
           const client = makeConvex(convexUrl);
-          return client.query("assessments:getLatestAssessmentSummary", { sessionId });
+          return client.query("assessments:getLatestAssessmentResults", { sessionId });
         })();
     if (!latest) {
-      // No summary persisted yet; try to fetch the session to provide latestGroupId so UI can still render
+      // No results persisted yet; try to fetch the session to provide latestGroupId so UI can still render
       const client = makeConvex(convexUrl);
       try {
         const sess = await client.query("functions/sessions:getBySessionId", { sessionId });
         const latestGroupId = (sess as any)?.latestGroupId ?? null;
-        return new Response(JSON.stringify({ sessionId, latestGroupId, summary: null }), {
+        return new Response(JSON.stringify({ sessionId, latestGroupId, results: null }), {
           status: 200,
           headers: { "content-type": "application/json; charset=utf-8" },
         });
       } catch {
-        return new Response(JSON.stringify({ sessionId, summary: null }), {
+        return new Response(JSON.stringify({ sessionId, results: null }), {
           status: 404,
           headers: { "content-type": "application/json; charset=utf-8" },
         });
@@ -54,20 +54,22 @@ export async function GET(
     });
   } catch (e) {
     // Fallback: if assessments query is not present, try sessions for latestGroupId before returning empty
-    try { console.warn('[assessments/convex] getLatestAssessmentSummary failed', e); } catch {}
+    try { console.warn('[assessments/convex] getLatestAssessmentResults failed', e); } catch {}
     try {
       const client = makeConvex(convexUrl);
       const sess = await client.query("functions/sessions:getBySessionId", { sessionId });
       const latestGroupId = (sess as any)?.latestGroupId ?? null;
-      return new Response(JSON.stringify({ sessionId, latestGroupId, summary: null }), {
+      return new Response(JSON.stringify({ sessionId, latestGroupId, results: null }), {
         status: 200,
         headers: { "content-type": "application/json; charset=utf-8" },
       });
     } catch {
-      return new Response(JSON.stringify({ sessionId, summary: null }), {
+      return new Response(JSON.stringify({ sessionId, results: null }), {
         status: 404,
         headers: { "content-type": "application/json; charset=utf-8" },
       });
     }
   }
 }
+
+

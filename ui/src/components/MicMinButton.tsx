@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useMinimalMic } from "../context/minimal/MinimalMicContext";
 import { useMinimalAudio } from "../context/minimal/MinimalAudioContext";
+import { devLog } from "../app/api/lib/observability";
 
 interface MicMinButtonProps {
   showDashboard?: boolean;
@@ -12,8 +13,16 @@ interface MicMinButtonProps {
 
 export default function MicMinButton({ showDashboard = false, onDashboardClick }: MicMinButtonProps) {
   const [mounted, setMounted] = useState(false);
-  const { vadLoop, toggleVadLoop, recording, startRecording, stopRecording, status, transcript, inputSpeaking } = useMinimalMic();
+  const { vadLoop, toggleVadLoop, recording, status, inputSpeaking } = useMinimalMic();
   const audio = useMinimalAudio();
+
+  devLog("debug", "MicMinButton: component initialized", {
+    showDashboard,
+    vadLoop,
+    recording,
+    status,
+    timestamp: new Date().toISOString()
+  });
 
   // All hooks must be called before any early returns
   useEffect(() => { setMounted(true); return () => setMounted(false); }, []);
@@ -30,8 +39,12 @@ export default function MicMinButton({ showDashboard = false, onDashboardClick }
   const isProcessing = status === "stt" || status === "chat" || status === "tts";
 
   const handleClick = () => {
+    devLog("info", "MicMinButton: button clicked", { showDashboard, currentState: { vadLoop, recording, status } });
+
     // Ensure audio is unlocked on first interaction
-    try { audio.unlockAudio(); } catch {}
+    try { audio.unlockAudio(); } catch (error) {
+      devLog("warn", "MicMinButton: failed to unlock audio", { error: String(error) });
+    }
 
     // Toggle VAD loop
     toggleVadLoop();

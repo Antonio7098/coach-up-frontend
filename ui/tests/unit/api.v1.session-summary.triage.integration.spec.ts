@@ -37,6 +37,8 @@ describe('session-summary POST triage pre-step (best-effort)', () => {
 
   it('calls /api/v1/triage when enabled, ignores errors and proceeds', async () => {
     vi.stubEnv('AI_TRIAGE_ENABLED', '1');
+    // New gating: enable legacy pre-summary triage for this test
+    vi.stubEnv('TRIAGE_ON_SUMMARY', '1');
     const triageSpy = vi.fn(async () => new Response(JSON.stringify({ updated: 1 }), { status: 200 }));
     global.fetch = vi.fn((input: any, init?: any) => {
       if (typeof input === 'string' && input.startsWith('/api/v1/triage')) return triageSpy();

@@ -7,6 +7,10 @@ import { sha256Hex } from "../../lib/hash";
 import { requireAuth } from "../../lib/auth";
 import { promMetrics } from "../../lib/metrics";
 import { createHash } from "crypto";
+import { generateSummaryText } from "../../lib/summarizer";
+import { getLatestSummary, upsertSummary } from "../../lib/summaries";
+import { getEnvString, getEnvBool } from "../../lib/env";
+import { devLog } from "../../lib/observability";
 
 type InteractionRole = 'user' | 'assistant' | 'system';
 interface InteractionsBody {
@@ -24,6 +28,20 @@ interface InteractionsBody {
 export async function GET(request: Request) {
   const headersIn = new Headers(request.headers);
   const requestId = headersIn.get("x-request-id") || safeUUID();
+  const startTime = Date.now();
+  const url = new URL(request.url);
+  const sessionId = url.searchParams.get("sessionId") || "";
+  const groupId = url.searchParams.get("groupId") || "";
+  const sinceId = url.searchParams.get("sinceId") || "";
+
+  devLog("debug", "interactions: GET request initiated", {
+    requestId,
+    sessionId,
+    groupId,
+    sinceId,
+    timestamp: new Date().toISOString()
+  });
+
   const authRes = await requireAuth(request);
   if (!authRes.ok) {
     return new Response(JSON.stringify({ error: "Unauthorized" }), {
@@ -32,10 +50,6 @@ export async function GET(request: Request) {
     });
   }
 
-  const url = new URL(request.url);
-  const sessionId = url.searchParams.get("sessionId") || "";
-  const groupId = url.searchParams.get("groupId") || "";
-  const sinceId = url.searchParams.get("sinceId") || "";
   const limitParam = url.searchParams.get("limit");
   const limit = Math.max(1, Math.min(500, Number.isFinite(Number(limitParam)) ? Number(limitParam) : 200));
 
@@ -53,10 +67,10 @@ export async function GET(request: Request) {
 
   const convexUrl = convexBaseUrl();
   try {
-    if (process.env.MOCK_CONVEX === '1') {
+    if (getEnvString("MOCK_CONVEX") === '1') {
       let interactions: Array<Record<string, unknown>> = [];
       if (sessionId.trim()) {
-        interactions = await mockConvex.listInteractionsBySession({ sessionId, limit });
+        interactions = await mockConvex.listTailBySession({ sessionId, limit });
       } else {
         interactions = await mockConvex.listInteractionsByGroup({ groupId, limit });
       }
@@ -80,7 +94,13 @@ export async function GET(request: Request) {
       const inm = headersIn.get('if-none-match');
       if (inm && inm === etag) {
         const hdrs304 = { "X-Request-Id": requestId, "ETag": etag, "X-Cache": "HIT-304", "X-Mode": sinceId ? "since" : "full", ...corsHeaders } as Record<string, string>;
-        try { console.log(JSON.stringify({ level: 'info', where: 'interactions.get.304', sessionId, groupId, sinceId: sinceId || null, etag })); } catch {}
+        devLog("info", "interactions: 304 Not Modified response", {
+          sessionId,
+          groupId,
+          sinceId: sinceId || null,
+          etag,
+          requestId
+        });
         return new Response(null, { status: 304, headers: hdrs304 });
       }
 
@@ -97,7 +117,15 @@ export async function GET(request: Request) {
         ...corsHeaders
       } as Record<string, string>;
       if (latestId) headers["X-Latest-Id"] = latestId;
-      try { console.log(JSON.stringify({ level: 'info', where: 'interactions.get.200', sessionId, groupId, sinceId: sinceId || null, count: interactions.length, mode: sinceId ? 'since' : 'full' })); } catch {}
+      devLog("info", "interactions: 200 OK response", {
+        sessionId,
+        groupId,
+        sinceId: sinceId || null,
+        count: interactions.length,
+        mode: sinceId ? 'since' : 'full',
+        requestId,
+        processingTimeMs: Date.now() - startTime
+      });
 
       return new Response(JSON.stringify({
         interactions,
@@ -112,10 +140,47 @@ export async function GET(request: Request) {
 
     const client = makeConvex(convexUrl);
     let interactions: Array<Record<string, unknown>> = [];
-    if (sessionId.trim()) {
-      interactions = await client.query("functions/interactions:listBySession", { sessionId, limit }) as any;
-    } else {
-      interactions = await client.query("functions/interactions:listByGroup", { groupId, limit }) as any;
+
+    // Add timeout to prevent hanging queries (30 second timeout)
+    const queryTimeout = 30000; // 30 seconds
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Convex query timeout')), queryTimeout);
+    });
+
+    const queryStart = Date.now();
+    try {
+      console.log(`[Convex] Starting query - sessionId: ${sessionId}, groupId: ${groupId}, limit: ${limit}, convexUrl: ${convexUrl}`);
+      
+      if (sessionId.trim()) {
+        console.log(`[Convex] Calling listTailBySession with sessionId: ${sessionId}`);
+        interactions = await Promise.race([
+          client.query("functions/interactions:listTailBySession", { sessionId, limit }),
+          timeoutPromise
+        ]) as any;
+      } else {
+        console.log(`[Convex] Calling listByGroup with groupId: ${groupId}`);
+        interactions = await Promise.race([
+          client.query("functions/interactions:listByGroup", { groupId, limit }),
+          timeoutPromise
+        ]) as any;
+      }
+      
+      const queryDuration = Date.now() - queryStart;
+      console.log(`[Convex] Query completed successfully in ${queryDuration}ms, returned ${interactions?.length || 0} interactions`);
+    } catch (queryError: any) {
+      const queryDuration = Date.now() - queryStart;
+      console.log(`[Convex] Query failed after ${queryDuration}ms:`, {
+        error: queryError?.message || 'Unknown error',
+        code: queryError?.code,
+        cause: queryError?.cause?.code || queryError?.cause,
+        stack: queryError?.stack?.split('\n')[0]
+      });
+      // If query times out or fails, log and continue with empty interactions
+      // The fallback logic below will handle returning an empty response
+      try {
+        console.warn(`[interactions] Convex query failed for sessionId=${sessionId || 'none'} groupId=${groupId || 'none'}:`, queryError.message);
+      } catch {}
+      interactions = []; // Ensure we have an empty array for fallback logic
     }
 
     // Handle incremental fetching if sinceId is provided
@@ -215,13 +280,13 @@ export async function OPTIONS() {
 }
 
 function convexBaseUrl() {
-  return process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || "http://127.0.0.1:3210";
+  return getEnvString("CONVEX_URL") || getEnvString("NEXT_PUBLIC_CONVEX_URL") || "http://127.0.0.1:3210";
 }
 
 function aiApiBaseUrl() {
   return (
-    process.env.AI_API_BASE_URL ||
-    process.env.NEXT_PUBLIC_AI_API_BASE_URL ||
+    getEnvString("AI_API_BASE_URL") ||
+    getEnvString("NEXT_PUBLIC_AI_API_BASE_URL") ||
     "http://127.0.0.1:8000"
   );
 }
@@ -425,6 +490,20 @@ export async function POST(request: Request) {
 
   const convexUrl = convexBaseUrl();
 
+  // Convex environment and URL sanity logging
+  try {
+    const envSnapshot = {
+      CONVEX_URL: getEnvString("CONVEX_URL") || null,
+      NEXT_PUBLIC_CONVEX_URL: getEnvString("NEXT_PUBLIC_CONVEX_URL") || null,
+      MOCK_CONVEX: getEnvString("MOCK_CONVEX") || null,
+      TRIAGE_ON_USER_INGEST: getEnvString("TRIAGE_ON_USER_INGEST") || null,
+    };
+    console.log(JSON.stringify({ level: 'info', where: 'interactions.post.convex_env', requestId, snapshot: envSnapshot, convexUrl }));
+    if (typeof convexUrl === 'string' && /dashboard\.convex\.dev/.test(convexUrl)) {
+      console.warn(JSON.stringify({ level: 'warn', where: 'interactions.post.convex_url_misconfigured', requestId, convexUrl, hint: 'Use https://<deployment>.convex.cloud, not dashboard URL' }));
+    }
+  } catch {}
+
   try {
     const authedUserId = authRes.userId && authRes.userId !== 'anonymous' ? authRes.userId : undefined;
     const effectiveUserId = String(authedUserId || body.userId || 'unknown');
@@ -433,12 +512,21 @@ export async function POST(request: Request) {
     let sessionExists = false;
     let sessionBelongsToUser = false;
     try {
-      if (process.env.MOCK_CONVEX !== '1') {
+      if (getEnvString("MOCK_CONVEX") !== '1') {
+        console.log(`[Convex] Starting session validation query for sessionId: ${body.sessionId}`);
+        const sessionQueryStart = Date.now();
+        
         const client = makeConvex(convexUrl);
         const sessionDoc = await client.query("functions/sessions:getBySessionId", { sessionId: body.sessionId });
+        
+        const sessionQueryDuration = Date.now() - sessionQueryStart;
+        console.log(`[Convex] Session validation query completed in ${sessionQueryDuration}ms`);
+        
         const session: any = (sessionDoc as { value?: any })?.value || null;
         sessionExists = !!session;
         sessionBelongsToUser = session && session.userId === effectiveUserId;
+        
+        console.log(`[Convex] Session validation result: exists=${sessionExists}, belongsToUser=${sessionBelongsToUser}, userId=${effectiveUserId}`);
         
         // Log session validation results
         console.log(JSON.stringify({
@@ -484,7 +572,7 @@ export async function POST(request: Request) {
         error: String(sessionCheckError)
       }));
     }
-    if (process.env.MOCK_CONVEX === '1') {
+    if (getEnvString("MOCK_CONVEX") === '1') {
       // Skip empty or meaningless text content
       const text = body.text?.trim();
       if (!text || text.length === 0) {
@@ -514,7 +602,34 @@ export async function POST(request: Request) {
         kind: 'interaction_appended',
         payload: { messageId: body.messageId, role: body.role },
       });
-      // Ingest-driven cadence: on assistant message, nudge cadence state
+
+    // New: per-user-message triage (after user message saved), non-blocking
+    try {
+      const triageOnUser = String(getEnvString("TRIAGE_ON_USER_INGEST") || '1').toLowerCase();
+      if (triageOnUser === '1' || triageOnUser === 'true') {
+        if (body.role === 'user') {
+          // Use the just-posted user messageId directly to avoid list timeouts
+          const messageIds = [String(body.messageId)].filter(Boolean);
+          if (messageIds.length > 0) {
+            const ctrl = new AbortController();
+            const to = setTimeout(() => ctrl.abort(), Math.max(300, Math.min(2000, Number(getEnvString("TRIAGE_TIMEOUT_MS") || 1200))));
+            const authz = (request.headers.get('authorization') || request.headers.get('Authorization') || '') as string;
+            const headers: Record<string, string> = { 'content-type': 'application/json', 'x-request-id': requestId };
+            if (authz) headers['authorization'] = authz;
+            fetch(`${getEnvString("NEXT_PUBLIC_APP_URL") || 'http://localhost:3000'}/api/v1/triage?sessionId=${encodeURIComponent(body.sessionId)}`, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({ messageIds }),
+              cache: 'no-store',
+              signal: ctrl.signal,
+            }).catch(() => {}).finally(() => { try { clearTimeout(to); } catch {} });
+            try { console.log(JSON.stringify({ level: 'info', where: 'interactions.triage.user_ingest.mock', sessionId: body.sessionId, messageIds })); } catch {}
+          }
+        }
+      }
+    } catch {}
+
+      // Ingest-driven cadence: on assistant message, evaluate cadence just like non-mock
       try {
         if (body.role === 'assistant') {
           await mockConvex.logEvent({
@@ -526,7 +641,50 @@ export async function POST(request: Request) {
             kind: 'summary_cadence_onAssistantMessage',
             payload: { messageId: body.messageId },
           });
-          // No mock Convex state; UI cadence v1 still active. This log is for observability only.
+
+          // Production semantics: count assistant turns since last completed summary
+          const thrEnv = Number(getEnvString("NEXT_PUBLIC_SUMMARY_REFRESH_TURNS") || 4);
+          const thresholdTurns = Math.max(1, Math.min(20, Number.isFinite(thrEnv) ? thrEnv : 4));
+
+          // Determine cutoff from latest summary
+          const last = getLatestSummary(body.sessionId);
+          const cutoffTs = typeof last?.updatedAt === 'number' ? last!.updatedAt : 0;
+
+          // Pull recent interactions from mock store
+          const docs: any[] = await mockConvex.listInteractionsBySession({ sessionId: body.sessionId, limit: 300 }) as any[];
+          const arr = Array.isArray(docs) ? docs : [];
+          const after = cutoffTs > 0 ? arr.filter(d => Number(d?.ts || 0) > cutoffTs) : arr;
+
+          const assistantSince = after.filter(d => String(d?.role || '') === 'assistant').length;
+
+          if (assistantSince >= thresholdTurns) {
+            // Build recent message window for summarizer (after cutoff, or fallback to last few)
+            const recentBase = after.length > 0 ? after : arr.slice(-8);
+            const recent = recentBase
+              .map((d: any) => ({ role: String(d?.role || ''), content: String(d?.text || '') }))
+              .filter((m: any) => (m.role === 'user' || m.role === 'assistant') && m.content && m.content.trim().length > 0);
+
+            const tokenBudget = 600;
+            const prevText = String(last?.text || '');
+            const text = generateSummaryText(prevText, recent, tokenBudget);
+            const lastMessageTs = arr.length > 0
+              ? Math.max(...arr.map((d: any) => Number(d?.ts || d?.createdAt || 0)).filter((n: number) => Number.isFinite(n)))
+              : Date.now();
+
+            const row = upsertSummary({ sessionId: body.sessionId, text, lastMessageTs, meta: { tokenBudget } });
+            // Log generation for observability
+            try {
+              await mockConvex.logEvent({
+                userId: effectiveUserId,
+                sessionId: body.sessionId,
+                groupId: body.groupId,
+                requestId,
+                trackedSkillIdHash,
+                kind: 'summary_cadence_generated',
+                payload: { version: row.version, len: text.length },
+              });
+            } catch {}
+          }
         }
       } catch {}
       return new Response(JSON.stringify({ ok: true, id: res?.id ?? null }), {
@@ -545,26 +703,115 @@ export async function POST(request: Request) {
       });
     }
 
+    console.log(`[Convex] Starting appendInteraction mutation - sessionId: ${body.sessionId}, messageId: ${body.messageId}, role: ${body.role}, convexUrl: ${convexUrl}`);
+    const mutationStart = Date.now();
     const client = makeConvex(convexUrl);
-    const id = await client.mutation("functions/interactions:appendInteraction", {
-      sessionId: body.sessionId,
-      groupId: body.groupId,
-      messageId: body.messageId,
-      role: body.role,
-      contentHash: body.contentHash,
-      text: text,
-      audioUrl: body.audioUrl,
-      ts: body.ts,
-    });
-    await client.mutation("functions/events:logEvent", {
-      userId: effectiveUserId,
-      sessionId: body.sessionId,
-      groupId: body.groupId,
-      requestId,
-      trackedSkillIdHash,
-      kind: 'interaction_appended',
-      payload: { messageId: body.messageId, role: body.role },
-    });
+    let id: unknown = null;
+    try {
+      id = await client.mutation("functions/interactions:appendInteraction", {
+        sessionId: body.sessionId,
+        groupId: body.groupId,
+        messageId: body.messageId,
+        role: body.role,
+        contentHash: body.contentHash,
+        text: text,
+        audioUrl: body.audioUrl,
+        ts: body.ts,
+      });
+      const mutationDuration = Date.now() - mutationStart;
+      console.log(`[Convex] appendInteraction completed in ${mutationDuration}ms, returned id: ${id}`);
+    } catch (appendErr: any) {
+      const mutationDuration = Date.now() - mutationStart;
+      const errMsg = String(appendErr?.message || appendErr);
+      const hint = /<!DOCTYPE|<html|dashboard\.convex\.dev/.test(errMsg) || /dashboard\.convex\.dev/.test(convexUrl)
+        ? 'convex_dashboard_url_in_use'
+        : undefined;
+      console.error(JSON.stringify({
+        level: 'error',
+        where: 'interactions.post.appendInteraction.error',
+        requestId,
+        sessionId: body.sessionId,
+        messageId: body.messageId,
+        convexUrl,
+        durationMs: mutationDuration,
+        error: errMsg,
+        code: appendErr?.code || null,
+        cause: appendErr?.cause?.code || appendErr?.cause || null,
+        hint,
+      }));
+      throw appendErr;
+    }
+    
+    console.log(`[Convex] Starting logEvent mutation for interaction_appended`);
+    const eventStart = Date.now();
+    try {
+      await client.mutation("functions/events:logEvent", {
+        userId: effectiveUserId,
+        sessionId: body.sessionId,
+        groupId: body.groupId,
+        requestId,
+        trackedSkillIdHash,
+        kind: 'interaction_appended',
+        payload: { messageId: body.messageId, role: body.role },
+      });
+      const eventDuration = Date.now() - eventStart;
+      console.log(`[Convex] logEvent completed in ${eventDuration}ms`);
+    } catch (logErr: any) {
+      const eventDuration = Date.now() - eventStart;
+      console.error(JSON.stringify({
+        level: 'error',
+        where: 'interactions.post.logEvent.error',
+        requestId,
+        sessionId: body.sessionId,
+        messageId: body.messageId,
+        convexUrl,
+        durationMs: eventDuration,
+        error: String(logErr?.message || logErr),
+        code: logErr?.code || null,
+        cause: logErr?.cause?.code || logErr?.cause || null,
+      }));
+      // Do not throw; best-effort logging should not fail the request
+    }
+
+    // New: per-user-message triage (after user message saved), non-blocking
+    try {
+      const triageOnUser = String(getEnvString("TRIAGE_ON_USER_INGEST") || '1').toLowerCase();
+      if (triageOnUser === '1' || triageOnUser === 'true') {
+        if (body.role === 'user') {
+          // Use the just-posted user messageId directly to avoid Convex list timeouts
+          const messageIds = [String(body.messageId)].filter(Boolean);
+          if (messageIds.length > 0) {
+            const ctrl = new AbortController();
+            const to = setTimeout(() => ctrl.abort(), Math.max(300, Math.min(2000, Number(getEnvString("TRIAGE_TIMEOUT_MS") || 1200))));
+            const authz = (request.headers.get('authorization') || request.headers.get('Authorization') || '') as string;
+            const headers: Record<string, string> = { 'content-type': 'application/json', 'x-request-id': requestId };
+            if (authz) headers['authorization'] = authz;
+            try { console.log(JSON.stringify({ level: 'info', where: 'interactions.triage.user_ingest.headers', sessionId: body.sessionId, hasAuth: Boolean(authz) })); } catch {}
+            fetch(`${getEnvString("NEXT_PUBLIC_APP_URL") || 'http://localhost:3000'}/api/v1/triage?sessionId=${encodeURIComponent(body.sessionId)}`, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({ messageIds }),
+              cache: 'no-store',
+              signal: ctrl.signal,
+            }).then(async (res) => {
+              try {
+                const result = await res.json();
+                console.log(JSON.stringify({ level: 'info', where: 'interactions.triage.user_ingest.success', sessionId: body.sessionId, messageIds, status: res.status, result }));
+              } catch (e) {
+                console.log(JSON.stringify({ level: 'warn', where: 'interactions.triage.user_ingest.parse_error', sessionId: body.sessionId, messageIds, status: res.status, error: (e as Error).message }));
+              }
+            }).catch((e) => {
+              console.log(JSON.stringify({ level: 'error', where: 'interactions.triage.user_ingest.fetch_error', sessionId: body.sessionId, messageIds, error: (e as Error).message }));
+            }).finally(() => { try { clearTimeout(to); } catch {} });
+            try { console.log(JSON.stringify({ level: 'info', where: 'interactions.triage.user_ingest', sessionId: body.sessionId, messageIds })); } catch {}
+          }
+        } else {
+          try { console.log(JSON.stringify({ level: 'info', where: 'interactions.triage.user_ingest.skip', sessionId: body.sessionId, reason: 'role_not_user' })); } catch {}
+        }
+      } else {
+        try { console.log(JSON.stringify({ level: 'info', where: 'interactions.triage.user_ingest.disabled' })); } catch {}
+      }
+    } catch {}
 
     // Ingest-driven cadence: when assistant message finalized, ask Convex to update cadence state
     if (body.role === 'assistant') {
@@ -619,7 +866,7 @@ export async function POST(request: Request) {
           const prevSummary = String(latest?.text || "");
           const cutoffTs = Number(latest?.lastMessageTs || 0);
           // Collect recent interactions (bounded) and filter after cutoff
-          let interactions: Array<any> = await client.query("functions/interactions:listBySession", { sessionId: body.sessionId, limit: 200 }) as any;
+          let interactions: Array<any> = await client.query("functions/interactions:listTailBySession", { sessionId: body.sessionId, limit: 200 }) as any;
           interactions = Array.isArray(interactions) ? interactions : [];
           const recent = interactions
             .filter((d: any) => (d?.ts ?? 0) > cutoffTs)
@@ -629,10 +876,11 @@ export async function POST(request: Request) {
 
           // Stage 2+: best-effort triage before summary generation (non-blocking)
           try {
-            const triageEnabled = String(process.env.AI_TRIAGE_ENABLED || '').toLowerCase();
-            if (triageEnabled === '1' || triageEnabled === 'true') {
+            const triageEnabled = String(getEnvString("AI_TRIAGE_ENABLED") || '').toLowerCase();
+            const triageOnSummary = String(getEnvString("TRIAGE_ON_SUMMARY") || '0').toLowerCase();
+            if ((triageEnabled === '1' || triageEnabled === 'true') && (triageOnSummary === '1' || triageOnSummary === 'true')) {
               const ctrl = new AbortController();
-              const to = setTimeout(() => ctrl.abort(), Math.max(300, Math.min(2000, Number(process.env.TRIAGE_TIMEOUT_MS || 1200))));
+              const to = setTimeout(() => ctrl.abort(), Math.max(300, Math.min(2000, Number(getEnvString("TRIAGE_TIMEOUT_MS") || 1200))));
               const authz = (request.headers.get('authorization') || request.headers.get('Authorization') || '') as string;
               const triageHeaders: Record<string, string> = { accept: 'application/json', 'x-request-id': requestId };
               if (authz) triageHeaders['authorization'] = authz;
@@ -645,17 +893,17 @@ export async function POST(request: Request) {
 
           // Best-effort assessments step: after triage, before summary
           try {
-            const assessEnabled = String(process.env.AI_ASSESS_ENABLED || '').toLowerCase();
+            const assessEnabled = String(getEnvString("AI_ASSESS_ENABLED") || '').toLowerCase();
             if (assessEnabled === '1' || assessEnabled === 'true') {
-              const maxGroups = Math.max(1, Math.min(20, Number(process.env.ASSESS_MAX_GROUPS || 5)));
-              const maxSkills = Math.max(1, Math.min(50, Number(process.env.ASSESS_MAX_SKILLS || 8)));
-              const assessTimeoutMs = Math.max(500, Math.min(8000, Number(process.env.ASSESS_TIMEOUT_MS || 5000)));
-              const salt = (process.env.SKILL_HASH_SALT || 'test_salt').trim();
+              const maxGroups = Math.max(1, Math.min(20, Number(getEnvString("ASSESS_MAX_GROUPS") || 5)));
+              const maxSkills = Math.max(1, Math.min(50, Number(getEnvString("ASSESS_MAX_SKILLS") || 8)));
+              const assessTimeoutMs = Math.max(500, Math.min(8000, Number(getEnvString("ASSESS_TIMEOUT_MS") || 5000)));
+              const salt = (getEnvString("SKILL_HASH_SALT") || 'test_salt').trim();
 
               // Resolve cutoff (from latest summary) and recent interactions
               const latest: any = await client.query("functions/summaries:getLatest", { sessionId: body.sessionId }).catch(() => null);
               const cutoffTs = Number(latest?.lastMessageTs || 0);
-              let interactions: Array<any> = await client.query("functions/interactions:listBySession", { sessionId: body.sessionId, limit: 200 }).catch(() => []) as any[];
+              let interactions: Array<any> = await client.query("functions/interactions:listTailBySession", { sessionId: body.sessionId, limit: 200 }).catch(() => []) as any[];
               interactions = Array.isArray(interactions) ? interactions : [];
               let recent = interactions.filter((d: any) => (Number(d?.ts || 0) > cutoffTs));
               if (recent.length === 0) {
@@ -698,35 +946,37 @@ export async function POST(request: Request) {
                 // Dispatch one finalize per group (batch skills per group)
                 let completed = 0;
                 for (const gid of groupIds) {
-                  const skillAssessments = skills.map((s) => ({
+                  // Default skeleton results from tracked skills (fallback)
+                  let skillAssessments = skills.map((s) => ({
+                    skillId: s.id,
                     skillHash: sha256Hex(`${salt}:${s.id}`),
                     level: s.level,
-                    metCriteria: [],
-                    unmetCriteria: [],
-                    feedback: [],
+                    confidence: undefined as number | undefined,
+                    levelFeedback: {
+                      currentLevel: s.level,
+                      nextLevelCriteria: [] as string[],
+                      strengths: [] as string[],
+                      improvements: [] as string[],
+                      focus: [] as string[],
+                      examples: [] as string[],
+                    },
+                    assessmentMetadata: {} as Record<string, unknown>,
+                    sourceContext: { assessmentType: 'single_qa_pair' as string },
+                    // Legacy fields (kept empty for compatibility)
+                    metCriteria: [] as string[],
+                    unmetCriteria: [] as string[],
+                    feedback: [] as string[],
                   }));
-                  const payload = {
-                    sessionId: body.sessionId,
-                    groupId: gid,
-                    rubricVersion: 'v2' as const,
-                    summary: { skillAssessments },
-                  };
-                  const ctrl = new AbortController();
-                  const to = setTimeout(() => ctrl.abort(), assessTimeoutMs);
-                  try {
-                    const res = await fetch('/api/assessments/convex/finalize', {
-                      method: 'POST',
-                      headers,
-                      body: JSON.stringify(payload),
-                      cache: 'no-store',
-                      signal: ctrl.signal,
-                    });
-                    // consume response text but ignore errors
-                    await res.text().catch(() => '');
-                    completed++;
-                  } catch {}
-                  try { clearTimeout(to); } catch {}
+
+                  // PRE-SUMMARY FINALIZE is hard-disabled
+                  const allowPreSummary = false;
+                  if (!allowPreSummary) {
+                    try { await client.mutation("functions/events:logEvent", { userId: effectiveUserId, sessionId: body.sessionId, groupId: gid, requestId, trackedSkillIdHash, kind: 'interactions.pre.assess.skip', payload: { reason: 'hard_disabled' } }); } catch {}
+                  } else {
+                    // Legacy path removed (no-op)
+                  }
                 }
+                // end PRE_SUMMARY_FINALIZE guard
 
                 // Log completion
                 try {
@@ -863,6 +1113,28 @@ export async function POST(request: Request) {
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
     });
   } catch (error: any) {
+    // Detailed error logging for Convex issues
+    const errObj = {
+      error: error?.message || 'Unknown error',
+      code: error?.code,
+      cause: error?.cause?.code || error?.cause,
+      stack: error?.stack?.split('\n')[0],
+      sessionId: body?.sessionId,
+      messageId: body?.messageId,
+      role: body?.role,
+      convexUrl: convexBaseUrl(),
+      env: {
+        CONVEX_URL: getEnvString("CONVEX_URL") || null,
+        NEXT_PUBLIC_CONVEX_URL: getEnvString("NEXT_PUBLIC_CONVEX_URL") || null,
+        MOCK_CONVEX: getEnvString("MOCK_CONVEX") || null,
+      },
+      hint: undefined as string | undefined,
+    };
+    if (/<!DOCTYPE|<html|dashboard\.convex\.dev/.test(String(error?.message || '')) || /dashboard\.convex\.dev/.test(convexBaseUrl())) {
+      errObj.hint = 'convex_dashboard_url_in_use';
+    }
+    console.error(`[Convex] POST /api/v1/interactions failed:`, errObj);
+    
     // Track failed interaction
     try {
       const errorType = error?.message?.includes('network') ? 'network_error' : 'server_error';

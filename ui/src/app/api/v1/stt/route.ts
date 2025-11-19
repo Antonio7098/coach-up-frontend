@@ -10,6 +10,9 @@ import * as mockConvex from "../../lib/mockConvex";
 import { ProviderNotConfiguredError, getSttProvider } from "../../lib/speech/stt";
 import { S3Client, PutObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
 import { CostCalculator } from "../../lib/cost-calculator";
+import { getEnvString, getEnvBool } from "../../lib/env";
+import { json, badRequest, unauthorized, withTimeout, serverBaseUrl } from "../../lib/http";
+import { devLog } from "../../lib/observability";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -32,17 +35,30 @@ async function persistInteraction(client: any, opts: {
   sttCostCents?: number;
   sttDurationMs?: number;
 }) {
+  const { sessionId, groupId } = opts;
   try {
-    const { sessionId, groupId } = opts;
+    devLog("debug", "stt: persistInteraction called", {
+      sessionId,
+      groupId,
+      requestId: opts.requestId,
+      textLength: opts.text?.length || 0,
+      textPreview: opts.text?.slice(0, 50) || '(no text)',
+      sttCostCents: opts.sttCostCents,
+    });
+    
     // Persist when sessionId is present; groupId is optional metadata
-    if (!sessionId) return;
+    if (!sessionId) {
+      devLog("warn", "stt: skipping interaction - no sessionId", { requestId: opts.requestId });
+      return;
+    }
 
     // Skip empty or meaningless text content
     const text = opts.text?.trim();
     if (!text || text.length === 0) {
-      console.log("[stt] Skipping empty interaction - no meaningful text content");
+      devLog("warn", "stt: skipping empty interaction - no meaningful text content", { requestId: opts.requestId });
       return;
     }
+    
     const messageId = safeUUID();
     const role = "user" as const;
     const ts = Date.now();
@@ -53,9 +69,78 @@ async function persistInteraction(client: any, opts: {
     } catch {
       contentHash = String(Math.abs(basis.length * 2654435761 % 2 ** 31));
     }
-    const useMock = process.env.MOCK_CONVEX === "1";
+    
+    const useMock = getEnvString("MOCK_CONVEX") === "1";
+    devLog("debug", "stt: about to persist user interaction", {
+      messageId,
+      role,
+      sessionId,
+      groupId,
+      text,
+      useMock,
+      ts,
+    });
+    
     if (useMock) {
       await mockConvex.appendInteraction({ sessionId, groupId, messageId, role, contentHash, text: text, audioUrl: opts.audioUrl ?? undefined, ts });
+      devLog("info", "stt: successfully persisted to mock Convex", { messageId, sessionId, requestId: opts.requestId });
+      
+      // Trigger triage after user interaction is saved (mock path)
+      try {
+        const triageOnUser = String(getEnvString("TRIAGE_ON_USER_INGEST") || '1').toLowerCase();
+        if (triageOnUser === '1' || triageOnUser === 'true') {
+          // Fetch last 2 message IDs for triage from mock (using optimized tail query)
+          const docs: Array<any> = await mockConvex.listIdsTail({ sessionId, limit: 2 }) || [];
+          const messageIds = docs.map((d: any) => String(d?.messageId || '')).filter(Boolean);
+          
+          if (messageIds.length > 0) {
+            const ctrl = new AbortController();
+            const to = setTimeout(() => ctrl.abort(), Math.max(300, Math.min(2000, Number(getEnvString("TRIAGE_TIMEOUT_MS") || 1200))));
+            
+            // Call triage API internally
+            try {
+              const url = `/api/v1/triage?sessionId=${encodeURIComponent(sessionId)}`;
+              const headers: Record<string, string> = { 'content-type': 'application/json', 'x-request-id': opts.requestId };
+              
+              // Use server-side relative URL for internal API call
+              const baseUrl = getEnvString("VERCEL_URL") ? `https://${getEnvString("VERCEL_URL")}` : 'http://localhost:3000';
+              const fullUrl = `${baseUrl}${url}`;
+            
+            ;(async () => {
+              try {
+                const res = await fetch(fullUrl, {
+                  method: 'POST',
+                  headers,
+                  body: JSON.stringify({ messageIds }),
+                  signal: ctrl.signal,
+                });
+                if (!res.ok) {
+                  // Fallback to mockConvex persistence to avoid stuck PENDING
+                  try {
+                    const updates = messageIds.map(m => ({ sessionId, messageId: m, assessmentType: 'general_chatter' as any }));
+                    await mockConvex.setTriageResults({ sessionId, updates });
+                  } catch {}
+                }
+              } catch {
+                try {
+                  const updates = messageIds.map(m => ({ sessionId, messageId: m, assessmentType: 'general_chatter' as any }));
+                  await mockConvex.setTriageResults({ sessionId, updates });
+                } catch {}
+              } finally {
+                try { clearTimeout(to); } catch {}
+              }
+            })();
+            
+            devLog("info", "stt: triggered triage for user message (mock)", { sessionId, messageIds, requestId: opts.requestId });
+            } catch (e) {
+              devLog("warn", "stt: triage trigger failed (mock)", { sessionId, requestId: opts.requestId, error: String(e) });
+            }
+          }
+        }
+      } catch (e) {
+        devLog("warn", "stt: triage setup failed (mock)", { sessionId, requestId: opts.requestId, error: String(e) });
+      }
+      
       return;
     }
 
@@ -71,8 +156,60 @@ async function persistInteraction(client: any, opts: {
       sttDurationMs: opts.sttDurationMs,
       ts
     });
+    
+    devLog("info", "stt: successfully persisted to real Convex", { messageId, sessionId, requestId: opts.requestId });
+    
+    // Trigger triage after user interaction is saved
+    try {
+      const triageOnUser = String(getEnvString("TRIAGE_ON_USER_INGEST") || '1').toLowerCase();
+      if (triageOnUser === '1' || triageOnUser === 'true') {
+        // Fetch last 2 message IDs for triage (using optimized tail query)
+        const docs: Array<any> = await client.query("functions/interactions:listIdsTail", { sessionId, limit: 2 }).catch(() => []) as any[];
+        const messageIds = docs.map((d: any) => String(d?.messageId || '')).filter(Boolean);
+        
+        if (messageIds.length > 0) {
+          const ctrl = new AbortController();
+          const to = setTimeout(() => ctrl.abort(), Math.max(300, Math.min(2000, Number(getEnvString("TRIAGE_TIMEOUT_MS") || 1200))));
+          
+          // Call triage API internally
+          try {
+            const url = `/api/v1/triage?sessionId=${encodeURIComponent(sessionId)}`;
+            const headers: Record<string, string> = { 'content-type': 'application/json', 'x-request-id': opts.requestId };
+            
+            // Use server-side relative URL for internal API call
+            const baseUrl = getEnvString("VERCEL_URL") ? `https://${getEnvString("VERCEL_URL")}` : 'http://localhost:3000';
+            const fullUrl = `${baseUrl}${url}`;
+            
+            ;(async () => {
+              try {
+                const res = await fetch(fullUrl, {
+                  method: 'POST',
+                  headers,
+                  body: JSON.stringify({ messageIds }),
+                  signal: ctrl.signal,
+                });
+                if (!res.ok) {
+                  // Fallback to Convex action to avoid stuck PENDING
+                  try { await (client as any).action("functions/triage:runForSession", { sessionId, limit: messageIds.length || 2 }); } catch {}
+                }
+              } catch {
+                try { await (client as any).action("functions/triage:runForSession", { sessionId, limit: messageIds.length || 2 }); } catch {}
+              } finally {
+                try { clearTimeout(to); } catch {}
+              }
+            })();
+            
+            devLog("info", "stt: triggered triage for user message", { sessionId, messageIds, requestId: opts.requestId });
+          } catch (e) {
+            devLog("warn", "stt: triage trigger failed", { sessionId, requestId: opts.requestId, error: String(e) });
+          }
+        }
+      }
+    } catch (e) {
+      devLog("warn", "stt: triage setup failed", { sessionId, requestId: opts.requestId, error: String(e) });
+    }
   } catch (e) {
-    try { console.error("[stt] persistInteraction failed", e); } catch {}
+    devLog("error", "stt: persistInteraction failed", { sessionId, requestId: opts.requestId, error: String(e) });
   }
 }
 
@@ -98,7 +235,7 @@ async function calculateSTTCost(provider: string, modelId: string | undefined, d
       durationMs: result.usage.durationMs || durationMs,
     };
   } catch (error) {
-    console.error('[stt] Cost calculation failed:', error);
+    devLog("error", "stt: cost calculation failed", { error: String(error) });
     return { costCents: 0, durationMs };
   }
 }
@@ -106,18 +243,24 @@ async function calculateSTTCost(provider: string, modelId: string | undefined, d
 export async function POST(request: Request) {
   const headersIn = new Headers(request.headers);
   const requestId = headersIn.get("x-request-id") || safeUUID();
+  const startTime = Date.now();
+
+  devLog("debug", "stt: POST request initiated", {
+    requestId,
+    timestamp: new Date().toISOString()
+  });
   const detectMsHeader = headersIn.get("x-detect-ms");
   const clientDetectMs = detectMsHeader ? Number(detectMsHeader) : undefined;
   const routePath = "/api/v1/stt";
   const method = "POST";
-  const started = Date.now();
+  // startTime is already defined above
   // Safe diagnostics: meta only, no secrets
   let host = "";
   let path = "";
   try { const u = new URL(request.url); host = u.host; path = u.pathname; } catch {}
   const hasAuthHeader = !!headersIn.get("authorization");
   const hasCookie = !!headersIn.get("cookie");
-  let provider = getSttProvider(process.env.STT_PROVIDER);
+  let provider = getSttProvider(getEnvString("STT_PROVIDER"));
   let mode = provider.name;
   const endTimer = promMetrics.requestDurationSeconds.startTimer();
 
@@ -144,7 +287,7 @@ export async function POST(request: Request) {
   const ct = (headersIn.get("content-type") || "").toLowerCase();
   const isMultipart = ct.includes("multipart/form-data");
   const allowedTypes = new Set(["audio/webm", "audio/wav", "audio/mpeg", "audio/mp4", "audio/x-m4a"]);
-  const maxBytes = Number(process.env.STT_MAX_AUDIO_BYTES) > 0 ? Number(process.env.STT_MAX_AUDIO_BYTES) : 25 * 1024 * 1024;
+  const maxBytes = Number(getEnvString("STT_MAX_AUDIO_BYTES")) > 0 ? Number(getEnvString("STT_MAX_AUDIO_BYTES")) : 25 * 1024 * 1024;
 
   function extFromContentType(mime: string): string {
     switch (mime) {
@@ -162,12 +305,12 @@ export async function POST(request: Request) {
   }
 
   async function uploadToS3AndGetKey(file: { arrayBuffer: () => Promise<ArrayBuffer>; type?: string }): Promise<{ objectKey: string; audioUrl?: string } | null> {
-    const provider = (process.env.STORAGE_PROVIDER || "s3").toLowerCase();
-    const bucket = process.env.S3_BUCKET_AUDIO || "";
+    const provider = (getEnvString("STORAGE_PROVIDER") || "s3").toLowerCase();
+    const bucket = getEnvString("S3_BUCKET_AUDIO") || "";
     if (provider !== "s3" || !bucket) return null;
-    const region = process.env.S3_REGION || "us-east-1";
-    const endpoint = process.env.S3_ENDPOINT_URL || undefined;
-    const forcePathStyle = process.env.S3_FORCE_PATH_STYLE === "1";
+    const region = getEnvString("S3_REGION") || "us-east-1";
+    const endpoint = getEnvString("S3_ENDPOINT_URL") || undefined;
+    const forcePathStyle = getEnvString("S3_FORCE_PATH_STYLE") === "1";
     const s3 = new S3Client({ region, endpoint, forcePathStyle });
     const now = Date.now();
     const key = `audio/${new Date(now).toISOString().slice(0,10)}/${safeUUID()}.${extFromContentType(file.type || "application/octet-stream")}`;
@@ -177,7 +320,7 @@ export async function POST(request: Request) {
     let audioUrl: string | undefined;
     if (endpoint) {
       const base = endpoint.replace(/\/$/, "");
-      audioUrl = process.env.S3_FORCE_PATH_STYLE === "1" ? `${base}/${bucket}/${key}` : `${base}/${key}`;
+      audioUrl = getEnvString("S3_FORCE_PATH_STYLE") === "1" ? `${base}/${bucket}/${key}` : `${base}/${key}`;
     }
     return { objectKey: key, audioUrl };
   }
@@ -193,7 +336,7 @@ export async function POST(request: Request) {
       const languageHint = typeof form.get("languageHint") === 'string' ? String(form.get("languageHint")) : undefined;
 
       // Initialize Convex client
-      const convexUrl = process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || "http://127.0.0.1:3210";
+      const convexUrl = getEnvString("CONVEX_URL") || getEnvString("NEXT_PUBLIC_CONVEX_URL") || "http://127.0.0.1:3210";
       const client = makeConvex(convexUrl);
 
       // Start session ensureActiveSession in parallel to STT for low latency
@@ -212,7 +355,7 @@ export async function POST(request: Request) {
         }
       })();
       // Optional provider override via form
-      if (process.env.ALLOW_PROVIDER_OVERRIDE === '1') {
+      if (getEnvString("ALLOW_PROVIDER_OVERRIDE") === '1') {
         const requested = typeof form.get("provider") === 'string' ? String(form.get("provider")) : undefined;
         if (requested) {
           provider = getSttProvider(requested);
@@ -234,7 +377,19 @@ export async function POST(request: Request) {
 
       // Decide path: data URL (privacy-first) vs storage upload
       // Default is storage upload unless explicitly enabled via STT_MULTIPART_DATAURL_ENABLED=1
+      // NOTE: Use process.env directly because getEnvString only looks in predefined serverEnv object
       const enableDataUrl = process.env.STT_MULTIPART_DATAURL_ENABLED === "1";
+      
+      // DEBUG: Force log to see what's happening
+      console.log("[STT DEBUG]", {
+        enableDataUrl,
+        STT_MULTIPART_DATAURL_ENABLED: process.env.STT_MULTIPART_DATAURL_ENABLED,
+        STT_PROVIDER: process.env.STT_PROVIDER,
+        provider: provider.name,
+        size,
+        mime
+      });
+      
       if (enableDataUrl) {
         // Privacy-first: bypass storage entirely by posting bytes directly to the provider.
         // Encode the uploaded blob as a data URL that providers can fetch via standard fetch.
@@ -266,7 +421,8 @@ export async function POST(request: Request) {
         } as const;
 
       // Persist transcript with cost data (no audioUrl/objectKey for privacy)
-        const sidEff = effectiveSessionId || sessionId;
+        // Use sessionId from frontend if provided, fallback to effectiveSessionId
+        const sidEff = sessionId || effectiveSessionId;
         persistInteraction(client, {
           sessionId: sidEff,
         groupId,
@@ -276,7 +432,7 @@ export async function POST(request: Request) {
         objectKey: undefined,
         sttCostCents: sttCost.costCents,
         sttDurationMs: sttCost.durationMs,
-      }).catch(() => {});
+      }).catch((e) => { devLog("error", "stt: persistInteraction failed in multipart dataUrl path", { error: String(e), sessionId }); });
 
       // Update denormalized session metrics (lastActivityAt, interactionCount, costs)
       try {
@@ -304,7 +460,7 @@ export async function POST(request: Request) {
           if (typeof clientDetectMs === 'number' && isFinite(clientDetectMs) && clientDetectMs >= 0) {
             promMetrics.clientDetectMs.labels(labels.route, labels.method, labels.status, labels.mode).observe(clientDetectMs);
           }
-          promMetrics.sttLatencyMs.labels(labels.route, labels.method, labels.status, labels.mode).observe(Date.now() - started);
+          promMetrics.sttLatencyMs.labels(labels.route, labels.method, labels.status, labels.mode).observe(Date.now() - startTime);
         } catch {}
         return respond(200, payload);
       }
@@ -338,7 +494,8 @@ export async function POST(request: Request) {
       } as const;
 
       // Persist with audio metadata and cost data when stored
-      const sidEff = effectiveSessionId || sessionId;
+      // Use sessionId from frontend if provided, fallback to effectiveSessionId
+      const sidEff = sessionId || effectiveSessionId;
       persistInteraction(client, {
         sessionId: sidEff,
         groupId,
@@ -348,7 +505,7 @@ export async function POST(request: Request) {
         objectKey: uploaded.objectKey ?? undefined,
         sttCostCents: sttCost.costCents,
         sttDurationMs: sttCost.durationMs,
-      }).catch(() => {});
+      }).catch((e) => { devLog("error", "stt: persistInteraction failed in multipart storage path", { error: String(e), sessionId }); });
 
       // Update denormalized session metrics (lastActivityAt, interactionCount, costs)
       try {
@@ -376,7 +533,7 @@ export async function POST(request: Request) {
         if (typeof clientDetectMs === 'number' && isFinite(clientDetectMs) && clientDetectMs >= 0) {
           promMetrics.clientDetectMs.labels(labels.route, labels.method, labels.status, labels.mode).observe(clientDetectMs);
         }
-        promMetrics.sttLatencyMs.labels(labels.route, labels.method, labels.status, labels.mode).observe(Date.now() - started);
+        promMetrics.sttLatencyMs.labels(labels.route, labels.method, labels.status, labels.mode).observe(Date.now() - startTime);
       } catch {}
       return respond(200, payload);
     } catch (err: any) {
@@ -391,12 +548,12 @@ export async function POST(request: Request) {
   let body: any;
   try { body = await request.json(); }
   catch {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 400, msg: 'Invalid JSON', latencyMs: Date.now() - started }));
+    devLog("warn", "stt: invalid JSON", { requestId, status: 400, latencyMs: Date.now() - startTime });
     return respond(400, { error: "Invalid JSON" });
   }
 
   // Optional provider override for dev/testing
-  if (process.env.ALLOW_PROVIDER_OVERRIDE === '1') {
+  if (getEnvString("ALLOW_PROVIDER_OVERRIDE") === '1') {
     const requested = typeof body?.provider === 'string' ? body.provider : undefined;
     if (requested) {
       provider = getSttProvider(requested);
@@ -411,7 +568,7 @@ export async function POST(request: Request) {
   const languageHint = typeof body?.languageHint === 'string' ? body.languageHint : undefined;
 
   if (!audioUrl && !objectKey) {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 400, msg: 'audioUrl or objectKey required', latencyMs: Date.now() - started }));
+    devLog("warn", "stt: audioUrl or objectKey required", { requestId, status: 400, latencyMs: Date.now() - startTime });
     return respond(400, { error: "audioUrl or objectKey is required" });
   }
 
@@ -420,7 +577,7 @@ export async function POST(request: Request) {
     const ensureSessionPromise = (async () => {
       try {
         const hint = sessionId || undefined;
-        const res: any = await makeConvex(process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || "http://127.0.0.1:3210").mutation("functions/sessions:ensureActiveSession", {
+        const res: any = await makeConvex(getEnvString("CONVEX_URL") || getEnvString("NEXT_PUBLIC_CONVEX_URL") || "http://127.0.0.1:3210").mutation("functions/sessions:ensureActiveSession", {
           userId: auth.userId,
           sessionIdHint: hint,
           nowMs: Date.now(),
@@ -441,12 +598,12 @@ export async function POST(request: Request) {
     let estimatedDuration = 60000; // Default 1 minute
     if (objectKey) {
       try {
-        const provider = (process.env.STORAGE_PROVIDER || "s3").toLowerCase();
-        const bucket = process.env.S3_BUCKET_AUDIO || "";
+        const provider = (getEnvString("STORAGE_PROVIDER") || "s3").toLowerCase();
+        const bucket = getEnvString("S3_BUCKET_AUDIO") || "";
         if (provider === "s3" && bucket) {
-          const region = process.env.S3_REGION || "us-east-1";
-          const endpoint = process.env.S3_ENDPOINT_URL || undefined;
-          const forcePathStyle = process.env.S3_FORCE_PATH_STYLE === "1";
+          const region = getEnvString("S3_REGION") || "us-east-1";
+          const endpoint = getEnvString("S3_ENDPOINT_URL") || undefined;
+          const forcePathStyle = getEnvString("S3_FORCE_PATH_STYLE") === "1";
           const s3 = new S3Client({ region, endpoint, forcePathStyle });
           const head = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: objectKey } as any));
           const bytes = Number(head.ContentLength || 0);
@@ -473,7 +630,7 @@ export async function POST(request: Request) {
     } as const;
 
     // Initialize Convex client for persistence
-    const convexUrl = process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || "http://127.0.0.1:3210";
+    const convexUrl = getEnvString("CONVEX_URL") || getEnvString("NEXT_PUBLIC_CONVEX_URL") || "http://127.0.0.1:3210";
     const client = makeConvex(convexUrl);
 
     // Fire-and-forget persistence of interaction row with cost data
@@ -487,7 +644,7 @@ export async function POST(request: Request) {
       objectKey: objectKey ?? undefined,
       sttCostCents: sttCost.costCents,
       sttDurationMs: sttCost.durationMs,
-    }).catch(() => {});
+    }).catch((e) => { devLog("error", "stt: persistInteraction failed in JSON path", { error: String(e), sessionId }); });
 
     // Update denormalized session metrics (lastActivityAt, interactionCount, costs)
     try {
@@ -506,12 +663,12 @@ export async function POST(request: Request) {
     // Metrics: audio bytes in (best-effort for server-side fetch when objectKey is provided)
     try {
       if (objectKey) {
-        const provider = (process.env.STORAGE_PROVIDER || "s3").toLowerCase();
-        const bucket = process.env.S3_BUCKET_AUDIO || "";
+        const provider = (getEnvString("STORAGE_PROVIDER") || "s3").toLowerCase();
+        const bucket = getEnvString("S3_BUCKET_AUDIO") || "";
         if (provider === "s3" && bucket) {
-          const region = process.env.S3_REGION || "us-east-1";
-          const endpoint = process.env.S3_ENDPOINT_URL || undefined;
-          const forcePathStyle = process.env.S3_FORCE_PATH_STYLE === "1";
+          const region = getEnvString("S3_REGION") || "us-east-1";
+          const endpoint = getEnvString("S3_ENDPOINT_URL") || undefined;
+          const forcePathStyle = getEnvString("S3_FORCE_PATH_STYLE") === "1";
           const s3 = new S3Client({ region, endpoint, forcePathStyle });
           const head = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: objectKey } as any));
           const bytes = Number(head.ContentLength || 0);
@@ -529,16 +686,39 @@ export async function POST(request: Request) {
       if (typeof clientDetectMs === 'number' && isFinite(clientDetectMs) && clientDetectMs >= 0) {
         promMetrics.clientDetectMs.labels(labels.route, labels.method, labels.status, labels.mode).observe(clientDetectMs);
       }
-      promMetrics.sttLatencyMs.labels(labels.route, labels.method, labels.status, labels.mode).observe(Date.now() - started);
+      promMetrics.sttLatencyMs.labels(labels.route, labels.method, labels.status, labels.mode).observe(Date.now() - startTime);
     } catch {}
-    console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, mode, sessionId, groupId, hasAudioUrl: !!audioUrl, hasObjectKey: !!objectKey, model: result.model, clientDetectMs, latencyMs: Date.now() - started }));
+    devLog("info", "stt: 200 OK response", {
+      requestId,
+      status: 200,
+      mode,
+      sessionId,
+      groupId,
+      hasAudioUrl: !!audioUrl,
+      hasObjectKey: !!objectKey,
+      model: result.model,
+      clientDetectMs,
+      latencyMs: Date.now() - startTime
+    });
     return respond(200, payload);
   } catch (err: any) {
     if (err?.name === 'ProviderNotConfiguredError' || err instanceof ProviderNotConfiguredError) {
-      console.log(JSON.stringify({ level: 'error', route: routePath, requestId, status: 501, mode, msg: 'STT provider not configured', error: err?.message, latencyMs: Date.now() - started }));
+      devLog("error", "stt: STT provider not configured", {
+        requestId,
+        status: 501,
+        mode,
+        error: err?.message,
+        latencyMs: Date.now() - startTime
+      });
       return respond(501, { error: "STT provider not configured" });
     }
-    console.log(JSON.stringify({ level: 'error', route: routePath, requestId, status: 500, mode, msg: 'STT failed', error: err?.message, latencyMs: Date.now() - started }));
+    devLog("error", "stt: STT failed", {
+      requestId,
+      status: 500,
+      mode,
+      error: err?.message,
+      latencyMs: Date.now() - startTime
+    });
     return respond(500, { error: "STT failed" });
   }
 }

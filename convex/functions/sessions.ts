@@ -11,6 +11,7 @@ export const updateSessionState = mutation({
     sessionId: v.string(),
     state: v.optional(v.any()),
     latestGroupId: v.optional(v.string()),
+    latestAssessmentId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     // Runtime guards
@@ -19,6 +20,9 @@ export const updateSessionState = mutation({
     if (!nonEmpty(args.sessionId)) throw new Error('sessionId required');
     if (args.latestGroupId !== undefined && args.latestGroupId !== null && !nonEmpty(args.latestGroupId)) {
       throw new Error('latestGroupId must be non-empty when provided');
+    }
+    if (args.latestAssessmentId !== undefined && args.latestAssessmentId !== null && !nonEmpty(args.latestAssessmentId)) {
+      throw new Error('latestAssessmentId must be non-empty when provided');
     }
     if (args.state !== undefined && args.state !== null) {
       if (typeof args.state !== 'object' || Array.isArray(args.state)) {
@@ -38,6 +42,7 @@ export const updateSessionState = mutation({
         sessionId: args.sessionId,
         state: args.state ?? {},
         latestGroupId: args.latestGroupId,
+        latestAssessmentId: args.latestAssessmentId,
         // Cost tracking fields - initialize to 0
         totalCostCents: 0,
         sttCostCents: 0,
@@ -57,6 +62,7 @@ export const updateSessionState = mutation({
     await ctx.db.patch(existing._id, {
       state: args.state ?? existing.state ?? {},
       latestGroupId: args.latestGroupId ?? existing.latestGroupId,
+      latestAssessmentId: args.latestAssessmentId ?? existing.latestAssessmentId,
       lastActivityAt: now,
     });
     return { created: false, id: existing._id } as const;

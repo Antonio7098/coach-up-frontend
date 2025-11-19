@@ -6,6 +6,7 @@ import { requireAuth } from "../../lib/auth";
 import { promMetrics } from "../../lib/metrics";
 import { makeConvex } from "../../lib/convex";
 import * as mockConvex from "../../lib/mockConvex";
+import { devLog } from "../../lib/observability";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -36,6 +37,18 @@ export async function GET(request: Request) {
   const mode = process.env.MOCK_CONVEX === '1' ? 'mock' : 'convex';
   const endTimer = promMetrics.requestDurationSeconds.startTimer();
 
+  const url = new URL(request.url);
+  const sessionId = url.searchParams.get("sessionId") || "";
+  const groupId = url.searchParams.get("groupId") || "";
+
+  devLog("debug", "transcripts: GET request initiated", {
+    requestId,
+    sessionId,
+    groupId,
+    mode,
+    timestamp: new Date().toISOString()
+  });
+
   function respond(status: number, body: unknown) {
     const labels = { route: routePath, method, status: String(status), mode } as const;
     promMetrics.requestsTotal.labels(labels.route, labels.method, labels.status, labels.mode).inc();
@@ -52,18 +65,15 @@ export async function GET(request: Request) {
   // Auth (optional gating via CLERK_ENABLED)
   const auth = await requireAuth(request);
   if (!auth.ok) {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 401, reason: auth.reason, latencyMs: Date.now() - started }));
+    devLog("warn", "transcripts: authentication failed", { requestId, status: 401, reason: auth.reason, latencyMs: Date.now() - started });
     return respond(401, { error: "Unauthorized" });
   }
 
-  const url = new URL(request.url);
-  const sessionId = url.searchParams.get("sessionId");
-  const groupId = url.searchParams.get("groupId");
   const limitRaw = url.searchParams.get("limit");
   const cursor = url.searchParams.get("cursor") || undefined;
 
   if (!sessionId || sessionId.trim().length === 0) {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 400, msg: 'Missing sessionId', latencyMs: Date.now() - started }));
+    devLog("warn", "transcripts: missing sessionId", { requestId, status: 400, latencyMs: Date.now() - started });
     return respond(400, { error: "sessionId is required" });
   }
 
@@ -87,10 +97,37 @@ export async function GET(request: Request) {
     } else {
       const convexUrl = convexBaseUrl();
       const client = makeConvex(convexUrl);
-      if (groupId) {
-        docs = await client.query("functions/interactions:listByGroup", { groupId, limit }) as any[];
-      } else if (sessionId) {
-        docs = await client.query("functions/interactions:listBySession", { sessionId, limit }) as any[];
+
+      // Add timeout to prevent hanging queries (30 second timeout)
+      const queryTimeout = 30000; // 30 seconds
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('Convex query timeout')), queryTimeout);
+      });
+
+      try {
+        if (groupId) {
+          docs = await Promise.race([
+            client.query("functions/interactions:listByGroup", { groupId, limit }),
+            timeoutPromise
+          ]) as any[];
+        } else if (sessionId) {
+          docs = await Promise.race([
+            client.query("functions/interactions:listBySession", { sessionId, limit }),
+            timeoutPromise
+          ]) as any[];
+        }
+      } catch (queryError: any) {
+        // If query times out or fails, log and continue with empty docs
+        try {
+          devLog("warn", "transcripts: Convex query failed", {
+            sessionId,
+            groupId,
+            requestId,
+            error: queryError.message,
+            mode
+          });
+        } catch {}
+        docs = []; // Ensure we have an empty array
       }
     }
 
@@ -104,6 +141,8 @@ export async function GET(request: Request) {
       audioUrl: d.audioUrl ?? null,
       // Surface triage metadata when present
       assessmentType: d.assessmentType ?? undefined,
+      triageStatus: d.triageStatus ?? undefined,
+      triageDecision: d.triageDecision ?? undefined,
       triageProcessedAt: typeof d.triageProcessedAt === 'number' ? d.triageProcessedAt : undefined,
       createdAt: d.createdAt ?? d.ts ?? Date.now(),
     }));
@@ -120,13 +159,32 @@ export async function GET(request: Request) {
         acc[r] = (acc[r] || 0) + 1;
         return acc;
       }, {} as Record<string, number>);
-      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, sessionId, groupId, limit, mode, itemsReturned: items.length, roleCounts, latencyMs: Date.now() - started }));
+      devLog("info", "transcripts: 200 OK response", {
+        requestId,
+        status: 200,
+        sessionId,
+        groupId,
+        limit,
+        mode,
+        itemsReturned: items.length,
+        roleCounts,
+        latencyMs: Date.now() - started
+      });
     } catch {
-      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, sessionId, groupId, limit, mode, itemsReturned: items.length, latencyMs: Date.now() - started }));
+      devLog("info", "transcripts: 200 OK response (fallback)", {
+        requestId,
+        status: 200,
+        sessionId,
+        groupId,
+        limit,
+        mode,
+        itemsReturned: items.length,
+        latencyMs: Date.now() - started
+      });
     }
     return respond(200, payload);
   } catch (err: unknown) {
-    try { console.error('[transcripts] GET failed', err); } catch {}
+    devLog("error", "transcripts: GET failed", { sessionId, groupId, requestId, error: String(err), mode });
     return respond(502, { error: "Backend query failed" });
   }
 }

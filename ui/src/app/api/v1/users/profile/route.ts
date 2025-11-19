@@ -6,6 +6,7 @@ import { makeConvex } from "../../../lib/convex";
 import * as mockConvex from "../../../lib/mockConvex";
 import { promMetrics } from "../../../lib/metrics";
 import { clientKeyFromHeaders, rateLimit } from "../../../lib/ratelimit";
+import { devLog } from "../../../lib/observability";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -69,12 +70,13 @@ export async function GET(request: Request) {
 
   try {
     if (process.env.MOCK_CONVEX === '1') {
+      // Seed data for this user if empty
+      try { await mockConvex.__devSeedUserDataFor(userId); } catch {}
       const profile = await mockConvex.getUserProfile({ userId });
       return respond(200, { profile: profile ?? null }, rateHeaders);
     }
-
     const client = makeConvex(convexBaseUrl());
-    const profile = await client.query("functions/users:getProfile", { userId }) as any;
+    const profile = await client.query("functions/users:getUserProfile", { userId }) as any;
     return respond(200, { profile: profile ?? null }, rateHeaders);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e ?? 'Convex query failed');
@@ -122,13 +124,12 @@ export async function PUT(request: Request) {
   try {
     if (process.env.MOCK_CONVEX === '1') {
       const result = await mockConvex.upsertUserProfile({ userId, displayName, email, avatarUrl, bio });
-      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, userId, status: 200, created: !!result?.created, mode, latencyMs: Date.now() - started }));
+      devLog("info", "users-profile: upsert profile (mock)", { requestId, userId, status: 200, created: !!result?.created, latencyMs: Date.now() - started });
       return respond(200, { ok: true, created: !!result?.created }, rateHeaders);
     }
-
     const client = makeConvex(convexBaseUrl());
-    const result = await client.mutation("functions/users:upsertProfile", { userId, displayName, email, avatarUrl, bio }) as any;
-    console.log(JSON.stringify({ level: 'info', route: routePath, requestId, userId, status: 200, created: !!result?.created, mode, latencyMs: Date.now() - started }));
+    const result = await client.mutation("functions/users:upsertUserProfile", { userId, displayName, email, avatarUrl, bio }) as any;
+    devLog("info", "users-profile: upsert profile (convex)", { requestId, userId, status: 200, created: !!result?.created, latencyMs: Date.now() - started });
     return respond(200, { ok: true, created: !!result?.created }, rateHeaders);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e ?? 'Convex mutation failed');

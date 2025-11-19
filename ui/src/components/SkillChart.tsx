@@ -1,4 +1,5 @@
 import React from 'react';
+import { devLog } from "../app/api/lib/observability";
 
 interface SkillChartProps {
   data: number[];
@@ -29,6 +30,13 @@ const SkillChart: React.FC<SkillChartProps> = ({
   xTickLabels,
   yTickLabels,
 }) => {
+  devLog("debug", "SkillChart: component initialized", {
+    dataLength: data?.length || 0,
+    dataRange: data?.length ? { min: Math.min(...data), max: Math.max(...data) } : null,
+    showHover,
+    timestamp: new Date().toISOString()
+  });
+
   // Always call hooks at the top level, before any conditional logic
   const [hoverIdx, setHoverIdx] = React.useState<number | null>(null);
 
@@ -104,8 +112,12 @@ const SkillChart: React.FC<SkillChartProps> = ({
       if (dx < best) { best = dx; nearest = i; }
     }
     setHoverIdx(nearest);
+    devLog("debug", "SkillChart: hover index updated", { hoverIdx: nearest, dataPoint: data[nearest] });
   } : () => {};
-  const handleLeave = showHover ? () => setHoverIdx(null) : () => {};
+  const handleLeave = showHover ? () => {
+    setHoverIdx(null);
+    devLog("debug", "SkillChart: hover cleared");
+  } : () => {};
 
   return (
     <div className={className}>

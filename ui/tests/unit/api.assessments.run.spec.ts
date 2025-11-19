@@ -33,11 +33,8 @@ describe('API: POST /api/assessments/run', () => {
     expect(JSON.parse(text)).toEqual({ groupId: GROUP_ID, status: 'accepted' });
 
     const client = getLatestConvexClientMock();
+    // We no longer pre-create assessment groups in Convex here; orchestration runs directly
     expect(client).toBeTruthy();
-    expect(client.mutation).toHaveBeenCalledWith(
-      'assessments:createAssessmentGroup',
-      { sessionId: SESSION_ID, groupId: GROUP_ID, rubricVersion: 'v1' }
-    );
   });
 
   it('returns 502 when upstream is unavailable', async () => {

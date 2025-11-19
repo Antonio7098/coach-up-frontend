@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
 import { fetchWithRetry } from '../app/api/lib/retry';
+import { devLog } from '../app/api/lib/observability';
 
 export interface Interaction {
   id: string;
@@ -11,6 +12,11 @@ export interface Interaction {
   contentHash?: string;
   audioUrl?: string;
   userId?: string;
+  // Triage metadata (optional)
+  assessmentType?: string;
+  triageStatus?: 'pending' | 'running' | 'processed' | 'skipped' | 'error';
+  triageDecision?: 'assess' | 'not_assess';
+  triageProcessedAt?: number;
 }
 
 export interface InteractionsCache {
@@ -33,9 +39,7 @@ export function useInteractionsCache(options: UseInteractionsOptions) {
   const { getToken } = useAuth();
   
   // DEBUG: lifecycle
-  try {
-    console.debug('[interactions.cache] init', { sessionId, staleTime, revalidateOnFocus, debounceMs });
-  } catch {}
+  devLog('debug', 'useInteractionsCache: init', { sessionId, staleTime, revalidateOnFocus, debounceMs });
 
   const [cache, setCache] = useState<InteractionsCache>({
     interactions: [],
@@ -71,6 +75,70 @@ export function useInteractionsCache(options: UseInteractionsOptions) {
   // Build cache key: sessionId + lastSeenId
   const cacheKey = `${sessionId}:${cache.latestId || ''}`;
 
+  // SSE subscription for triage events (event-driven cache updates)
+  useEffect(() => {
+    if (!sessionId) return;
+    let es: EventSource | null = null;
+    try {
+      const url = `/api/v1/triage/stream?sessionId=${encodeURIComponent(sessionId)}`;
+      es = new EventSource(url, { withCredentials: false });
+      const onEvent = (ev: MessageEvent) => {
+        try {
+          const data = JSON.parse(ev.data || '{}');
+          const type = String(data?.type || data?.kind || '');
+          if (type === 'event') {
+            const payload = data?.payload || {};
+            const kind = String(payload?.kind || '');
+            // Not all backends include kind at this level; support direct event shape
+          }
+          // The server sends objects with { type: ..., ... } on 'event' channel.
+          const kind = String((data?.kind ?? data?.type) || '');
+          if (kind === 'triage_done' || kind === 'triage_persist_ok') {
+            const ids: string[] = Array.isArray(data?.payload?.messageIds) ? data.payload.messageIds : (Array.isArray(data?.messageIds) ? data.messageIds : []);
+            const decisions = data?.payload?.decisions || data?.decisions || null;
+            if (ids.length > 0) {
+              setCache(prev => {
+                const next = { ...prev, interactions: [...prev.interactions] } as InteractionsCache;
+                let touched = 0;
+                for (const mid of ids) {
+                  const idx = next.interactions.findIndex(i => i.messageId === mid);
+                  if (idx >= 0) {
+                    const cur = next.interactions[idx];
+                    next.interactions[idx] = {
+                      ...cur,
+                      triageStatus: 'processed',
+                      triageDecision: decisions && typeof decisions === 'object' ? (decisions.assess > 0 ? 'assess' : 'not_assess') : (cur.triageDecision || 'not_assess'),
+                      triageProcessedAt: Date.now(),
+                    } as any;
+                    touched++;
+                  }
+                }
+                if (touched > 0) {
+                  devLog('debug', 'useInteractionsCache: triage event updated', { touched, ids });
+                  return next;
+                }
+                return prev;
+              });
+              // Trigger a single incremental refresh to reconcile
+              try { void fetchInteractions(cache.latestId || undefined); } catch {}
+            }
+          }
+        } catch (e) {
+          devLog('warn', 'useInteractionsCache: SSE parse error', { error: e });
+        }
+      };
+      es.addEventListener('event', onEvent as any);
+      // Some servers send messages on 'message'
+      es.addEventListener('message', onEvent as any);
+      devLog('debug', 'useInteractionsCache: SSE connected', { url });
+      return () => {
+        try { es?.close(); } catch {}
+      };
+    } catch (e) {
+      devLog('warn', 'useInteractionsCache: SSE setup failed', { error: e });
+    }
+  }, [sessionId, cache.latestId]);
+
   const buildAuthHeaders = useCallback(async (base: HeadersInit = {}): Promise<HeadersInit> => {
     try {
       const token = await getToken();
@@ -82,15 +150,15 @@ export function useInteractionsCache(options: UseInteractionsOptions) {
 const fetchInteractions = useCallback(async (sinceId?: string, force = false) => {
     // If we don't have a sessionId yet, ensure we don't get stuck in loading state
     if (!sessionId) {
-      try { console.debug('[interactions.cache] skip fetch', { reason: 'no-session', sessionId }); } catch {}
+      devLog('debug', 'useInteractionsCache: skip fetch', { reason: 'no-session', sessionId });
       setIsLoading(false);
       return;
     }
     if (!force && !cache.isStale && Date.now() - cache.lastFetched < staleTime) {
-      try { console.debug('[interactions.cache] skip fetch', { reason: 'fresh', sessionId, force, isStale: cache.isStale, ageMs: Date.now() - cache.lastFetched, staleTime }); } catch {}
+      devLog('debug', 'useInteractionsCache: skip fetch', { reason: 'fresh', sessionId, force, isStale: cache.isStale, ageMs: Date.now() - cache.lastFetched, staleTime });
       return;
     }
-    try { console.debug('[interactions.cache] fetch start', { sessionId, sinceId, force, lastFetched: cache.lastFetched, etag: cache.etag, latestId: cache.latestId }); } catch {}
+    devLog('debug', 'useInteractionsCache: fetch start', { sessionId, sinceId, force, lastFetched: cache.lastFetched, etag: cache.etag, latestId: cache.latestId });
 
     // Cancel any ongoing request
     if (abortControllerRef.current) {
@@ -127,18 +195,18 @@ const fetchInteractions = useCallback(async (sinceId?: string, force = false) =>
 
 // Handle 304 Not Modified
       if (response.status === 304) {
-        try { console.debug('[interactions.cache] fetch 304', { sessionId, effectiveSinceId, hadCache: (cache.interactions?.length || 0) > 0 }); } catch {}
+        devLog('debug', 'useInteractionsCache: fetch 304', { sessionId, effectiveSinceId, hadCache: (cache.interactions?.length || 0) > 0 });
         if (!isMountedRef.current) return;
         setCache(prevCache => ({ ...prevCache, lastFetched: Date.now(), isStale: false }));
         setLastFetchWas304(true);
         setLastFetchWasIncremental(!!effectiveSinceId);
         // Fallback: if cache is empty but server returned 304 (likely browser cache), refetch without ETag
         if ((cache.interactions?.length || 0) === 0) {
+          devLog('warn', 'useInteractionsCache: 304 with empty cache -> refetching without ETag');
           try {
-            console.warn('[interactions.cache] 304 with empty cache -> refetching without ETag');
             await fetchInteractions(undefined, true);
           } catch (e) {
-            try { console.error('[interactions.cache] fallback refetch failed', e); } catch {}
+            devLog('error', 'useInteractionsCache: fallback refetch failed', { error: e });
           }
         }
         return;
@@ -151,15 +219,13 @@ const fetchInteractions = useCallback(async (sinceId?: string, force = false) =>
 const data = await response.json();
       const newEtag = response.headers.get('etag');
       const latestId = response.headers.get('x-latest-id') || data.latestId;
-      try {
-        console.debug('[interactions.cache] fetch ok', {
-          sessionId,
-          count: (data?.interactions || []).length,
+      devLog('debug', 'useInteractionsCache: fetch ok', {
+        sessionId,
+        count: (data?.interactions || []).length,
           incremental: !!effectiveSinceId,
           newEtag,
           latestId
         });
-      } catch {}
 
       if (!isMountedRef.current) return;
 
@@ -178,14 +244,12 @@ setCache(prevCache => {
           etag: newEtag || prevCache.etag,
           isStale: false
         } as InteractionsCache;
-        try {
-          console.debug('[interactions.cache] state updated', {
-            size: next.interactions.length,
-            latestId: next.latestId,
+        devLog('debug', 'useInteractionsCache: state updated', {
+          size: next.interactions.length,
+          latestId: next.latestId,
             etag: next.etag,
             incremental: !!usedSince
           });
-        } catch {}
         return next;
       });
 
@@ -197,7 +261,7 @@ setCache(prevCache => {
 
       if (err instanceof Error && err.name !== 'AbortError') {
         setError(err);
-        console.error('Failed to fetch interactions:', err);
+        devLog('error', 'useInteractionsCache: Failed to fetch interactions', { error: err });
       }
     } finally {
       if (isMountedRef.current) {
@@ -232,7 +296,7 @@ setCache(prevCache => {
     }
 
     if (sessionId) {
-      try { console.debug('[interactions.cache] sessionId changed -> reset + initial fetch', { sessionId }); } catch {}
+      devLog('debug', 'useInteractionsCache: sessionId changed -> reset + initial fetch', { sessionId });
       void fetchInteractions(undefined, true);
     } else {
       // No session yet: make sure loading isn't stuck
@@ -256,7 +320,7 @@ setCache(prevCache => {
 
 // Manual refresh function
   const refresh = useCallback(() => {
-    try { console.debug('[interactions.cache] manual refresh'); } catch {}
+    devLog('debug', 'useInteractionsCache: manual refresh');
     return fetchInteractions(undefined, true);
   }, [fetchInteractions]);
 
@@ -265,7 +329,7 @@ setCache(prevCache => {
     const sinceIndex = cache.interactions.findIndex(interaction =>
       interaction.messageId === sinceId
     );
-    try { console.debug('[interactions.cache] getSince', { sinceId, found: sinceIndex >= 0, cacheSize: cache.interactions.length }); } catch {}
+    devLog('debug', 'useInteractionsCache: getSince', { sinceId, found: sinceIndex >= 0, cacheSize: cache.interactions.length });
 
     if (sinceIndex >= 0) {
       return cache.interactions.slice(sinceIndex + 1);

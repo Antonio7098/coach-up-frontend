@@ -6,6 +6,7 @@ import { makeConvex } from "../../../lib/convex";
 import * as mockConvex from "../../../lib/mockConvex";
 import { promMetrics } from "../../../lib/metrics";
 import { requireAuth } from "../../../lib/auth";
+import { devLog } from "../../../lib/observability";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -56,7 +57,7 @@ export async function POST(request: Request) {
 
   const authRes = await requireAuth(request);
   if (!authRes.ok) {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 401, msg: 'Unauthorized', mode, latencyMs: Date.now() - started }));
+    devLog("warn", "skills-track: authentication failed", { requestId, status: 401, latencyMs: Date.now() - started });
     return respond(401, { error: "Unauthorized" });
   }
   const effectiveUserId = String(authRes.userId || 'anonymous');
@@ -79,17 +80,17 @@ export async function POST(request: Request) {
     if (process.env.MOCK_CONVEX === '1') {
       try { mockConvex.__devSeedDefaultSkills(); } catch {}
       const res = await mockConvex.trackSkill({ userId: effectiveUserId, skillId, order });
-      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, created: res.created, mode, latencyMs: Date.now() - started }));
+      devLog("info", "skills-track: skill tracked (mock)", { requestId, status: 200, created: res.created, latencyMs: Date.now() - started });
       return respond(200, { ok: true, created: res.created });
     }
 
     const client = makeConvex(convexUrl);
     const res = await client.mutation("functions/skills:trackSkill", { userId: effectiveUserId, skillId, order }) as { created: boolean };
-    console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, created: res?.created === true, mode, latencyMs: Date.now() - started }));
+    devLog("info", "skills-track: skill tracked (convex)", { requestId, status: 200, created: res?.created === true, latencyMs: Date.now() - started });
     return respond(200, { ok: true, created: res?.created === true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e ?? 'Convex mutation failed');
-    console.log(JSON.stringify({ level: 'error', route: routePath, requestId, status: 502, error: msg, mode, latencyMs: Date.now() - started }));
+    devLog("error", "skills-track: convex mutation failed", { requestId, status: 502, error: msg, latencyMs: Date.now() - started });
     return respond(502, { error: "Convex mutation failed" });
   }
 }

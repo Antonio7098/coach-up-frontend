@@ -1,4 +1,6 @@
 // Retry utility for API calls with exponential backoff
+import { devLog } from "./observability";
+
 export interface RetryOptions {
   maxAttempts?: number;
   baseDelayMs?: number;
@@ -20,6 +22,14 @@ export async function fetchWithRetry(
     endpoint = url.split('/').pop() || 'unknown'
   } = retryOptions;
 
+  devLog("debug", "retry: starting fetch with retry", {
+    url: url.split('?')[0], // Remove query params for privacy
+    method: options.method || 'GET',
+    maxAttempts,
+    baseDelayMs,
+    endpoint
+  });
+
   const method = options.method || 'GET';
   let lastError: any;
 
@@ -39,9 +49,13 @@ export async function fetchWithRetry(
       if (shouldRetry({ status: response.status, response }, attempt)) {
         if (attempt < maxAttempts) {
           const delay = Math.min(baseDelayMs * Math.pow(2, attempt - 1), maxDelayMs);
-          try {
-            console.warn(`[retry] Attempt ${attempt} failed (${response.status}), retrying in ${delay}ms: ${url}`);
-          } catch {}
+          devLog("warn", "retry: attempt failed, retrying", {
+            attempt,
+            status: response.status,
+            delay,
+            url: url.split('?')[0], // Remove query params for privacy
+            endpoint
+          });
           await sleep(delay);
           continue;
         }

@@ -4,6 +4,10 @@ import { useEffect, useState, useLayoutEffect } from "react";
 import { useRouter } from "next/navigation";
 import HeroCard from "../components/HeroCard";
 import SectionCard from "../components/SectionCard";
+import { createLogger } from "../../lib/logger";
+
+// Initialize namespaced logger for skills page
+const logger = createLogger('ui.app.skills');
 
 type Skill = {
   id: string;
@@ -48,21 +52,40 @@ export default function SkillsPage() {
   useEffect(() => {
     let cancelled = false;
     async function run() {
+      logger.debug('Loading skills data from APIs');
       try {
         const [resSkills, resTracked] = await Promise.all([
           fetch("/api/v1/skills", { headers: { accept: "application/json" } }),
           fetch("/api/v1/skills/tracked", { headers: { accept: "application/json" } }),
         ]);
-        if (!resSkills.ok) throw new Error(`Failed to load skills: ${resSkills.status}`);
-        if (!resTracked.ok) throw new Error(`Failed to load tracked skills: ${resTracked.status}`);
+
+        if (!resSkills.ok) {
+          logger.error('Failed to load skills API', { status: resSkills.status });
+          throw new Error(`Failed to load skills: ${resSkills.status}`);
+        }
+        if (!resTracked.ok) {
+          logger.error('Failed to load tracked skills API', { status: resTracked.status });
+          throw new Error(`Failed to load tracked skills: ${resTracked.status}`);
+        }
+
         const dataSkills = await resSkills.json();
         const dataTracked = await resTracked.json();
+
+        const skillsArray = Array.isArray(dataSkills?.skills) ? dataSkills.skills : [];
+        const trackedArray = Array.isArray(dataTracked?.tracked) ? dataTracked.tracked : [];
+
+        logger.info('Skills data loaded successfully', {
+          skillsCount: skillsArray.length,
+          trackedCount: trackedArray.length
+        });
+
         if (!cancelled) {
-          setSkills(Array.isArray(dataSkills?.skills) ? dataSkills.skills : []);
-          setTracked(Array.isArray(dataTracked?.tracked) ? dataTracked.tracked : []);
+          setSkills(skillsArray);
+          setTracked(trackedArray);
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err ?? 'Unknown error');
+        logger.error('Error loading skills data', { error: msg });
         if (!cancelled) setError(msg);
       } finally {
         if (!cancelled) setLoading(false);
@@ -107,14 +130,18 @@ export default function SkillsPage() {
   }
 
   async function onTrack(skillId: string) {
+    logger.debug('Attempting to track skill', { skillId, trackedCount: tracked.length });
     setActionError(null);
     if (!trackedIds.has(skillId) && tracked.length >= trackedMax) {
-      setActionError(`You can only track up to ${trackedMax} skills.`);
+      const errorMsg = `You can only track up to ${trackedMax} skills.`;
+      logger.warn('Skill tracking failed - limit reached', { skillId, trackedMax });
+      setActionError(errorMsg);
       return;
     }
     const order = tracked.find((t) => t.skillId === skillId)?.order ?? (tracked.length + 1);
     try {
       setPendingIds((prev) => new Set(prev).add(skillId));
+      logger.debug('Sending track skill request', { skillId, order });
       const res = await fetch("/api/v1/skills/track", {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json" },
@@ -122,8 +149,11 @@ export default function SkillsPage() {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body?.error || `Failed to track skill (${res.status})`);
+        const errorMsg = body?.error || `Failed to track skill (${res.status})`;
+        logger.error('Skill tracking API failed', { skillId, status: res.status, error: errorMsg });
+        throw new Error(errorMsg);
       }
+      logger.info('Skill tracked successfully', { skillId, order });
       // Optimistic update: if not present, add locally while background refresh reconciles
       setTracked((prev) => {
         if (prev.some((t) => t.skillId === skillId)) return prev;
@@ -145,6 +175,7 @@ export default function SkillsPage() {
       refreshTracked();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      logger.error('Skill tracking failed', { skillId, error: msg });
       setActionError(msg);
     }
     finally {
@@ -157,9 +188,11 @@ export default function SkillsPage() {
   }
 
   async function onUntrack(skillId: string) {
+    logger.debug('Attempting to untrack skill', { skillId });
     setActionError(null);
     try {
       setPendingIds((prev) => new Set(prev).add(skillId));
+      logger.debug('Sending untrack skill request', { skillId });
       const res = await fetch("/api/v1/skills/untrack", {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json" },
@@ -167,13 +200,17 @@ export default function SkillsPage() {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body?.error || `Failed to untrack skill (${res.status})`);
+        const errorMsg = body?.error || `Failed to untrack skill (${res.status})`;
+        logger.error('Skill untracking API failed', { skillId, status: res.status, error: errorMsg });
+        throw new Error(errorMsg);
       }
+      logger.info('Skill untracked successfully', { skillId });
       // Optimistic removal
       setTracked((prev) => prev.filter((t) => t.skillId !== skillId));
       refreshTracked();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      logger.error('Skill untracking failed', { skillId, error: msg });
       setActionError(msg);
     }
     finally {

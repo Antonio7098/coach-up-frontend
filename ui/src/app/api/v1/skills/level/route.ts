@@ -6,6 +6,7 @@ import { makeConvex } from "../../../lib/convex";
 import * as mockConvex from "../../../lib/mockConvex";
 import { promMetrics } from "../../../lib/metrics";
 import { requireAuth } from "../../../lib/auth";
+import { devLog } from "../../../lib/observability";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -56,7 +57,7 @@ export async function POST(request: Request) {
 
   const authRes = await requireAuth(request);
   if (!authRes.ok) {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 401, msg: 'Unauthorized', mode, latencyMs: Date.now() - started }));
+    devLog("warn", "skills-level: authentication failed", { requestId, status: 401, latencyMs: Date.now() - started });
     return respond(401, { error: "Unauthorized" });
   }
   const effectiveUserId = String(authRes.userId || 'anonymous');
@@ -81,17 +82,17 @@ export async function POST(request: Request) {
   try {
     if (process.env.MOCK_CONVEX === '1') {
       const res = await mockConvex.setSkillLevel({ userId: effectiveUserId, skillId, currentLevel });
-      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, ok: res.ok, mode, latencyMs: Date.now() - started }));
+      devLog("info", "skills-level: set skill level (mock)", { requestId, status: 200, ok: res.ok, latencyMs: Date.now() - started });
       return respond(200, { ok: true });
     }
 
     const client = makeConvex(convexUrl);
     const res = await client.mutation("functions/skills:setSkillLevel", { userId: effectiveUserId, skillId, currentLevel }) as { ok: boolean };
-    console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, ok: res?.ok === true, mode, latencyMs: Date.now() - started }));
+    devLog("info", "skills-level: set skill level (convex)", { requestId, status: 200, ok: res?.ok === true, latencyMs: Date.now() - started });
     return respond(200, { ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e ?? 'Convex mutation failed');
-    console.log(JSON.stringify({ level: 'error', route: routePath, requestId, status: 502, error: msg, mode, latencyMs: Date.now() - started }));
+    devLog("error", "skills-level: convex mutation failed", { requestId, status: 502, error: msg, latencyMs: Date.now() - started });
     return respond(502, { error: "Convex mutation failed" });
   }
 }

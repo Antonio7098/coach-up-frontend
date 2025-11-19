@@ -1,96 +1,10 @@
-// Convex Schema — Assessments v2 (SPR-007)
-// Supports v2-only finalize with per-skill persistence and level progression
+// Convex Schema — Assessments v3 (SPR-014)
+// Supports v3-only finalize with per-skill persistence, structured feedback, and level progression
 
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 export default defineSchema({
-  // Assessments — v2-only with per-skill rows and skillHash
-  assessments: defineTable({
-    userId: v.string(),
-    sessionId: v.string(),
-    groupId: v.optional(v.string()),
-    
-    // Skill identification
-    skillId: v.optional(v.string()), // Direct reference to skills.id
-    skillHash: v.optional(v.string()), // Keep for backward compatibility
-    
-    // Assessment type and versioning
-    kind: v.union(
-      v.literal("skill_assessment"),
-      v.literal("summary"),
-      v.literal("multi_turn")
-    ),
-    rubricVersion: v.union(v.literal("v1"), v.literal("v2")),
-    
-    // Core assessment results (aligned with skill levels 0-10)
-    level: v.number(), // 0-10 scale (0 = not started, 1-10 = skill levels)
-    confidence: v.optional(v.number()), // 0-1 confidence in assessment
-    
-    // Level-specific feedback
-    levelFeedback: v.optional(v.object({
-      currentLevel: v.number(), // 0-10
-      nextLevelCriteria: v.array(v.string()), // What's needed for next level
-      strengths: v.array(v.string()), // What they're doing well
-      improvements: v.array(v.string()), // Areas to improve from previous attempts
-      focus: v.array(v.string()), // Actionable steps to reach next level
-      examples: v.optional(v.array(v.string())), // Examples from their speech
-    })),
-    
-          // Assessment metadata
-          assessmentMetadata: v.optional(v.object({
-            // Agent/LLM information
-            provider: v.optional(v.string()),
-            modelId: v.optional(v.string()),
-            promptVersion: v.optional(v.string()),
-            
-            // Quality metrics
-            processingTimeMs: v.optional(v.number()),
-            tokenCount: v.optional(v.number()),
-            costCents: v.optional(v.number()),
-          })),
-    
-    // Source context
-    sourceContext: v.optional(v.object({
-      interactionCount: v.optional(v.number()),
-      transcriptLength: v.optional(v.number()),
-      assessmentType: v.optional(v.string()), // From triage
-      sessionDuration: v.optional(v.number()), // Total session time
-    })),
-    
-    // Legacy fields for backward compatibility
-    summary: v.optional(
-      v.object({
-        highlights: v.array(v.string()),
-        recommendations: v.array(v.string()),
-        rubricKeyPoints: v.array(v.string()),
-        meta: v.optional(
-          v.object({
-            provider: v.optional(v.string()),
-            modelId: v.optional(v.string()),
-            skillsCount: v.optional(v.number()),
-          })
-        ),
-      })
-    ),
-    feedback: v.optional(v.array(v.string())),
-    metCriteria: v.optional(v.array(v.string())),
-    unmetCriteria: v.optional(v.array(v.string())),
-    
-    // Tracking and timestamps
-    trackedSkillIdHash: v.optional(v.string()),
-    createdAt: v.number(), // ms since epoch
-    updatedAt: v.number(), // ms since epoch
-  })
-    .index("by_user_skill", ["userId", "skillId", "createdAt"])
-    .index("by_user_skillHash", ["userId", "skillHash", "createdAt"])
-    .index("by_session", ["sessionId"])
-    .index("by_group", ["groupId"])
-    .index("by_skillId", ["skillId"])
-    .index("by_level", ["level"])
-    .index("by_kind", ["kind"])
-    .index("by_createdAt", ["createdAt"]),
-
   // Finalize idempotency — prevent duplicate writes by (sessionId, groupId)
   finalize_idempotency: defineTable({
     sessionId: v.string(),
@@ -123,6 +37,7 @@ export default defineSchema({
     sessionId: v.string(),
     state: v.optional(v.any()),
     latestGroupId: v.optional(v.string()),
+    latestAssessmentId: v.optional(v.string()),
     // Cost tracking fields (in cents)
     totalCostCents: v.optional(v.number()),
     sttCostCents: v.optional(v.number()),
@@ -162,6 +77,24 @@ export default defineSchema({
         v.literal("practice"),
       )
     ),
+    triageStatus: v.optional(
+      v.union(
+        v.literal("pending"),
+        v.literal("running"),
+        v.literal("processed"),
+        v.literal("skipped"),
+        v.literal("error"),
+      )
+    ),
+    triageDecision: v.optional(
+      v.union(
+        v.literal("assess"),
+        v.literal("not_assess"),
+      )
+    ),
+    triageGroupId: v.optional(v.string()),
+    triageJobId: v.optional(v.string()),
+    triageError: v.optional(v.string()),
     triageProcessedAt: v.optional(v.number()), // ms since epoch
     // Cost tracking fields (in cents)
     sttCostCents: v.optional(v.number()),
@@ -181,6 +114,32 @@ export default defineSchema({
     .index("by_session_ts", ["sessionId", "ts"]) 
     // Index to efficiently query assessable interactions by session/type/time
     .index("by_session_assess_type_ts", ["sessionId", "assessmentType", "ts"]),
+
+  // Triage jobs — orchestrator entries for reliability/coalescing
+  triage_jobs: defineTable({
+    sessionId: v.string(),
+    jobId: v.string(),
+    status: v.union(
+      v.literal('queued'),
+      v.literal('running'),
+      v.literal('persisted'),
+      v.literal('skipped'),
+      v.literal('failed'),
+    ),
+    reason: v.optional(v.string()), // user_ingest | summary_preflight | manual
+    messageIds: v.optional(v.array(v.string())),
+    attempts: v.optional(v.number()),
+    nextAttemptAt: v.optional(v.number()),
+    updatedCount: v.optional(v.number()),
+    decisions: v.optional(v.object({ assess: v.number(), not_assess: v.number() })),
+    error: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index('by_session_createdAt', ['sessionId', 'createdAt'])
+    .index('by_jobId', ['jobId'])
+    .index('by_status', ['status'])
+,
 
   // Events — observability and state transitions
   events: defineTable({
@@ -297,6 +256,82 @@ export default defineSchema({
   .index('by_session_version', ['sessionId', 'version'])
   .index('by_createdAt', ['createdAt']),
 
+  // Group-level Assessments (v2)
+  assessments_v2: defineTable({
+    userId: v.string(),
+    sessionId: v.string(),
+    groupId: v.string(),
+    results: v.object({
+      highlights: v.array(v.string()),
+      recommendations: v.array(v.string()),
+      rubricKeyPoints: v.array(v.string()),
+      meta: v.optional(v.object({
+        skillsCount: v.optional(v.number()),
+        provider: v.optional(v.string()),
+        modelId: v.optional(v.string()),
+      })),
+    }),
+    kpis: v.optional(v.object({
+      totalScore: v.optional(v.number()),
+      averageLevel: v.optional(v.number()),
+      confidence: v.optional(v.number()),
+    })),
+    assessmentMetadata: v.optional(v.object({
+      provider: v.optional(v.string()),
+      modelId: v.optional(v.string()),
+      promptVersion: v.optional(v.string()),
+      tokenCount: v.optional(v.number()),
+      costCents: v.optional(v.number()),
+      processingTimeMs: v.optional(v.number()),
+    })),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+  .index('by_session_createdAt', ['sessionId','createdAt'])
+  .index('by_group', ['groupId'])
+  ,
+
+  // Per-skill assessment results (v2)
+  skill_assessment: defineTable({
+    assessmentId: v.id('assessments_v2'),
+    userId: v.string(),
+    sessionId: v.string(),
+    groupId: v.string(),
+    skillId: v.string(),
+    skillHash: v.string(),
+    results: v.object({
+      level: v.number(),
+      levelFeedback: v.object({
+        currentLevel: v.number(),
+        strengths: v.array(v.string()),
+        improvements: v.array(v.string()),
+        focus: v.array(v.string()),
+        nextLevelCriteria: v.array(v.string()),
+        examples: v.optional(v.array(v.string())),
+      }),
+      confidence: v.optional(v.number()), 
+    }),
+    assessmentMetadata: v.optional(v.object({
+      provider: v.optional(v.string()),
+      modelId: v.optional(v.string()),
+      promptVersion: v.optional(v.string()),
+      tokenCount: v.optional(v.number()),
+      costCents: v.optional(v.number()),
+      processingTimeMs: v.optional(v.number()),
+    })),
+    sourceContext: v.optional(v.object({
+      assessmentType: v.optional(v.string()),
+      interactionCount: v.optional(v.number()),
+      transcriptLength: v.optional(v.number()),
+      sessionDuration: v.optional(v.number()),
+    })),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+  .index('by_assessment', ['assessmentId'])
+  .index('by_session', ['sessionId'])
+  ,
+
   // Summary cadence state — ingest-driven triggers and locks (SPR-008 v2)
   summary_state: defineTable({
     sessionId: v.string(),
@@ -312,4 +347,90 @@ export default defineSchema({
   })
   .index('by_session', ['sessionId'])
   .index('by_updatedAt', ['updatedAt']),
+
+  // Group-level Assessments (v3) — deterministic summary from per-skill results
+  assessments_v3: defineTable({
+    userId: v.string(),
+    sessionId: v.string(),
+    groupId: v.string(),
+    results: v.object({
+      highlights: v.array(v.string()),
+      recommendations: v.array(v.string()),
+      rubricKeyPoints: v.array(v.string()),
+      meta: v.optional(v.object({
+        skillsCount: v.optional(v.number()),
+        provider: v.optional(v.string()),
+        modelId: v.optional(v.string()),
+      })),
+    }),
+    kpis: v.optional(v.object({
+      averageLevel: v.optional(v.number()),
+      totalScore: v.optional(v.number()),
+    })),
+    assessmentMetadata: v.optional(v.object({
+      provider: v.optional(v.string()),
+      modelId: v.optional(v.string()),
+      promptVersion: v.optional(v.string()),
+      tokenCount: v.optional(v.number()),
+      costCents: v.optional(v.number()),
+      processingTimeMs: v.optional(v.number()),
+    })),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+  .index('by_session_createdAt', ['sessionId','createdAt'])
+  .index('by_group', ['groupId']),
+
+  // Per-skill assessment results (v3) — structured feedback with annotated examples
+  skill_assessment_v3: defineTable({
+    assessmentId: v.id('assessments_v3'),
+    userId: v.string(),
+    sessionId: v.string(),
+    groupId: v.string(),
+    skillId: v.string(),
+    skillHash: v.string(),
+    level: v.number(), // 0..10 scale
+    confidence: v.optional(v.number()), // 0..1 confidence
+    structuredFeedback: v.object({
+      primaryTakeaway: v.string(),
+      primaryFocus: v.object({
+        description: v.string(),
+        nextLevelCriteria: v.string(),
+        exampleToPractice: v.optional(v.string()),
+      }),
+      annotatedExamples: v.array(v.object({
+        userQuote: v.string(),
+        annotation: v.string(),
+        classification: v.union(v.literal('strength'), v.literal('improvement_opportunity')),
+        relevantLevel: v.number(), // 0..10
+      })),
+    }),
+    quantitativeMetrics: v.optional(v.object({
+      averageTUnitLength: v.optional(v.number()),
+      subordinationIndex: v.optional(v.number()),
+      yngveScore: v.optional(v.number()),
+      nominalizationCount: v.optional(v.number()),
+      conjunctionVariety: v.optional(v.array(v.string())),
+    })),
+    assessmentMetadata: v.optional(v.object({
+      provider: v.optional(v.string()),
+      modelId: v.optional(v.string()),
+      promptVersion: v.optional(v.string()),
+      tokenCount: v.optional(v.number()),
+      costCents: v.optional(v.number()),
+      processingTimeMs: v.optional(v.number()),
+    })),
+    sourceContext: v.optional(v.object({
+      assessmentType: v.optional(v.string()),
+      interactionCount: v.optional(v.number()),
+      transcriptLength: v.optional(v.number()),
+      sessionDuration: v.optional(v.number()),
+    })),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+  .index('by_assessment', ['assessmentId'])
+  .index('by_session', ['sessionId'])
+  .index('by_user_skill', ['userId', 'skillId', 'createdAt'])
+  .index('by_user_skillHash', ['userId', 'skillHash', 'createdAt']),
 });

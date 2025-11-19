@@ -5,6 +5,7 @@ import { makeConvex } from "../../../lib/convex";
 import * as mockConvex from "../../../lib/mockConvex";
 import { sha256Hex } from "../../../lib/hash";
 import { requireAuth } from "../../../lib/auth";
+import { devLog } from "../../../lib/observability";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -34,6 +35,11 @@ export async function POST(request: Request) {
       return Math.random().toString(36).slice(2);
     }
   })();
+
+  devLog("debug", "sessions-state: POST request initiated", {
+    requestId,
+    timestamp: new Date().toISOString()
+  });
   const trackedSkillId = headersIn.get("x-tracked-skill-id") || undefined;
   const trackedSkillIdHash = trackedSkillId ? sha256Hex(trackedSkillId) : undefined;
 
@@ -112,18 +118,22 @@ export async function POST(request: Request) {
     let rotated = false;
 
     if (process.env.MOCK_CONVEX === '1') {
-      // Simulate ensureActiveSession in mock mode using the in-memory store
+      // Simulate ensureActiveSession in mock mode using the in-memory store.
+      // IMPORTANT: Avoid rotating session IDs in mock mode to keep UI and backend consistent.
       try {
         const existing = await mockConvex.getSessionById?.({ sessionId: String(obj.sessionId) });
         const belongs = existing && String(existing.userId) === effectiveUserId(obj.userId);
-        const idleOk = existing ? (nowMs - Number(existing.lastActivityAt || 0)) <= idleThresholdMs : false;
-        if (!existing) {
-          // For new sessions in mock mode, use the provided sessionId (don't rotate)
-          rotated = false;
-        } else if (!belongs || !idleOk) {
-          // For existing sessions that don't belong or are idle, rotate
-          effectiveSessionId = `sess_${nowMs}_${Math.random().toString(36).slice(2)}`;
-          rotated = true;
+        // Never rotate in mock; just keep the provided sessionId for stability.
+        rotated = false;
+        effectiveSessionId = String(obj.sessionId);
+        // Optionally, you could warn if the session belongs to another user, but do not rotate.
+        if (existing && !belongs) {
+          devLog("warn", "sessions-state: session belongs to different user (mock)", {
+            sessionId: effectiveSessionId,
+            expectedUserId: effectiveUserId(obj.userId),
+            actualUserId: existing.userId,
+            requestId
+          });
         }
       } catch {}
 
@@ -196,7 +206,7 @@ export async function POST(request: Request) {
       : undefined;
     const msg = typeof maybeMessage === 'string' ? maybeMessage : String(err);
     // Log for server diagnostics
-    try { console.error('[sessions/state] Convex error:', err); } catch {}
+    devLog("error", "sessions-state: convex mutation failed", { requestId, error: String(err), sessionId: obj?.sessionId });
     return new Response(JSON.stringify({ error: "Convex mutation failed", message: msg }), {
       status: 502,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },

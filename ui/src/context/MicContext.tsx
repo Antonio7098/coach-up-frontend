@@ -1,14 +1,27 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { devLog } from "../app/api/lib/observability";
 import { voicePublishState, useVoice } from "./VoiceContext";
 import { useAudio } from "./AudioContext";
 import { useConversation } from "./ConversationContext";
 import { useChat } from "./ChatContext";
 import { useSessionSummary } from "../hooks/useSessionSummary";
+import { useVoiceChatEngine } from "./engine/useVoiceChatEngine";
+
+// Error constants
+const ERR = {
+  micUnavailable: "Microphone unavailable",
+  chatFailed: "Chat request failed",
+  micUnsupported: "Microphone not supported",
+  noSpeech: "No speech detected",
+  voiceChatFailed: "Voice chat failed",
+  finalizeFail: "Failed to finalize recording",
+  permissionDenied: "Microphone permission denied",
+};
 
 // Mic context centralizing voice loop state, recording, STT/TTS, audio queues, and barge-in.
-// This mirrors the logic used in `app/coach/page.tsx` but is decoupled so it can be reused globally.
+// This mirrors the logic used in `app/coach-min/page.tsx` but is decoupled so it can be reused globally.
 
 export type MicBusyState = "idle" | "stt" | "chat" | "tts";
 
@@ -16,7 +29,7 @@ type AssessmentChip = {
   id: string; // groupId
   status: "queued" | "done" | "error";
   createdAt: number;
-  summary?: any;
+  summary?: Record<string, unknown>;
 };
 
 type MicContextValue = {
@@ -87,6 +100,73 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
   // Session summary (cached, periodic refresh) — don't autoload on mount to avoid early fetch
   const { summary: sessionSummary, onTurn: sessionSummaryOnTurn } = useSessionSummary(sessionId, { autoloadOnMount: false });
 
+  // Message ingestion helper
+  const ingestMessage = useCallback(async (role: "user" | "assistant", content: string) => {
+    try {
+      if (!sessionId || !content) return;
+      const payload = { sessionId, messageId: Math.random().toString(36).slice(2), role, content, ts: Date.now() };
+      const res = await fetch("/api/messages/ingest", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data: { state?: string; groupId?: string; turnCount?: number; enqueued?: boolean } = await res.json().catch(() => ({}));
+      // Update multi-turn state
+      const st = String(data?.state || "").toLowerCase();
+      setInteractionState(st === "active" ? "active" : "idle");
+      if (typeof data?.groupId === "string" && data.groupId) setInteractionGroupId(data.groupId);
+      setInteractionTurnCount(Number(data?.turnCount || 0) || 0);
+      // Enqueued assessment -> add chip and start polling
+      if (data?.enqueued && typeof data?.groupId === "string" && data.groupId) {
+        const gid = data.groupId as string;
+        setAssessmentChips((prev) => {
+          if (prev.some((c) => c.id === gid)) return prev;
+          const next: AssessmentChip[] = [{ id: gid, status: "queued" as const, createdAt: Date.now() }, ...prev].slice(0, 12);
+          return next;
+        });
+        // TODO: kick off polling
+      }
+    } catch {}
+  }, [sessionId]);
+
+  // Dependencies for the voice engine
+  const engineDeps = useMemo(() => ({
+    sttFromBlob,
+    chatToText: chatToTextWithTTS,
+    enqueueTTSSegment,
+    cancelTTS,
+    stopPlaybackAndClear: audio.stopPlaybackAndClear.bind(audio),
+    waitForQueueToDrain: audio.waitForQueueToDrain.bind(audio),
+    pausePlayback: audio.pausePlayback.bind(audio),
+    cancelActiveChatStream,
+    ingestMessage,
+    pollAssessments: (sessionId: string, onAssessmentComplete: (assessment: AssessmentChip) => void) => {
+      // TODO: Implement assessment polling
+    },
+    stopAssessmentPolling: () => {
+      // TODO: Implement stopping assessment polling
+    },
+    getSessionId: () => sessionId || null,
+    logEvent: (event: string, data?: Record<string, any>) => {
+      devLog("info", `MicContext: VoiceEngine ${event}`, data);
+    },
+  }), [sttFromBlob, chatToTextWithTTS, enqueueTTSSegment, cancelTTS, audio, cancelActiveChatStream, sessionId, ingestMessage]);
+
+  // Voice engine configuration
+  const engineConfig = useMemo(() => ({
+    vadThreshold: 0.02,
+    vadMaxSilenceMs: 900,
+    bargeRmsThreshold: 0.05,
+    bargeMinFrames: 5,
+    maxUtterMs: 6000,
+    minSpeechMs: 400,
+    silenceDebounceFrames: 3,
+    vadGraceMs: 500,
+    voiceLoop: true,
+    alwaysOn: String(process.env.NEXT_PUBLIC_VOICE_ALWAYS_ON || "").toLowerCase() === "true" ||
+             String(process.env.NEXT_PUBLIC_VOICE_ALWAYS_ON || "") === "1",
+  }), []);
+
   const [mediaSupported, setMediaSupported] = useState(false);
   const [recording, setRecording] = useState(false);
   const [busy, setBusy] = useState<MicBusyState>("idle");
@@ -94,16 +174,8 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
   const [voiceLoop, setVoiceLoop] = useState(true);
   const [transcript, setTranscript] = useState("");
   const [assistantText, setAssistantText] = useState("");
-  // Standardized error copy
-  const ERR = {
-    micUnavailable: 'Microphone unavailable. Please check your device settings.',
-    micUnsupported: 'Microphone not supported in this browser',
-    noSpeech: 'No speech detected. Please try again.',
-    finalizeFail: 'Failed to finalize recording',
-    permissionDenied: 'Mic permission denied or unavailable',
-    chatFailed: 'Chat failed',
-    voiceChatFailed: 'Voice chat failed',
-  } as const;
+  // Voice Chat Engine
+  const engine = useVoiceChatEngine(engineConfig, engineDeps);
   // Device health (mic presence + permission)
   const [deviceStatus, setDeviceStatus] = useState<{ hasMic: boolean; permission: PermissionState | null }>({ hasMic: false, permission: null });
   // Multi-turn interaction and assessments state
@@ -284,7 +356,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     const onChange = async () => {
       const prev = deviceStatus;
       const next = await checkMicPermission();
-      try { console.log(JSON.stringify({ type: 'voice.device.change', prev, next })); } catch {}
+      devLog("info", "MicContext: device status changed", { prev, next });
       if (!mounted) return;
       const hasMic = (next as any)?.hasMic === true;
       const permission = (next as any)?.permission;
@@ -316,7 +388,7 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
         if (!hasPending || !sessionId) break;
         try {
           const res = await fetch(`/api/assessments/${encodeURIComponent(sessionId)}`, { headers: { accept: "application/json" } });
-          const data: any = await res.json().catch(() => ({}));
+          const data: { latestGroupId?: string; latest_group_id?: string; summary?: Record<string, unknown> } = await res.json().catch(() => ({}));
           const latestGid = data?.latestGroupId || data?.latest_group_id;
           if (latestGid) {
             setAssessmentChips((prev) => {
@@ -376,8 +448,8 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
       // Accumulate assistantText for UI
       try { setAssistantText(reply); } catch {}
       return reply;
-    } catch (e: any) {
-      setVoiceError(e?.message || ERR.chatFailed);
+    } catch (e: unknown) {
+      setVoiceError((e as { message?: string })?.message || ERR.chatFailed);
       throw e;
     } finally {
       // Use functional setter to avoid stale-closure checks
@@ -397,8 +469,8 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
       // Mirror chat response into live assistant text panel
       try { setAssistantText(reply); } catch {}
       return reply;
-    } catch (e: any) {
-      setVoiceError(e?.message || ERR.chatFailed);
+    } catch (e: unknown) {
+      setVoiceError((e as { message?: string })?.message || ERR.chatFailed);
       throw e;
     } finally {
       // Use functional setter to avoid stale-closure checks
@@ -407,30 +479,6 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
     }
   }, [convoSendPrompt, busy]);
 
-  const ingestMessage = useCallback(async (role: "user" | "assistant", content: string) => {
-    try {
-      if (!sessionId || !content) return;
-      const payload = { sessionId, messageId: Math.random().toString(36).slice(2), role, content, ts: Date.now() } as const;
-      const res = await fetch("/api/messages/ingest", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
-      const data: any = await res.json().catch(() => ({}));
-      // Update multi-turn state
-      const st = String(data?.state || "").toLowerCase();
-      setInteractionState(st === "active" ? "active" : "idle");
-      if (typeof data?.groupId === "string" && data.groupId) setInteractionGroupId(data.groupId);
-      setInteractionTurnCount(Number(data?.turnCount || 0) || 0);
-      // Enqueued assessment -> add chip and start polling
-      if (data?.enqueued && typeof data?.groupId === "string" && data.groupId) {
-        const gid = data.groupId as string;
-        setAssessmentChips((prev) => {
-          if (prev.some((c) => c.id === gid)) return prev;
-          const next: AssessmentChip[] = [{ id: gid, status: "queued" as const, createdAt: Date.now() }, ...prev].slice(0, 12);
-          return next;
-        });
-        // kick off polling
-        void ensureAssessmentPolling();
-      }
-    } catch {}
-  }, [sessionId, ensureAssessmentPolling]);
 
   // --- Recording controls ---
   const streamRef = useRef<MediaStream | null>(null);
@@ -635,9 +683,9 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
                 setVoiceError(ERR.noSpeech);
                 try { setProcessingRing(false); } catch {}
               }
-            } catch (e: any) {
+            } catch (e: unknown) {
               console.error("MicContext: Voice chat failed:", e);
-              setVoiceError(e?.message || ERR.voiceChatFailed);
+              setVoiceError((e as { message?: string })?.message || ERR.voiceChatFailed);
             } finally {
               processingRef.current = false;
               setBusy("idle");
@@ -688,9 +736,9 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
                 setVoiceError(ERR.noSpeech);
                 try { setProcessingRing(false); } catch {}
               }
-            } catch (e: any) {
+            } catch (e: unknown) {
               console.error("MicContext: One-shot voice chat failed:", e);
-              setVoiceError(e?.message || ERR.voiceChatFailed);
+              setVoiceError((e as { message?: string })?.message || ERR.voiceChatFailed);
             } finally {
               processingRef.current = false;
               setBusy("idle");
@@ -829,9 +877,9 @@ export function MicProvider({ children }: { children: React.ReactNode }) {
         // removed noisy Failed to initialize VAD log
       }
 
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error("MicContext: Mic permission denied:", e);
-      setVoiceError(e?.message || ERR.permissionDenied);
+      setVoiceError((e as { message?: string })?.message || ERR.permissionDenied);
     }
   }, [BARGE_MIN_FRAMES, BARGE_RMS_THRESHOLD, MAX_UTTER_MS, VAD_MAX_SILENCE_MS, VAD_THRESHOLD, busy, callSTT, chatToText, mediaSupported, recording, audio.stopPlaybackAndClear, audio.waitForQueueToDrain, voiceLoopRef, ingestMessage]);
 

@@ -43,9 +43,11 @@
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
+  /* Use global theme tokens for background/text (hex-compatible) */
+  background: var(--cu-bg);
+  color: var(--cu-fg);
   font-family: Arial, Helvetica, sans-serif;
+  font-weight: 400;
 }
 
 /* Shimmer skeleton loader */

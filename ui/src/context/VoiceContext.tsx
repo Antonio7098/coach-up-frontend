@@ -3,6 +3,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useChat } from "./ChatContext";
+import { devLog } from "../app/api/lib/observability";
 
 export type VoiceContextValue = {
   // Pipeline busy state and thinking ring
@@ -89,7 +90,7 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
   // --- TTS helpers (built-in) ---
   const callTTSChunk = useCallback(async (text: string): Promise<string> => {
     try {
-      console.log("VoiceContext: TTS chunk processing started", {
+      devLog("info", "VoiceContext: TTS chunk processing started", {
         text: text || "(empty)",
         textLength: (text || "").length,
         sessionId: sessionId || "none"
@@ -98,13 +99,18 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), TTS_TIMEOUT_MS);
         try {
+          // Get Clerk session token for authentication
+          const token = await getToken();
           const res = await fetch("/api/v1/tts", {
             method: "POST",
             headers: {
               "content-type": "application/json",
-              "x-request-id": Math.random().toString(36).slice(2),
+              ...(token ? { "authorization": `Bearer ${token}` } : {}),
             },
-            body: JSON.stringify({ text, sessionId: sessionId || undefined }),
+            body: JSON.stringify({
+              text: text || "(empty)",
+              sessionId: sessionId || undefined
+            }),
             signal: controller.signal,
           });
           return res;
@@ -112,107 +118,60 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
           clearTimeout(timeoutId);
         }
       };
+
       let res: Response | null = null;
       let timedOut = false;
-      try { res = await doOnce(); } catch (e: any) { if (e?.name === 'AbortError') timedOut = true; else throw e; }
-      if (!res && timedOut) {
-        try { res = await doOnce(); } catch {}
-      }
-      if (!res) {
-        console.log("VoiceContext: TTS request failed - no response");
-        return "";
-      }
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        console.log("VoiceContext: TTS request failed", {
-          status: res.status,
-          error: data?.error,
-          textLength: (text || "").length
-        });
-        throw new Error(data?.error || `tts failed: ${res.status}`);
-      }
-
-      const audioUrl = String(data?.audioUrl || "");
-      console.log("VoiceContext: TTS response received", {
-        audioUrl: audioUrl || "(empty)",
-        textLength: (text || "").length,
-        hasAudio: !!audioUrl
-      });
-      return audioUrl;
-    } catch {
-      return "";
-    }
-  }, [sessionId, TTS_TIMEOUT_MS]);
-
-  const ensureTTSWorker = useCallback(async () => {
-    if (ttsProcessingRef.current) return;
-    ttsProcessingRef.current = true;
-    const myGen = ttsCancelRef.current;
-    try {
-      while (ttsTextQueueRef.current.length > 0) {
-        if (ttsCancelRef.current !== myGen) break;
-        // Backpressure: coalesce tiny segments and enforce a max queue size
-        const MAX_QUEUE = 8;
-        const MIN_SEG_CHARS = 12;
-        // Enforce cap by merging extras into the last element
-        if (ttsTextQueueRef.current.length > MAX_QUEUE) {
-          const overflow = ttsTextQueueRef.current.splice(MAX_QUEUE);
-          if (overflow.length > 0) {
-            const mergedTail = overflow.join(" ").trim();
-            if (mergedTail) ttsTextQueueRef.current[ttsTextQueueRef.current.length - 1] = `${ttsTextQueueRef.current[ttsTextQueueRef.current.length - 1]} ${mergedTail}`.trim();
-          }
-        }
-        let next = ttsTextQueueRef.current.shift()!;
-        // Merge successive tiny segments to avoid machine-gun TTS
-        while (next.length < MIN_SEG_CHARS && ttsTextQueueRef.current.length > 0) {
-          const peek = ttsTextQueueRef.current[0];
-          if (!peek) break;
-          next = `${next} ${peek}`.trim();
-          ttsTextQueueRef.current.shift();
-          if (next.length >= MIN_SEG_CHARS) break;
-        }
-        const text = next;
-        console.log("VoiceContext: TTS worker processing chunk", {
-          text: text || "(empty)",
-          textLength: (text || "").length,
-          queueRemaining: ttsTextQueueRef.current.length,
-          generation: myGen,
-          currentCancelGen: ttsCancelRef.current
-        });
-
-        const url = await callTTSChunk(text);
-        if (ttsCancelRef.current !== myGen) {
-          console.log("VoiceContext: TTS worker cancelled", { myGen, currentGen: ttsCancelRef.current });
-          break;
-        }
-
-        if (url) {
-          try {
-            console.log("VoiceContext: Dispatching TTS audio", {
-              audioUrl: url,
-              textLength: (text || "").length
-            });
-            window.dispatchEvent(new CustomEvent<string>('cu.audio.enqueue', { detail: url }));
-          } catch (error) {
-            console.error("VoiceContext: Failed to dispatch TTS audio", error);
-          }
+      try {
+        res = await doOnce();
+      } catch (e: unknown) {
+        if (e instanceof Error && e.name === 'AbortError') {
+          timedOut = true;
         } else {
-          console.log("VoiceContext: No TTS audio URL received", {
-            text: text || "(empty)",
-            textLength: (text || "").length
-          });
+          throw e;
         }
       }
+      if (!res && timedOut) {
+        try {
+          res = await doOnce();
+        } catch {}
+      }
+      if (!res) throw new Error("tts request failed");
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `tts failed: ${res.status}`);
+      return String(data?.audio || "");
     } finally {
       ttsProcessingRef.current = false;
     }
+  }, [sessionId, TTS_TIMEOUT_MS, getToken]);
+
+  // --- TTS worker management ---
+  const ensureTTSWorker = useCallback(async () => {
+    if (ttsProcessingRef.current) return;
+    ttsProcessingRef.current = true;
+
+    const cancelToken = ttsCancelRef.current;
+
+    while (ttsTextQueueRef.current.length > 0 && cancelToken === ttsCancelRef.current) {
+      const segment = ttsTextQueueRef.current.shift();
+      if (!segment) continue;
+
+      try {
+        await callTTSChunk(segment);
+      } catch (e) {
+        devLog("error", "TTS chunk failed", { error: String(e), errorType: e?.constructor?.name });
+        // Continue processing other segments even if one fails
+      }
+    }
+
+    ttsProcessingRef.current = false;
   }, [callTTSChunk]);
 
   const enqueueTTSSegmentImpl = useCallback((text: string) => {
     if (!text || !text.trim()) return;
 
     try {
-      console.log("VoiceContext: TTS chunk enqueued", {
+      devLog("info", "VoiceContext: TTS chunk enqueued", {
         chunk: text.trim() || "(empty)",
         chunkLength: (text.trim() || "").length,
         queueLength: ttsTextQueueRef.current.length,
@@ -282,7 +241,7 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
         };
         let res: Response | null = null;
         let timedOut = false;
-        try { res = await doOnce(); } catch (e: any) { if (e?.name === 'AbortError') timedOut = true; else throw e; }
+        try { res = await doOnce(); } catch (e: unknown) { if (e instanceof Error && e.name === 'AbortError') timedOut = true; else throw e; }
         if (!res && timedOut) {
           try { res = await doOnce(); } catch {}
         }

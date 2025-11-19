@@ -1,9 +1,10 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useMemo, useRef } from "react";
+import { devLog } from "../../app/api/lib/observability";
 import { useSessionSummary } from "../../hooks/useSessionSummary";
 import { useInteractionsCache } from "../../hooks/useInteractionsCache";
-import { useSummaryStatusCache } from "../../hooks/useSummaryStatusCache";
+import { useSummaryStatusCache, SummaryStatus } from "../../hooks/useSummaryStatusCache";
 import { useMinimalSession } from "./MinimalSessionContext";
 import { useAuth } from "@clerk/nextjs";
 import { fetchWithRetry } from "../../app/api/lib/retry";
@@ -18,15 +19,16 @@ export type PromptPreview = {
 } | null;
 
 export type MinimalConversationContextValue = {
-  chatToText: (prompt: string, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }) => Promise<string>;
-  chatToTextStreaming: (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void; sessionId?: string }) => Promise<string>;
-  chatToTextStreamingWithHistory: (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }) => Promise<string>;
+  chatToText: (prompt: string, options?: { userProfile?: Record<string, unknown>; userGoals?: Array<Record<string, unknown>>; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }) => Promise<string>;
+  chatToTextStreaming: (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: Record<string, unknown>; userGoals?: Array<Record<string, unknown>>; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void; sessionId?: string }) => Promise<string>;
+  chatToTextStreamingWithHistory: (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: Record<string, unknown>; userGoals?: Array<Record<string, unknown>>; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }) => Promise<string>;
   getImmediateHistory: () => Array<{ role: "user" | "assistant"; content: string }>;
   recordTurn: (userText: string, assistantText: string) => void;
   getSummaryMeta: () => { ready: boolean; updatedAt?: number; turnsUntilDue: number; thresholdTurns: number };
   getLastPromptPreview: () => PromptPreview;
   refreshPromptPreview: () => Promise<void>;
   promptPreview: PromptPreview;
+  getRecentInteractions: (limit?: number) => Array<{ role: string; text: string; ts: number; messageId: string }>;
 };
 
 const Ctx = createContext<MinimalConversationContextValue | undefined>(undefined);
@@ -42,6 +44,13 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
   // Autoload summary so the first turn can include it in history/system
   const { summary, onTurn, thresholds } = useSessionSummary(sessionId, { autoloadOnMount: true });
   const { getToken } = useAuth();
+
+  devLog("debug", "MinimalConversationContext: initializing minimal conversation provider", {
+    sessionId,
+    hasSummary: !!summary,
+    thresholds,
+    timestamp: new Date().toISOString()
+  });
 
   // Use the new interactions cache system
   const {
@@ -87,7 +96,7 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
   }>({});
 
   // Phase 2 telemetry: track last prefetch and cache refresh times
-  const [lastPrefetchAt, setLastPrefetchAt] = React.useState<number | null>(null);
+  const [lastPrefetchAt] = React.useState<number | null>(null);
   const [lastInteractionsRefreshAt, setLastInteractionsRefreshAt] = React.useState<number | null>(null);
   const [lastSummaryStatusRefreshAt, setLastSummaryStatusRefreshAt] = React.useState<number | null>(null);
 
@@ -149,14 +158,14 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
   }
 
   // Deprecated: preview GET is removed; SSE 'prompt' event is source of truth.
-  const fetchPromptPreview = useCallback(async (_rid: string) => { return; }, []);
+  const fetchPromptPreview = useCallback(async () => { return; }, []);
 
-  const chatToTextStreaming = useCallback(async (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void; sessionId?: string }): Promise<string> => {
+  const chatToTextStreaming = useCallback(async (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: Record<string, unknown>; userGoals?: Array<Record<string, unknown>>; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void; sessionId?: string }): Promise<string> => {
     if (!prompt || !prompt.trim()) return "";
     // Use sessionId from options parameter first, then fall back to context
     const currentSessionId = options?.sessionId || sessionId;
     if (!currentSessionId) {
-      console.warn("chatToTextStreaming: sessionId not available, cannot make request");
+      devLog("warn", "MinimalConversationContext: sessionId not available, cannot make request", { options });
       return "";
     }
 
@@ -190,7 +199,14 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
 
     await ensureReadyForSend(700);
 
-    console.log("chatToTextStreaming: Starting chat request", { prompt: prompt.substring(0, 50), sessionId: currentSessionId });
+    devLog("info", "MinimalConversationContext: starting chat request", {
+      prompt: prompt.substring(0, 50) + "...",
+      sessionId: currentSessionId,
+      options: {
+        ...options,
+        customSystemPrompt: options?.customSystemPrompt?.substring(0, 50) + "..."
+      }
+    });
     // Build history from cached interactions (more comprehensive than in-memory history)
     const recentInteractions = getRecentInteractions(MAX_HISTORY_FOR_CONVO);
     const recent = recentInteractions
@@ -453,7 +469,7 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     }
   }, [sessionId, summary?.text]);
 
-  const chatToText = useCallback(async (prompt: string, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }): Promise<string> => {
+  const chatToText = useCallback(async (prompt: string, options?: { userProfile?: Record<string, unknown>; userGoals?: Array<Record<string, unknown>>; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }): Promise<string> => {
     return chatToTextStreaming(prompt, undefined, options);
   }, [chatToTextStreaming]);
 
@@ -477,7 +493,7 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
   }, [MAX_HISTORY_FOR_CONVO, onTurn]);
 
   // Push user/assistant messages into minimal history when chatToText resolves
-  const chatToTextWithHistory = useCallback(async (prompt: string, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }): Promise<string> => {
+  const chatToTextWithHistory = useCallback(async (prompt: string, options?: { userProfile?: Record<string, unknown>; userGoals?: Array<Record<string, unknown>>; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }): Promise<string> => {
     const reply = await chatToText(prompt, options);
     try {
       const beforeLength = historyRef.current.length;
@@ -520,18 +536,7 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
               try { console.error('[ingest] POST user failed after retries:', error); } catch {}
             });
           })();
-          // assistant
-          try { console.log('[ingest] POST assistant', { sid, len: reply.length }); } catch {}
-          void (async () => {
-            const headers = await buildAuthHeaders({ 'content-type': 'application/json', 'x-request-id': reqId });
-            await fetchWithRetry('/api/v1/interactions', {
-              method: 'POST',
-              headers,
-              body: JSON.stringify({ sessionId: sid, messageId: `c_assistant_${now+1}`, role: 'assistant', contentHash: djb2(reply || `c_assistant_${now+1}`), text: reply, ts: now + 1 })
-            }, { maxAttempts: 3, endpoint: 'interactions' }).catch((error) => {
-              try { console.error('[ingest] POST assistant failed after retries:', error); } catch {}
-            });
-          })();
+          // NOTE: Do not persist assistant here to avoid duplicate writes.
         }
       } catch {}
     } catch {}
@@ -539,7 +544,7 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
   }, [chatToText, onTurn, sessionId]);
 
   // Streaming version that also updates history
-  const chatToTextStreamingWithHistory = useCallback(async (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: any; userGoals?: any[]; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }): Promise<string> => {
+  const chatToTextStreamingWithHistory = useCallback(async (prompt: string, onChunk?: (chunk: string) => void, options?: { userProfile?: Record<string, unknown>; userGoals?: Array<Record<string, unknown>>; customSystemPrompt?: string; model?: string; onModelUsed?: (model: string, provider: string) => void }): Promise<string> => {
     const reply = await chatToTextStreaming(prompt, onChunk, options);
     try {
       const beforeLength = historyRef.current.length;
@@ -576,18 +581,7 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
               try { console.error('[ingest] POST user streaming failed after retries:', error); } catch {}
             });
           })();
-          // assistant
-          try { console.log('[ingest] POST assistant streaming', { sid, len: reply.length }); } catch {}
-          void (async () => {
-            const headers = await buildAuthHeaders({ 'content-type': 'application/json', 'x-request-id': reqId });
-            await fetchWithRetry('/api/v1/interactions', {
-              method: 'POST',
-              headers,
-              body: JSON.stringify({ sessionId: sid, messageId: `c_assistant_stream_${now+1}`, role: 'assistant', contentHash: djb2(reply || `c_assistant_stream_${now+1}`), text: reply, ts: now + 1 })
-            }, { maxAttempts: 3, endpoint: 'interactions' }).catch((error) => {
-              try { console.error('[ingest] POST assistant streaming failed after retries:', error); } catch {}
-            });
-          })();
+          // NOTE: Do not persist assistant here to avoid duplicate writes.
         }
       } catch {}
     } catch {}
@@ -690,6 +684,7 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     getLastPromptPreview: () => promptPreview,
     refreshPromptPreview: async () => {},
     promptPreview,
+    getRecentInteractions,
     // Extended context value with cache management
     refreshInteractionsCache,
     getCacheStatus,
@@ -714,10 +709,10 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     lastSummaryStatusRefreshAt,
   } as MinimalConversationContextValue & {
     refreshInteractionsCache: () => Promise<void>;
-    getCacheStatus: () => any;
+    getCacheStatus: () => Record<string, unknown>;
     interactionsCount: number;
     isInteractionsLoading: boolean;
-    summaryStatus: any;
+    summaryStatus: SummaryStatus | null;
     refreshSummaryStatus: () => Promise<void>;
     isSummaryStatusLoading: boolean;
     isDue: boolean;
@@ -736,6 +731,7 @@ export function MinimalConversationProvider({ children }: { children: React.Reac
     recordTurn,
     getSummaryMeta,
     promptPreview,
+    getRecentInteractions,
     refreshInteractionsCache,
     getCacheStatus,
     interactions.length,

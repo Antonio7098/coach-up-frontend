@@ -6,6 +6,7 @@ import { requireAuth } from "../../../../lib/auth";
 import { promMetrics } from "../../../../lib/metrics";
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { devLog } from "../../../../lib/observability";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -43,14 +44,14 @@ export async function GET(request: Request) {
   // Auth (optional)
   const auth = await requireAuth(request);
   if (!auth.ok) {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 401, reason: auth.reason, latencyMs: Date.now() - started }));
+    devLog("warn", "storage-presign: authentication failed", { requestId, status: 401, reason: auth.reason, latencyMs: Date.now() - started });
     return respond(401, { error: "Unauthorized" });
   }
 
   const url = new URL(request.url);
   const objectKey = url.searchParams.get('objectKey') || '';
   if (!objectKey) {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 400, msg: 'Missing objectKey', latencyMs: Date.now() - started }));
+    devLog("warn", "storage-presign: missing objectKey", { requestId, status: 400, latencyMs: Date.now() - started });
     return respond(400, { error: "objectKey is required" });
   }
 
@@ -86,7 +87,17 @@ export async function GET(request: Request) {
         expiresAt: now + expiresIn * 1000,
         objectKey,
       } as const;
-      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, mode, objectKey, bucket, region, endpoint: endpoint ? true : false, forcePathStyle, latencyMs: Date.now() - started }));
+      devLog("info", "storage-presign: 200 OK response", {
+  requestId,
+  status: 200,
+  mode,
+  objectKey,
+  bucket,
+  region,
+  endpoint: endpoint ? true : false,
+  forcePathStyle,
+  latencyMs: Date.now() - started
+});
       return respond(200, payload);
     } catch (err: any) {
       console.log(JSON.stringify({ level: 'error', route: routePath, requestId, status: 500, mode: 's3', msg: 'Download presign failed', error: err?.message, latencyMs: Date.now() - started }));
@@ -147,7 +158,7 @@ export async function POST(request: Request) {
   // Auth (optional gating via CLERK_ENABLED)
   const auth = await requireAuth(request);
   if (!auth.ok) {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 401, reason: auth.reason, latencyMs: Date.now() - started }));
+    devLog("warn", "storage-presign: authentication failed", { requestId, status: 401, reason: auth.reason, latencyMs: Date.now() - started });
     return respond(401, { error: "Unauthorized" });
   }
 
@@ -216,7 +227,17 @@ export async function POST(request: Request) {
         const labels = { route: routePath, method, status: "200", mode } as const;
         promMetrics.storagePresignBytesPlanned.labels(labels.route, labels.method, labels.status, labels.mode).inc(sizeBytes);
       } catch {}
-      console.log(JSON.stringify({ level: 'info', route: routePath, requestId, status: 200, mode, objectKey, bucket, region, endpoint: endpoint ? true : false, forcePathStyle, latencyMs: Date.now() - started }));
+      devLog("info", "storage-presign: 200 OK response", {
+  requestId,
+  status: 200,
+  mode,
+  objectKey,
+  bucket,
+  region,
+  endpoint: endpoint ? true : false,
+  forcePathStyle,
+  latencyMs: Date.now() - started
+});
       return respond(200, payload);
     } catch (err: any) {
       console.log(JSON.stringify({ level: 'error', route: routePath, requestId, status: 500, mode: 's3', msg: 'Presign failed', error: err?.message, latencyMs: Date.now() - started }));

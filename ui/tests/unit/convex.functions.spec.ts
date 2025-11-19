@@ -23,7 +23,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { updateSessionState } from '../../../convex/functions/sessions';
 import { appendInteraction } from '../../../convex/functions/interactions';
 import { logEvent, listBySession } from '../../../convex/functions/events';
-import { recordSkillAssessmentV2, getLatestAssessmentSummary, checkFinalizeIdempotency, markFinalizeCompleted } from '../../../convex/functions/assessments';
+import { recordSkillAssessmentV2, getLatestAssessmentResults, checkFinalizeIdempotency, markFinalizeCompleted } from '../../../convex/functions/assessments';
 
 describe('Convex functions: write paths and index usage', () => {
   it('sessions.updateSessionState uses by_sessionId unique and inserts when missing', async () => {
@@ -165,7 +165,7 @@ describe('Convex functions: write paths and index usage', () => {
     await expect((logEvent as any).handler(ctx, { userId: 'u1', sessionId: 's1', kind: 'k', trackedSkillIdHash: ' ', payload: {} })).rejects.toThrow('trackedSkillIdHash must be non-empty when provided');
   });
 
-  it('assessments.getLatestAssessmentSummary returns latest summary with latestGroupId', async () => {
+  it('assessments.getLatestAssessmentResults returns latest results with latestGroupId', async () => {
     const ctx = {
       db: {
         query: vi.fn((table: string) => ({
@@ -176,7 +176,7 @@ describe('Convex functions: write paths and index usage', () => {
               cb(q)
               return {
                 filter: (_fcb: any) => ({ order: (_dir: 'desc' | 'asc') => ({ first: async () => ({
-                  sessionId: 's1', groupId: 'g2', kind: 'summary', summary: { a: 1 }, rubricVersion: 'v2', createdAt: 20, updatedAt: 21,
+                  sessionId: 's1', groupId: 'g2', kind: 'summary', results: { a: 1 }, rubricVersion: 'v2', createdAt: 20, updatedAt: 21,
                 }) }) }),
               }
             }
@@ -191,9 +191,9 @@ describe('Convex functions: write paths and index usage', () => {
       },
     } as any
 
-    const res = await (getLatestAssessmentSummary as any).handler(ctx, { sessionId: 's1' })
+    const res = await (getLatestAssessmentResults as any).handler(ctx, { sessionId: 's1' })
     expect(res).toMatchObject({ sessionId: 's1', latestGroupId: 'g3', rubricVersion: 'v2', createdAt: 20, updatedAt: 21 })
-    expect(res.summary).toEqual({ a: 1 })
+    expect(res.results).toEqual({ a: 1 })
   })
 
   it('assessments.recordSkillAssessmentV2 validates level bounds and inserts document', async () => {

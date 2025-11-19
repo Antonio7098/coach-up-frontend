@@ -4,6 +4,8 @@ export const dynamic = "force-dynamic";
 
 import { requireAuth } from "../../../lib/auth";
 import { makeConvex } from "../../../lib/convex";
+import * as mockConvex from "../../../lib/mockConvex";
+import { devLog } from "../../../lib/observability";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -33,6 +35,12 @@ export async function GET(request: Request) {
   const headersIn = new Headers(request.headers);
   const requestId = headersIn.get("x-request-id") || safeUUID();
 
+  devLog("debug", "sessions-metrics: GET request initiated", {
+    requestId,
+    sessionId: new URL(request.url).searchParams.get("sessionId") || "missing",
+    timestamp: new Date().toISOString()
+  });
+
   // Optional auth gating (same as other v1 routes)
   const auth = await requireAuth(request);
   if (!auth.ok) {
@@ -52,6 +60,31 @@ export async function GET(request: Request) {
   }
 
   try {
+    if (process.env.MOCK_CONVEX === '1') {
+      // Mock mode: derive metrics from in-memory store
+      const session = await mockConvex.getSessionById({ sessionId });
+      const docs = await mockConvex.listInteractionsBySession({ sessionId, limit: 200 }) as any[];
+      const tsVals = (Array.isArray(docs) ? docs : [])
+        .map((d: any) => Number(d?.ts || d?.createdAt || 0))
+        .filter((n: number) => Number.isFinite(n) && n > 0);
+      const lastActivityAt = tsVals.length > 0 ? Math.max(...tsVals) : (session?.lastActivityAt ?? null);
+      const interactionCount = Array.isArray(docs) ? docs.length : 0;
+      const payload = {
+        sessionId,
+        lastActivityAt: lastActivityAt ?? null,
+        interactionCount,
+        sttCostCents: 0,
+        llmCostCents: 0,
+        ttsCostCents: 0,
+        totalCostCents: 0,
+        startTime: typeof session?.createdAt === 'number' ? session!.createdAt : null,
+      } as const;
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
+      });
+    }
+
     const client = makeConvex(convexBaseUrl());
 
     // Fetch session doc first (denormalized metrics)
@@ -96,7 +129,7 @@ export async function GET(request: Request) {
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
     });
   } catch (err: unknown) {
-    try { console.error('[sessions/metrics] failed', err); } catch {}
+    devLog("error", "sessions-metrics: query failed", { sessionId, requestId, error: String(err) });
     return new Response(JSON.stringify({ error: "Backend query failed" }), {
       status: 502,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },

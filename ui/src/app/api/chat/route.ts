@@ -209,7 +209,8 @@ try {
   // Do NOT propagate client abort to upstream; we want upstream to finish so we can persist and trigger summaries.
   // If the client disconnects, we'll stop piping to the client but keep consuming upstream.
 
-  let upstream: Response;
+  let upstream: Response | null = null;
+  let selectedModel: string | null = null;
   try {
     const incoming = new Headers(request.headers);
     const trackedSkillId = incoming.get("x-tracked-skill-id");
@@ -218,11 +219,42 @@ try {
       "X-Request-Id": requestId,
     });
     if (trackedSkillId) headers.set("X-Tracked-Skill-Id", trackedSkillId);
-    upstream = await fetch(upstreamUrl, {
-      method: "GET",
-      headers,
-      signal: controller.signal,
-    });
+
+    async function attempt(urlStr: string): Promise<Response | null> {
+      try {
+        const res = await fetch(urlStr, { method: 'GET', headers, signal: controller.signal });
+        if (res.ok && res.body) return res;
+        return null;
+      } catch {
+        return null;
+      }
+    }
+
+    // First attempt with whatever model is in upstreamUrl
+    const u1 = new URL(upstreamUrl);
+    const modelParam = u1.searchParams.get('model') || '';
+    selectedModel = modelParam || null;
+    upstream = await attempt(u1.toString());
+
+    // If failed, try alternate Gemini model (flash-lite <-> flash)
+    if (!upstream) {
+      let alt: string | null = null;
+      if (modelParam.includes('gemini-2.5-flash-lite')) alt = 'gemini-2.5-flash';
+      else if (modelParam.includes('gemini-2.5-flash')) alt = 'gemini-2.5-flash-lite';
+
+      if (alt) {
+        try { console.warn('[api/chat] primary model failed, retrying with alternate', { from: modelParam || '(none)', to: alt }); } catch {}
+        u1.searchParams.set('model', alt);
+        selectedModel = alt;
+        upstream = await attempt(u1.toString());
+      }
+    }
+
+    if (!upstream) {
+      // Option: could fall back to non-streaming here if your AI API exposes it.
+      try { console.warn('[api/chat] all streaming attempts failed'); } catch {}
+      return new Response('Model is currently busy. Please try again.', { status: 503, headers: { ...corsHeaders, 'X-Request-Id': requestId } });
+    }
   } catch {
     return new Response("Upstream unavailable", { status: 502 });
   }
@@ -335,13 +367,14 @@ export async function POST(request: Request) {
     ? bodyIn.historyItems.filter((it: any) => it && typeof it.role === 'string' && typeof it.content === 'string')
     : [];
 
-  // Optionally merge server summary if client did not include a system item
+  // Build history items - the AI API will handle system prompt generation with profile/goals/skills
   let historyItems = clientHistoryItems;
-  let systemItem: { role: string; content: string } | null = null;
-  const hasClientSystem = historyItems.find((it) => it.role === 'system' && (it.content || '').trim().length > 0);
-  if (hasClientSystem) {
-    systemItem = { role: 'system', content: hasClientSystem.content };
-  } else if (sessionId) {
+  // Remove any client system items - let the AI API build the proper system prompt
+  historyItems = historyItems.filter((it) => it.role !== 'system');
+  
+  // Fetch session summary to pass as context (ctx parameter)
+  let summaryTextForCtx = '';
+  if (sessionId) {
     try {
       const attemptFetch = async (): Promise<Response | null> => {
         try {
@@ -359,14 +392,12 @@ export async function POST(request: Request) {
         const summaryData = await summaryResponse.json();
         const summaryText: string = String(summaryData?.text || summaryData?.summary?.text || "").trim();
         if (summaryText) {
-          systemItem = { role: 'system', content: summaryText.length > 3200 ? summaryText.slice(0, 3200) : summaryText };
-          // De-dup any existing system entries
-          historyItems = [systemItem].concat(historyItems.filter((it) => it.role !== 'system'));
+          summaryTextForCtx = summaryText;
         }
       }
     } catch {}
   }
-
+  
   // If there are no user/assistant items (only system), backfill from Convex to avoid empty first-turn context after refresh
   {
     const nonSystemCount = Array.isArray(historyItems) ? historyItems.filter((it: any) => it && it.role !== 'system').length : 0;
@@ -380,23 +411,49 @@ export async function POST(request: Request) {
           const fromServer = data.interactions
             .filter((m: any) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.text === 'string')
             .map((m: any) => ({ role: m.role, content: String(m.text || '').slice(0, 240) }));
-          if (fromServer.length > 0) {
-            historyItems = (systemItem ? [systemItem] : []).concat(fromServer);
+        if (fromServer.length > 0) {
+            // Use only user/assistant turns; system is handled by the AI API
+            historyItems = fromServer;
           }
         }
       } catch {}
     }
   }
 
-  // Prepare upstream URL (still GET to AI API for now)
+  // Prepare upstream URL - let AI API handle system prompt with profile/goals/skills
   const params = new URLSearchParams();
+  
+  // Build context (ctx) in the format the AI API expects
+  let ctxParts: string[] = [];
+  if (summaryTextForCtx) {
+    ctxParts.push(`Session summary:\n${summaryTextForCtx}`);
+  }
+  // Add recent history as context (fallback for providers that use ctx)
+  if (historyItems.length > 0) {
+    const recentTurns = historyItems.slice(-4).map(m => `${m.role.charAt(0)}: ${m.content}`).join('\n');
+    if (recentTurns) {
+      ctxParts.push(`Recent turns:\n${recentTurns}`);
+    }
+  }
+  const ctx = ctxParts.join('\n\n');
+  
+  // Set parameters in format AI API expects
   params.set('prompt', promptParam);
   if (sessionId) params.set('sessionId', sessionId);
-  {
-    const enc = b64urlEncode(JSON.stringify(historyItems || []));
-    params.set('history', enc);
+  if (ctx) params.set('ctx', ctx);
+  
+  // Pass actual recent history so the AI API can reconstruct turns
+  try {
+    const historyPayload = historyItems
+      .filter((it: any) => it && (it.role === 'user' || it.role === 'assistant') && typeof it.content === 'string')
+      .map((it: any) => ({ role: it.role, content: it.content }));
+    params.set('history', b64urlEncode(JSON.stringify(historyPayload)));
+  } catch {
+    // On any failure, fall back to empty history
+    params.set('history', b64urlEncode(JSON.stringify([])));
   }
-  // Optional user profile/goals passthrough for mock/demo/testing
+  
+  // Pass user profile and goals for AI API to build system prompt
   if (bodyIn.userProfile) {
     try { params.set('userProfile', b64urlEncode(JSON.stringify(bodyIn.userProfile))); } catch {}
   }
@@ -406,9 +463,12 @@ export async function POST(request: Request) {
   if (bodyIn.model) {
     try { params.set('model', String(bodyIn.model)); } catch {}
   }
+  
+  // Pass custom system prompt if provided (AI API will append profile/goals/skills)
   if (systemPromptParam && systemPromptParam.trim().length > 0) {
-    params.set('systemPrompt', systemPromptParam);
+    params.set('systemPrompt', systemPromptParam.trim());
   }
+  
   if (debugOn) {
     params.set('debug', '1');
   }
@@ -417,12 +477,11 @@ export async function POST(request: Request) {
   // Save prompt preview if debug enabled
   if (debugOn) {
     try {
-      const recentPreview = historyItems.filter((it) => it.role !== 'system').slice(-6).map((m) => ({ role: m.role, content: (m.content || '').slice(0, 240), len: (m.content || '').length }));
-      const summaryText = systemItem ? systemItem.content : "";
+      const recentPreview = historyItems.slice(-6).map((m) => ({ role: m.role, content: (m.content || '').slice(0, 240), len: (m.content || '').length }));
       savePromptPreview(requestId, {
-        system: "Coach-min chat",
-        summary: summaryText.slice(0, 1000),
-        summaryLen: summaryText.length,
+        system: "Coach-min chat (delegated to AI API)",
+        summary: summaryTextForCtx.slice(0, 1000),
+        summaryLen: summaryTextForCtx.length,
         recentMessages: recentPreview,
         prompt: promptParam.slice(0, 400),
       });
@@ -462,8 +521,8 @@ export async function POST(request: Request) {
       try {
         if (debugOn) {
           const preview = {
-            system: systemItem?.content || "",
-            rendered: promptParam || "",
+            system: "Delegated to AI API",
+            rendered: ctx ? `ctx: ${ctx}\nmsg: ${promptParam}` : promptParam || "",
             user: promptParam || "",
           };
           try {

@@ -6,6 +6,7 @@ import { requireAuth } from "../../lib/auth";
 import { promMetrics } from "../../lib/metrics";
 import { makeConvex } from "../../lib/convex";
 import * as mockConvex from "../../lib/mockConvex";
+import { devLog } from "../../lib/observability";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -40,6 +41,13 @@ export async function GET(request: Request) {
   const mode = process.env.MOCK_CONVEX === '1' ? 'mock' : 'convex';
   const endTimer = promMetrics.requestDurationSeconds.startTimer();
 
+  devLog("debug", "sessions: GET request initiated", {
+    requestId,
+    mode,
+    sessionId: new URL(request.url).searchParams.get("sessionId") || "missing",
+    timestamp: new Date().toISOString()
+  });
+
   const respond = (status: number, body: unknown) => {
     const labels = { route: routePath, method, status: String(status), mode } as const;
     promMetrics.requestsTotal.labels(labels.route, labels.method, labels.status, labels.mode).inc();
@@ -56,28 +64,44 @@ export async function GET(request: Request) {
   // Optional auth gating
   const auth = await requireAuth(request);
   if (!auth.ok) {
+    devLog("warn", "sessions: authentication failed", { requestId });
     return respond(401, { error: "Unauthorized" });
   }
 
   const url = new URL(request.url);
   const sessionId = url.searchParams.get("sessionId") || "";
   if (!sessionId.trim()) {
+    devLog("warn", "sessions: missing sessionId parameter", { requestId });
     return respond(400, { error: "sessionId is required" });
   }
 
   try {
     if (mode === 'mock') {
+      devLog("debug", "sessions: using mock mode", { requestId, sessionId });
       const doc = await mockConvex.getSessionById?.({ sessionId });
       const payload = { session: doc ?? null, hasSession: !!doc };
+      devLog("info", "sessions: mock query completed", {
+        requestId,
+        sessionId,
+        hasSession: !!doc,
+        processingTimeMs: Date.now() - started
+      });
       return respond(200, payload);
     }
     const client = makeConvex(convexBaseUrl());
+    devLog("debug", "sessions: querying Convex", { requestId, sessionId, convexUrl: convexBaseUrl() });
     const queryResult = await client.query("functions/sessions:getBySessionId", { sessionId });
     const data: any = (queryResult as { value?: any })?.value || null;
     const payload = { session: data ?? null, hasSession: !!data };
+    devLog("info", "sessions: convex query completed", {
+      requestId,
+      sessionId,
+      hasSession: !!data,
+      processingTimeMs: Date.now() - started
+    });
     return respond(200, payload);
   } catch (err: unknown) {
-    try { console.error('[sessions] GET failed', err); } catch {}
+    devLog("error", "sessions: GET failed", { sessionId, error: String(err), mode });
     return respond(502, { error: "Backend query failed" });
   }
 }

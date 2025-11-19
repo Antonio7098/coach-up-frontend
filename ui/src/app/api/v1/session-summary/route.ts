@@ -10,6 +10,7 @@ import { clientKeyFromHeaders, rateLimit } from "../../lib/ratelimit";
 import { generateSummaryText } from "../../lib/summarizer";
 import { getLatestSummary, upsertSummary } from "../../lib/summaries";
 import { sha256Hex } from "../../lib/hash";
+import { devLog } from "../../lib/observability";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -49,10 +50,18 @@ export async function GET(request: Request) {
   const isLite = urlObj.pathname.endsWith('/lite') || urlObj.searchParams.get('lite') === 'true';
   const headersIn = new Headers(request.headers);
   const requestId = headersIn.get("x-request-id") || safeUUID();
+  const started = Date.now();
+
+  devLog("debug", "session-summary: GET request initiated", {
+    requestId,
+    isLite,
+    sessionId: urlObj.searchParams.get("sessionId") || "missing",
+    timestamp: new Date().toISOString()
+  });
+
   const idempotencyKey = headersIn.get("idempotency-key") || headersIn.get("Idempotency-Key") || "";
   const routePath = "/api/v1/session-summary";
   const method = "GET";
-  const started = Date.now();
   const mode = process.env.MOCK_CONVEX === '1' ? 'mock' : 'convex';
   const endTimer = promMetrics.requestDurationSeconds.startTimer();
 
@@ -91,12 +100,148 @@ export async function GET(request: Request) {
 
   try {
     if (mode === 'mock') {
+      // Helper: derive cadence like prod (assistantSince, thresholdTurns)
+      // Match prod: assistantSince since last completed summary
+      const deriveCadence = async (): Promise<{ turnsSince?: number; thresholdTurns?: number; interactions?: any[]; msgsSinceCutoff?: Array<{ role: string; text: string }> }> => {
+        try {
+          const last = getLatestSummary(sessionId);
+          const cutoffTs = typeof last?.updatedAt === 'number' ? last!.updatedAt : 0;
+          // Load recent interactions from mock store
+          const docs: any[] = await mockConvex.listInteractionsBySession({ sessionId, limit: 300 }) as any[];
+          const arr = Array.isArray(docs) ? docs : [];
+          // assistantSince: assistant messages strictly after last summary
+          const after = cutoffTs > 0 ? arr.filter(d => Number(d?.ts || 0) > cutoffTs) : arr;
+          const assistantSince = after.filter(d => String(d?.role||'') === 'assistant').length;
+          const thr = Math.max(1, Math.min(20, Number(process.env.NEXT_PUBLIC_SUMMARY_REFRESH_TURNS || 4)));
+          const msgsSinceCutoff = after.map(d => ({ role: String(d?.role||''), text: String(d?.text||'') })).filter(m => m.text);
+          return { turnsSince: assistantSince, thresholdTurns: thr, interactions: arr, msgsSinceCutoff };
+        } catch { return {}; }
+      };
+
+      // Lite mode in mock: provide cadence and last summary preview like prod
+      if (isLite) {
+        const cadence = await deriveCadence();
+        const last = getLatestSummary(sessionId);
+        const updatedAt = last ? last.updatedAt : 0;
+        const due = typeof cadence.turnsSince === 'number' && typeof cadence.thresholdTurns === 'number'
+          ? cadence.turnsSince >= cadence.thresholdTurns : false;
+        const litePayload = {
+          sessionId,
+          due,
+          lastSummary: last ? {
+            version: last.version ?? 0,
+            cutoffIndex: undefined as number | undefined,
+            updatedAt,
+            preview: String(last.text || '').substring(0, 100) + (String(last.text || '').length > 100 ? '...' : '')
+          } : null,
+          reservation: {
+            inProgress: false,
+            lastJobAt: undefined as number | undefined,
+          },
+          turnsSince: cadence.turnsSince ?? 0,
+        } as const;
+        return respond(200, litePayload, {
+          "X-RateLimit-Limit": String(rl.limit),
+          "X-RateLimit-Remaining": String(rl.remaining),
+          "X-RateLimit-Reset": String(rl.resetSec)
+        });
+      }
+
+      // First try to get server summary from AI API for complete metadata'},
+      try {
+        const serverRes = await fetch(`${aiApiBaseUrl()}/api/v1/session-summary?sessionId=${encodeURIComponent(sessionId)}`, {
+          method: 'GET',
+          headers: { 'x-request-id': requestId }
+        });
+        if (serverRes.ok) {
+          const serverData = await serverRes.json();
+
+          // Load local (mock) latest summary as well
+          const localRow = getLatestSummary(sessionId);
+
+          // Decide which cutoff to use for cadence: prefer the freshest known cutoff
+          const serverUpdatedAt = Number(serverData?.updatedAt || 0) || 0;
+          const localUpdatedAt = Number(localRow?.updatedAt || 0) || 0;
+          const cutoffTs = Math.max(serverUpdatedAt, localUpdatedAt);
+
+          // Prefer server-provided counters; otherwise compute using chosen cutoff
+          let turnsSince: number | undefined = typeof serverData?.turnsSince === 'number' ? serverData.turnsSince : undefined;
+          let thresholdTurns: number | undefined = typeof serverData?.thresholdTurns === 'number' ? serverData.thresholdTurns : undefined;
+          let messagesSinceCutoff: Array<{ role: string; text: string }> | undefined = undefined;
+
+          try {
+            const docs: any[] = await mockConvex.listInteractionsBySession({ sessionId, limit: 300 }) as any[];
+            const arr = Array.isArray(docs) ? docs : [];
+            const after = cutoffTs > 0 ? arr.filter(d => Number(d?.ts || 0) > cutoffTs) : arr;
+            const assistantSince = after.filter(d => String(d?.role||'') === 'assistant').length;
+            if (turnsSince === undefined) turnsSince = assistantSince;
+            const thr = Math.max(1, Math.min(20, Number(process.env.NEXT_PUBLIC_SUMMARY_REFRESH_TURNS || 4)));
+            if (thresholdTurns === undefined) thresholdTurns = thr;
+            messagesSinceCutoff = after.map(d => ({ role: String(d?.role||''), text: String(d?.text||'') })).filter(m => m.text);
+          } catch {}
+
+          const turnsUntilDue = typeof turnsSince === 'number' && typeof thresholdTurns === 'number' ? Math.max(0, thresholdTurns - turnsSince) : undefined;
+
+          // Choose payload source for text/updatedAt/version: prefer local if fresher or server has no text
+          const serverText = String((serverData?.summaryText ?? serverData?.text ?? ''));
+          const useLocal = !!localRow && (localUpdatedAt >= serverUpdatedAt || !serverText);
+
+          const payload = useLocal ? {
+            sessionId,
+            text: String(localRow?.text || ''),
+            lastMessageTs: typeof localRow?.lastMessageTs === 'number' ? localRow!.lastMessageTs : undefined,
+            updatedAt: localUpdatedAt || Date.now(),
+            version: typeof localRow?.version === 'number' ? localRow!.version : 1,
+            thresholdTurns,
+            turnsSince,
+            turnsUntilDue,
+            cutoffIndex: undefined as number | undefined,
+            inProgress: false,
+            secondsSince: (localUpdatedAt > 0 ? Math.max(0, Math.floor((Date.now() - localUpdatedAt) / 1000)) : undefined),
+            messagesSinceCutoff,
+            messagesSinceCutoffPreview: Array.isArray(messagesSinceCutoff) ? messagesSinceCutoff.slice(0,12).map(m => `${m.role}: ${m.text.length>160?m.text.slice(0,157)+'…':m.text}`) : undefined,
+          } : {
+            sessionId,
+            text: serverText,
+            lastMessageTs: typeof serverData?.lastMessageTs === 'number' ? serverData.lastMessageTs : undefined,
+            updatedAt: serverUpdatedAt || Date.now(),
+            version: typeof serverData?.version === 'number' ? serverData.version : 1,
+            thresholdTurns,
+            turnsSince,
+            turnsUntilDue,
+            cutoffIndex: typeof serverData?.cutoffIndex === 'number' ? serverData.cutoffIndex : undefined,
+            inProgress: serverData?.inProgress === true,
+            secondsSince: typeof serverData?.secondsSince === 'number' ? serverData.secondsSince : (serverUpdatedAt > 0 ? Math.max(0, Math.floor((Date.now() - serverUpdatedAt) / 1000)) : undefined),
+            messagesSinceCutoff,
+            messagesSinceCutoffPreview: Array.isArray(messagesSinceCutoff) ? messagesSinceCutoff.slice(0,12).map(m => `${m.role}: ${m.text.length>160?m.text.slice(0,157)+'…':m.text}`) : undefined,
+          };
+
+          return respond(200, payload, { "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) });
+        }
+      } catch {}
+      
+      // Fallback to local mock summary
       const row = getLatestSummary(sessionId);
       if (!row) {
         // No summary yet — return 404
         return respond(404, { error: "No summary found" }, { "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) });
       }
-      const payload = { sessionId, text: row.text, lastMessageTs: typeof row.lastMessageTs === 'number' ? row.lastMessageTs : undefined, updatedAt: row.updatedAt, version: row.version };
+      const cadence = await deriveCadence();
+      const turnsSince = cadence.turnsSince ?? 0;
+      const thresholdTurns = cadence.thresholdTurns ?? Math.max(1, Math.min(20, Number(process.env.NEXT_PUBLIC_SUMMARY_REFRESH_TURNS || 4)));
+      const turnsUntilDue = Math.max(0, thresholdTurns - turnsSince);
+      const payload = {
+        sessionId,
+        text: row.text,
+        lastMessageTs: typeof row.lastMessageTs === 'number' ? row.lastMessageTs : undefined,
+        updatedAt: row.updatedAt,
+        version: row.version,
+        thresholdTurns,
+        turnsSince,
+        turnsUntilDue,
+        messagesSinceCutoff: Array.isArray(cadence.msgsSinceCutoff) ? cadence.msgsSinceCutoff : undefined,
+        messagesSinceCutoffPreview: Array.isArray(cadence.msgsSinceCutoff) ? cadence.msgsSinceCutoff.slice(0,12).map(m => `${m.role}: ${m.text.length>160?m.text.slice(0,157)+'…':m.text}`) : undefined,
+      } as const;
       return respond(200, payload, { "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) });
     }
     const client = makeConvex(convexBaseUrl());
@@ -168,7 +313,7 @@ export async function GET(request: Request) {
     } as const;
     return respond(200, payload, { "X-RateLimit-Limit": String(rl.limit), "X-RateLimit-Remaining": String(rl.remaining), "X-RateLimit-Reset": String(rl.resetSec) });
   } catch (err: unknown) {
-    try { console.error('[session-summary] GET failed', err); } catch {}
+    devLog("error", "session-summary: GET failed", { sessionId, isLite, requestId, error: String(err) });
     return respond(502, { error: "Backend query failed" });
   }
 }
@@ -201,7 +346,7 @@ export async function POST(request: Request) {
 
   const auth = await requireAuth(request);
   if (!auth.ok) {
-    console.log(JSON.stringify({ level: 'warn', route: routePath, requestId, status: 401, reason: auth.reason, latencyMs: Date.now() - started }));
+    devLog("warn", "session-summary: authentication failed", { requestId, status: 401, reason: auth.reason, latencyMs: Date.now() - started });
     return respond(401, { error: "Unauthorized" });
   }
 
@@ -237,10 +382,82 @@ export async function POST(request: Request) {
 
   try {
     if (mode === 'mock') {
-      // In mock mode, simulate an accepted reservation without generating text
-      const prev = getLatestSummary(sessionId);
-      const nextVersion = typeof prev?.version === 'number' ? prev.version + 1 : 1;
-      return respond(200, { status: 'accepted', accepted: true, version: nextVersion });
+      // Enforce ensureJob-like cadence: reject when not due
+      const deriveCadence = async (): Promise<{ turnsSince: number; thresholdTurns: number; cutoffIndex: number }> => {
+        const docs: any[] = await mockConvex.listInteractionsBySession({ sessionId, limit: 300 }) as any[];
+        const arr = Array.isArray(docs) ? docs : [];
+        // compute turnsSince
+        let turnsSince = 0;
+        let seenAssistant = false;
+        for (let i = arr.length - 1; i >= 0; i--) {
+          const r = String(arr[i]?.role || '');
+          if (r === 'assistant') { seenAssistant = true; break; }
+          if (r === 'user') turnsSince++;
+        }
+        if (!seenAssistant) turnsSince = arr.filter(d => String(d?.role||'') === 'user').length;
+        const thresholdTurns = Math.max(1, Math.min(20, Number(process.env.NEXT_PUBLIC_SUMMARY_REFRESH_TURNS || 4)));
+        const cutoffIndex = arr.length > 0 ? arr.length - 1 : 0;
+        return { turnsSince, thresholdTurns, cutoffIndex };
+      };
+
+      try {
+        const { turnsSince, thresholdTurns, cutoffIndex } = await deriveCadence();
+        if (turnsSince < thresholdTurns) {
+          // Mirror Convex ensureJob 'not_due'
+          const resp = { status: 'rejected', accepted: false, reason: 'not_due', cutoffIndex };
+          // brief cooldown as in GET route
+          notDueCooldown.set(sessionId, Date.now());
+          return respond(200, resp);
+        }
+      } catch {}
+
+      // Try to delegate to the AI API server for generation
+      try {
+        const generateRes = await fetch(`${aiApiBaseUrl()}/api/v1/session-summary/generate`, {
+          method: 'POST',
+          headers: { 
+            'content-type': 'application/json',
+            'x-request-id': requestId 
+          },
+          body: JSON.stringify({ 
+            sessionId, 
+            prevSummary: prevSummary || '', 
+            messages: clientMessages, 
+            tokenBudget 
+          })
+        });
+        if (generateRes.ok) {
+          const generateData = await generateRes.json();
+          return respond(200, {
+            status: 'generated',
+            accepted: true,
+            version: typeof generateData?.version === 'number' ? generateData.version : 1,
+            updatedAt: typeof generateData?.updatedAt === 'number' ? generateData.updatedAt : Date.now(),
+            lastMessageTs: typeof generateData?.lastMessageTs === 'number' ? generateData.lastMessageTs : Date.now(),
+          });
+        }
+      } catch {}
+      
+      // Fallback to local mock generation
+      
+      try {
+        const prevRow = getLatestSummary(sessionId);
+        const prevText = (prevRow?.text || prevSummary || '').toString();
+        // Collect recent interactions (bounded) from the in-memory mock store
+        const docs: any[] = await mockConvex.listInteractionsBySession({ sessionId, limit: 200 }) as any[];
+        const recent = (Array.isArray(docs) ? docs : [])
+          .map((d: any) => ({ role: String(d?.role || ''), content: String(d?.text || '') }))
+          .filter((m) => m.content && m.content.trim().length > 0);
+        const text = generateSummaryText(prevText, recent, tokenBudget);
+        // Determine last message timestamp for cutoff tracking
+        const lastMessageTs = (Array.isArray(docs) && docs.length > 0)
+          ? Math.max(...docs.map((d: any) => Number(d?.ts || d?.createdAt || 0)).filter((n: number) => Number.isFinite(n)))
+          : Date.now();
+        const row = upsertSummary({ sessionId, text, lastMessageTs, meta: { tokenBudget } });
+        return respond(200, { status: 'generated', accepted: true, version: row.version, updatedAt: row.updatedAt, lastMessageTs: row.lastMessageTs });
+      } catch (e) {
+        return respond(502, { error: 'mock_generate_failed' });
+      }
     }
     const convex = makeConvex(convexBaseUrl());
 
@@ -254,7 +471,8 @@ export async function POST(request: Request) {
         // Option B: enforce triage before returning accepted, aligned to reserved cutoffIndex
         try {
           const triageEnabled = String(process.env.AI_TRIAGE_ENABLED || '').toLowerCase();
-          if (triageEnabled === '1' || triageEnabled === 'true') {
+          const triageOnSummary = String(process.env.TRIAGE_ON_SUMMARY || '0').toLowerCase();
+          if ((triageEnabled === '1' || triageEnabled === 'true') && (triageOnSummary === '1' || triageOnSummary === 'true')) {
             const authz = headersIn.get('authorization') || headersIn.get('Authorization') || '';
             const triageUrl = `/api/v1/triage?sessionId=${encodeURIComponent(sessionId)}&limit=20&cutoffIndex=${encodeURIComponent(String(val.cutoffIndex))}`;
             const ctrl = new AbortController();
@@ -272,117 +490,16 @@ export async function POST(request: Request) {
           // Proceed regardless; triage is best-effort but intended to run first
         }
 
-        // Assessments step (best-effort): after triage, before summary
+        // Assessments step (legacy pre-summary path) is hard-disabled
         try {
-          const assessEnabled = String(process.env.AI_ASSESS_ENABLED || '').toLowerCase();
-          if (assessEnabled === '1' || assessEnabled === 'true') {
-            const maxGroups = Math.max(1, Math.min(20, Number(process.env.ASSESS_MAX_GROUPS || 5)));
-            const maxSkills = Math.max(1, Math.min(50, Number(process.env.ASSESS_MAX_SKILLS || 8)));
-            const assessTimeoutMs = Math.max(500, Math.min(8000, Number(process.env.ASSESS_TIMEOUT_MS || 5000)));
-            const salt = (process.env.SKILL_HASH_SALT || 'test_salt').trim();
-            try { console.log(JSON.stringify({ where: 'summary.pre.assess.start', sessionId, maxGroups, maxSkills, assessTimeoutMs })); } catch {}
-
-            // Determine slice between previous cutoff and this reservation cutoffIndex
-            let prevCut: number | undefined = undefined;
-            try {
-              const prevLatest: any = await convex.query("functions/summaries:getLatest", { sessionId }).catch(() => null);
-              const cut = Number(prevLatest?.cutoffIndex);
-              if (Number.isFinite(cut)) prevCut = cut as number;
-            } catch {}
-            // Prefer interactions with triage annotations (groupId, triageProcessedAt)
-            let groupIds: string[] = [];
-            try {
-              let docs: Array<any> = await convex.query("functions/interactions:listBySession", { sessionId, limit: 300 }).catch(() => []) as any[];
-              docs = Array.isArray(docs) ? docs : [];
-              // Restrict to window between previous cutoff and reserved cutoffIndex when available
-              let windowed = docs.map((d, i) => ({ i, d }))
-                .filter(({ i }) => (typeof prevCut === 'number' ? i > prevCut : true) && i <= Number(val.cutoffIndex))
-                .map(({ d }) => d);
-              if (windowed.length === 0) windowed = docs.slice(-50);
-              const annotated = windowed
-                .filter((d: any) => typeof d?.groupId === 'string' && d.groupId.trim().length > 0)
-                .sort((a: any, b: any) => Number(b?.triageProcessedAt || 0) - Number(a?.triageProcessedAt || 0));
-              groupIds = Array.from(new Set(annotated.map((d: any) => String(d.groupId)))).slice(0, maxGroups);
-              try { console.log(JSON.stringify({ where: 'summary.pre.assess.groups', sessionId, docs: docs.length, windowed: windowed.length, annotated: annotated.length, groupIds })); } catch {}
-            } catch {}
-
-            // Resolve userId and load tracked skills
-            const sessionDoc: any = await convex.query("functions/sessions:getBySessionId", { sessionId }).catch(() => null);
-            const userId = String(sessionDoc?.userId || auth.userId || 'unknown');
-            const rows: any[] = await convex.query("functions/skills:getTrackedSkillsForUser", { userId }).catch(() => []) as any[];
-            const trackedList = Array.isArray(rows) ? rows : [];
-            const skills = trackedList.map((r) => ({
-              id: String(r?.skillId || r?.skill?.id || r?.id || ''),
-              level: (() => { const lv = Number(r?.currentLevel); return Number.isFinite(lv) && lv >= 0 && lv <= 10 ? lv : 5; })(),
-            })).filter((s) => s.id).slice(0, maxSkills);
-            try { console.log(JSON.stringify({ where: 'summary.pre.assess.skills', sessionId, userId, skillsCount: skills.length, sample: skills.slice(0,3) })); } catch {}
-
-            if (groupIds.length > 0 && skills.length > 0) {
-              try { console.log(JSON.stringify({ where: 'summary.pre.assess.ready', sessionId, groups: groupIds.length, skills: skills.length })); } catch {}
-              // Prefer server-to-server secret for finalize endpoint if configured; fallback to incoming auth
-              const authz = headersIn.get('authorization') || headersIn.get('Authorization') || '';
-              const s2sSecret = (process.env.PERSIST_ASSESSMENTS_SECRET || '').trim();
-              const headers: Record<string, string> = { 'content-type': 'application/json', 'x-request-id': requestId };
-              if (s2sSecret) {
-                headers['authorization'] = `Bearer ${s2sSecret}`;
-              } else if (authz) {
-                headers['authorization'] = authz;
-              }
-
-              // Log attempt
-              try {
-                await convex.mutation("functions/events:logEvent", {
-                  userId,
-                  sessionId,
-                  requestId,
-                  kind: 'assess_cadence_started',
-                  payload: { groups: groupIds.length, skills: skills.length, cutoffIndex: val.cutoffIndex }
-                });
-              } catch {}
-
-              let completed = 0;
-              for (const gid of groupIds) {
-                const skillAssessments = skills.map((s) => ({
-                  skillHash: sha256Hex(`${salt}:${s.id}`),
-                  level: s.level,
-                  metCriteria: [],
-                  unmetCriteria: [],
-                  feedback: [],
-                }));
-                const payload = { sessionId, groupId: gid, rubricVersion: 'v2' as const, summary: { skillAssessments } };
-                const ctrl = new AbortController();
-                const to = setTimeout(() => ctrl.abort(), assessTimeoutMs);
-                try {
-                  try { console.log(JSON.stringify({ where: 'summary.pre.assess.finalize.attempt', sessionId, groupId: gid, skills: skills.length })); } catch {}
-                  const res = await fetch('/api/assessments/convex/finalize', {
-                    method: 'POST', headers, body: JSON.stringify(payload), cache: 'no-store', signal: ctrl.signal,
-                  });
-                  const txt = await res.text().catch(() => '');
-                  try { console.log(JSON.stringify({ where: 'summary.pre.assess.finalize.result', sessionId, groupId: gid, status: res.status, len: txt.length })); } catch {}
-                  completed++;
-                } catch (e) {
-                  try { console.warn(JSON.stringify({ where: 'summary.pre.assess.finalize.error', sessionId, groupId: gid, error: String(e) })); } catch {}
-                }
-                try { clearTimeout(to); } catch {}
-              }
-
-              // Log completion
-              try {
-                await convex.mutation("functions/events:logEvent", {
-                  userId,
-                  sessionId,
-                  requestId,
-                  kind: 'assess_cadence_completed',
-                  payload: { groups: groupIds.length, skills: skills.length, completed, cutoffIndex: val.cutoffIndex }
-                });
-              } catch {}
-            } else {
-              try { console.log(JSON.stringify({ where: 'summary.pre.assess.skipped', sessionId, reason: groupIds.length === 0 ? 'no_groups' : 'no_skills', groups: groupIds.length, skills: skills.length })); } catch {}
-            }
+          const allowPreSummary = false; // hard-disabled
+          try { console.log(JSON.stringify({ where: 'summary.pre.assess.skip', sessionId, reason: 'hard_disabled' })); } catch {}
+          if (allowPreSummary) {
+            // No-op: legacy path removed
           }
         } catch (e) {
-          try { console.warn(JSON.stringify({ where: 'summary.pre.assess.error', sessionId, error: String(e) })); } catch {}
           // Proceed regardless
+          try { console.warn(JSON.stringify({ where: 'summary.pre.assess.error', sessionId, error: String(e) })); } catch {}
         }
 
         const resp = { status: 'accepted', accepted: true, version: val.version, cutoffIndex: val.cutoffIndex };

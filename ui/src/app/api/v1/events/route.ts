@@ -4,6 +4,7 @@ export const dynamic = "force-dynamic";
 import { makeConvex } from "../../lib/convex";
 import * as mockConvex from "../../lib/mockConvex";
 import { sha256Hex } from "../../lib/hash";
+import { devLog } from "../../lib/observability";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -40,7 +41,17 @@ export async function GET(request: Request) {
   const limitParam = url.searchParams.get("limit");
   const limit = Math.max(1, Math.min(200, Number.isFinite(Number(limitParam)) ? Number(limitParam) : 50));
 
+  devLog("debug", "events: GET request initiated", {
+    requestId,
+    sessionId,
+    trackedSkillIdHash,
+    limit,
+    mode: process.env.MOCK_CONVEX === '1' ? 'mock' : 'convex',
+    timestamp: new Date().toISOString()
+  });
+
   if (!sessionId.trim()) {
+    devLog("warn", "events: missing sessionId parameter", { requestId });
     return new Response(JSON.stringify({ error: "sessionId required" }), {
       status: 400,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },
@@ -61,7 +72,30 @@ export async function GET(request: Request) {
 
     // Query Convex for events by sessionId, newest first
     const client = makeConvex(convexUrl);
-    const events = await client.query("events:listBySession", { sessionId, limit }) as unknown as Array<Record<string, unknown>> | null | undefined;
+
+    // Add timeout to prevent hanging queries (30 second timeout)
+    const queryTimeout = 30000; // 30 seconds
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Convex query timeout')), queryTimeout);
+    });
+
+    let events: Array<Record<string, unknown>> | null | undefined;
+    try {
+      events = await Promise.race([
+        client.query("events:listBySession", { sessionId, limit }),
+        timeoutPromise
+      ]) as unknown as Array<Record<string, unknown>> | null | undefined;
+    } catch (queryError: any) {
+      // If query times out or fails, log and continue with empty events
+      // The fallback logic below will handle returning an empty response
+      devLog("warn", "events: Convex query failed", {
+        sessionId,
+        requestId,
+        error: queryError.message,
+        mode: process.env.MOCK_CONVEX === '1' ? 'mock' : 'convex'
+      });
+      events = []; // Ensure we have an empty array for fallback logic
+    }
 
     const body = Array.isArray(events) ? events : [];
     return new Response(JSON.stringify({ sessionId, trackedSkillIdHash, events: body }), {
@@ -70,7 +104,12 @@ export async function GET(request: Request) {
     });
   } catch (e) {
     // If Convex query isn't available, fall back to empty list so UI can render
-    try { console.warn('[events] listBySession failed, returning empty array', e); } catch {}
+    devLog("warn", "events: listBySession failed, returning empty array", {
+      sessionId,
+      requestId,
+      error: String(e),
+      mode: process.env.MOCK_CONVEX === '1' ? 'mock' : 'convex'
+    });
     return new Response(JSON.stringify({ sessionId, trackedSkillIdHash, events: [] }), {
       status: 200,
       headers: { "content-type": "application/json; charset=utf-8", "X-Request-Id": requestId, ...corsHeaders },

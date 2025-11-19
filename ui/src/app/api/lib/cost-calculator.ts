@@ -1,6 +1,8 @@
 // Cost Calculation Service — Provider-specific pricing models
 // Supports OpenAI, Google, Deepgram pricing with fallback rates
 
+import { devLog } from "./observability";
+
 export interface CostCalculationInput {
   provider: string;
   service: 'stt' | 'llm' | 'tts';
@@ -271,10 +273,19 @@ export class CostCalculator {
         break;
     }
     
-    return {
-      valid: errors.length === 0,
-      errors,
-    };
-  }
-}
+  const result = {
+    valid: errors.length === 0,
+    errors,
+  };
 
+  devLog("debug", "cost-calculator: input validation", {
+    provider: input.provider,
+    service: input.service,
+    modelId: input.modelId,
+    valid: result.valid,
+    errors: result.errors
+  });
+
+  return result;
+}
+}

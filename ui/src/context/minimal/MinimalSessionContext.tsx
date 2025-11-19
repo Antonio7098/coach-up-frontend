@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useContext, useEffect, useMemo, useState, useCallback } from "react";
+import { devLog } from "../../app/api/lib/observability";
 import { useUser } from "@clerk/nextjs";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
@@ -33,6 +34,11 @@ export function MinimalSessionProvider({ children }: { children: React.ReactNode
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const { user } = useUser();
+
+  devLog("debug", "MinimalSessionContext: initializing minimal session provider", {
+    userId: user?.id || "anonymous",
+    timestamp: new Date().toISOString()
+  });
   
   // Get user ID for session logic
   const userId = user?.id || "anonymous";
@@ -88,16 +94,23 @@ export function MinimalSessionProvider({ children }: { children: React.ReactNode
           // Start new session
           const newSessionId = safeUUID();
           setSessionId(newSessionId);
-          console.log('Starting new session - last interaction was', Math.round((Date.now() - latestInteraction.ts) / 60000), 'minutes ago');
+          devLog("info", "MinimalSessionContext: starting new session", {
+            lastInteractionMinutesAgo: Math.round((Date.now() - latestInteraction.ts) / 60000),
+            latestInteractionTs: latestInteraction.ts
+          });
         } else {
           // Continue existing session
           setSessionId(latestInteraction.sessionId);
-          console.log('Continuing existing session - last interaction was', Math.round((Date.now() - latestInteraction.ts) / 60000), 'minutes ago');
+          devLog("info", "MinimalSessionContext: continuing existing session", {
+            sessionId: latestInteraction.sessionId,
+            lastInteractionMinutesAgo: Math.round((Date.now() - latestInteraction.ts) / 60000),
+            latestInteractionTs: latestInteraction.ts
+          });
         }
         
         setIsLoading(false);
       } catch (error) {
-        console.warn('Session initialization failed:', error);
+        devLog("warn", "MinimalSessionContext: session initialization failed", { error });
         // Fallback to new session
         setSessionId(safeUUID());
         setIsLoading(false);
@@ -141,26 +154,22 @@ export function MinimalSessionProvider({ children }: { children: React.ReactNode
   const createSessionIfNeeded = async () => {
     try {
       // Enhanced logging for session validation
-      console.log(JSON.stringify({
-        level: 'info',
-        where: 'session_context.create_session_check',
+      devLog("info", "MinimalSessionContext: checking session creation", {
         sessionId,
         userId,
         sessionIdFormat: sessionId.startsWith('sess_') ? 'convex_generated' : (sessionId.includes('-') ? 'uuid_format' : 'other')
-      }));
+      });
       
       const response = await fetch(`/api/v1/sessions?sessionId=${encodeURIComponent(sessionId)}`);
       const data = await response.json();
 
       if (!data.hasSession) {
         // Session doesn't exist, create it
-        console.log(JSON.stringify({
-          level: 'info',
-          where: 'session_context.creating_session',
+        devLog("info", "MinimalSessionContext: creating new session", {
           sessionId,
           userId,
           reason: 'session_not_found'
-        }));
+        });
         
         const createResponse = await fetch('/api/v1/sessions/state', {
           method: 'POST',
@@ -175,66 +184,54 @@ export function MinimalSessionProvider({ children }: { children: React.ReactNode
         });
 
         if (!createResponse.ok) {
-          console.warn(JSON.stringify({
-            level: 'warn',
-            where: 'session_context.create_session_failed',
+          devLog("warn", "MinimalSessionContext: failed to create session", {
             sessionId,
             userId,
             status: createResponse.status
-          }));
+          });
         } else {
           const createData = await createResponse.json().catch(() => ({}));
-          console.log(JSON.stringify({
-            level: 'info',
-            where: 'session_context.session_created',
+          devLog("info", "MinimalSessionContext: session created successfully", {
             originalSessionId: sessionId,
             effectiveSessionId: createData?.effectiveSessionId || sessionId,
             rotated: createData?.rotated || false,
             userId
-          }));
+          });
           
           // Update local session ID if server rotated it
           if (createData?.effectiveSessionId && createData.effectiveSessionId !== sessionId) {
-            console.log(JSON.stringify({
-              level: 'warn',
-              where: 'session_context.session_rotated_by_server',
+            devLog("warn", "MinimalSessionContext: session rotated by server", {
               originalSessionId: sessionId,
               newSessionId: createData.effectiveSessionId,
               userId
-            }));
+            });
             setSessionId(createData.effectiveSessionId);
             try { localStorage.setItem('cu.sessionId', createData.effectiveSessionId); } catch {}
           }
         }
       } else {
-        console.log(JSON.stringify({
-          level: 'info',
-          where: 'session_context.session_exists',
+        devLog("info", "MinimalSessionContext: session already exists", {
           sessionId,
           userId,
           sessionBelongsToUser: data.session?.userId === userId
-        }));
+        });
         
         // Warn if session belongs to different user
         if (data.session?.userId && data.session.userId !== userId) {
-          console.warn(JSON.stringify({
-            level: 'warn',
-            where: 'session_context.session_user_mismatch',
+          devLog("warn", "MinimalSessionContext: session belongs to different user", {
             sessionId,
             currentUserId: userId,
             sessionUserId: data.session.userId,
             message: 'Session belongs to different user - may need to create new session'
-          }));
+          });
         }
       }
     } catch (error) {
-      console.warn(JSON.stringify({
-        level: 'warn',
-        where: 'session_context.create_session_check_failed',
+      devLog("warn", "MinimalSessionContext: session creation check failed", {
         sessionId,
         userId,
         error: String(error)
-      }));
+      });
     }
   };
 
@@ -245,7 +242,10 @@ export function MinimalSessionProvider({ children }: { children: React.ReactNode
     const newSessionId = safeUUID();
     setSessionId(newSessionId);
     try { localStorage.setItem('cu.sessionId', newSessionId); } catch {}
-    console.log('Started new session:', newSessionId);
+    devLog("info", "MinimalSessionContext: started new session", {
+      newSessionId,
+      reason: 'manual_start'
+    });
   }, []);
 
   const ensureFreshSession = useCallback(async () => {
@@ -262,7 +262,11 @@ export function MinimalSessionProvider({ children }: { children: React.ReactNode
         const newSessionId = safeUUID();
         setSessionId(newSessionId);
         try { localStorage.setItem('cu.sessionId', newSessionId); } catch {}
-        console.log('Starting new session (idle > 10m):', { prev: sessionId, next: newSessionId, idleMin: Math.round(idleMs / 60000) });
+        devLog("info", "MinimalSessionContext: starting new session due to idle timeout", {
+          prevSessionId: sessionId,
+          newSessionId,
+          idleMinutes: Math.round(idleMs / 60000)
+        });
         // Create new session doc for user
         try {
           const resp = await fetch('/api/v1/sessions/state', {
@@ -271,7 +275,10 @@ export function MinimalSessionProvider({ children }: { children: React.ReactNode
             body: JSON.stringify({ userId, sessionId: newSessionId, state: { step: 'init' } }),
           });
           if (!resp.ok) {
-            console.warn('Failed to create rotated session:', resp.status);
+            devLog("warn", "MinimalSessionContext: failed to create rotated session", {
+              status: resp.status,
+              sessionId: newSessionId
+            });
           }
         } catch {}
       }

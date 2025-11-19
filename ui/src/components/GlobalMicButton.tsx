@@ -6,12 +6,20 @@ import { useMic } from "../context/MicContext";
 import { useAudio } from "../context/AudioContext";
 import { useVoice } from "../context/VoiceContext";
 import { useMicUI } from "../context/MicUIContext";
+import { devLog } from "../app/api/lib/observability";
 
 // Persistent floating mic button. When not in coach, renders a small bottom-right button.
 // When in coach, renders the large center mic with chat<->dashboard transform, driven by MicUIContext.
 export default function GlobalMicButton() {
   const [mounted, setMounted] = useState(false);
   const { voiceLoop, toggleVoiceLoop, recording, startRecording, stopRecording, inputSpeaking, setVoiceLoop } = useMic();
+
+  devLog("debug", "GlobalMicButton: component initialized", {
+    voiceLoop,
+    recording,
+    inCoach: false, // Will be updated by context
+    timestamp: new Date().toISOString()
+  });
   const { busy, processingRing } = useVoice();
   const { inCoach, showDashboard, setShowDashboard, onTap, onLongPress } = useMicUI();
   const audio = useAudio();
@@ -42,6 +50,7 @@ export default function GlobalMicButton() {
     if (pressTimerRef.current) { window.clearTimeout(pressTimerRef.current); }
     pressTimerRef.current = window.setTimeout(() => {
       pressLongRef.current = true;
+      devLog("info", "GlobalMicButton: long press detected", { inCoach, showDashboard });
       if (onLongPress) onLongPress();
       else {
         // default: while on dashboard, long-press mutes then stops
@@ -58,11 +67,14 @@ export default function GlobalMicButton() {
     if (!inCoach) return; // small button has its own click handler
     if (pressTimerRef.current) { window.clearTimeout(pressTimerRef.current); pressTimerRef.current = null; }
     if (pressLongRef.current) return;
+    devLog("info", "GlobalMicButton: tap up detected", { inCoach, showDashboard });
     if (onTap) onTap();
     else {
       if (showDashboard) {
+        devLog("info", "GlobalMicButton: switching to chat mode");
         setShowDashboard(false);
       } else {
+        devLog("info", "GlobalMicButton: toggling voice loop", { currentState: voiceLoop });
         toggleVoiceLoop();
       }
     }

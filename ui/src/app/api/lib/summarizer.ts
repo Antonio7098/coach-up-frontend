@@ -1,10 +1,17 @@
  
+import { devLog } from "./observability";
 
 export type SummarizerMessage = { role: string; content: string };
 
 // Stub summarizer: combine previous summary and recent messages with a char cap.
 // Later, replace with a real LLM call and richer policy.
 export function generateSummaryText(prevSummary: string, recentMessages: SummarizerMessage[], tokenBudget?: number): string {
+  devLog("debug", "summarizer: generating summary", {
+    prevSummaryLength: prevSummary?.length || 0,
+    recentMessagesCount: recentMessages?.length || 0,
+    tokenBudget
+  });
+
   const { core, prevRecents } = parsePrevSummary(String(prevSummary || ""));
   // Fold previous recents into the core so the summary progresses over time.
   const foldedCore = [core, prevRecents].filter(Boolean).join('\n').trim();
@@ -41,7 +48,18 @@ export function generateSummaryText(prevSummary: string, recentMessages: Summari
     coreSection = coreFull.slice(0, remainingForCore);
   }
   const both = (coreSection ? coreSection + '\n\n' : '') + recentSection;
-  return both.slice(0, maxChars);
+  const result = both.slice(0, maxChars);
+
+  devLog("info", "summarizer: summary generated", {
+    maxChars,
+    resultLength: result.length,
+    hasCore: !!coreSection,
+    hasRecents: !!recentSection,
+    coreLength: coreSection?.length || 0,
+    recentsLength: recentSection?.length || 0
+  });
+
+  return result;
 }
 
 function parsePrevSummary(input: string): { core: string; prevRecents: string } {

@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { useAuth } from "@clerk/nextjs";
+import { useAuth, useUser } from "@clerk/nextjs";
 import { MinimalAudioProvider, useMinimalAudio } from "../../context/minimal/MinimalAudioContext";
 import { MinimalVoiceProvider, useMinimalVoice } from "../../context/minimal/MinimalVoiceContext";
 import { MinimalConversationProvider, useMinimalConversation } from "../../context/minimal/MinimalConversationContext";
@@ -10,14 +10,13 @@ import { MinimalMicProvider, useMinimalMic } from "../../context/minimal/Minimal
 import { MinimalSessionProvider } from "../../context/minimal/MinimalSessionContext";
 import { fetchWithRetry } from "../../app/api/lib/retry";
 import MicMinButton from "../../components/MicMinButton";
-import { useUser } from "@clerk/nextjs";
-import { useQuery } from "convex/react";
-import { api } from "../../convex/_generated/api";
+import AssessmentChip from "../../components/AssessmentChip";
+import { devLog } from "../../app/api/lib/observability";
 
 function App() {
   // Profile and Goals data - moved to parent so it can be passed to MinimalMicProvider
   const [profile, setProfile] = React.useState<{ displayName?: string; bio?: string } | null>(null);
-  const [goals, setGoals] = React.useState<Array<{ goalId: string; title: string; description?: string; status?: string }>>([]);
+  const [goals, setGoals] = React.useState<Array<{ goalId: string; title: string; description?: string; status?: string; targetDateMs?: number }>>([]);
   const [profileLoading, setProfileLoading] = React.useState<boolean>(false);
   const [goalsLoading, setGoalsLoading] = React.useState<boolean>(false);
 
@@ -28,6 +27,9 @@ function App() {
   // Model selection functionality
   const [selectedModel, setSelectedModel] = React.useState<string>("google/gemini-2.5-flash-lite");
 
+  // Test ingest status
+  const [ingestTestStatus, setIngestTestStatus] = React.useState<string>("");
+
 
   return (
     <MinimalAudioProvider>
@@ -35,11 +37,11 @@ function App() {
         <MinimalVoiceProvider>
           <MinimalConversationProvider>
             <MinimalMicProvider
-              userProfile={profile}
+              userProfile={profile || undefined}
               userGoals={goals}
               customSystemPrompt={isSystemPromptEnabled && customSystemPrompt.trim() ? customSystemPrompt.trim() : undefined}
               model={selectedModel || undefined}
-              onModelChange={(model: string, provider: string) => {
+              onModelChange={(model: string) => {
                 // Update the model selector to reflect the actual model used
                 if (model && model !== selectedModel) {
                   setSelectedModel(model);
@@ -62,6 +64,8 @@ function App() {
                 setIsSystemPromptEnabled={setIsSystemPromptEnabled}
                 selectedModel={selectedModel}
                 setSelectedModel={setSelectedModel}
+                ingestTestStatus={ingestTestStatus}
+                setIngestTestStatus={setIngestTestStatus}
               />
             </MinimalMicProvider>
           </MinimalConversationProvider>
@@ -71,30 +75,6 @@ function App() {
   );
 }
 
-function DebugInteractionsCache() {
-  const convo = useMinimalConversation();
-  let status: any = {};
-  try { status = (convo as any).getCacheStatus ? (convo as any).getCacheStatus() : {}; } catch {}
-  const sinceModeActive = status.sinceModeActive ?? (convo as any).sinceModeActive ?? false;
-  const lastFetchWasIncremental = status.lastFetchWasIncremental ?? (convo as any).lastFetchWasIncremental ?? false;
-  const lastFetchWas304 = status.lastFetchWas304 ?? (convo as any).lastFetchWas304 ?? false;
-  const latestId = status.latestId ?? (convo as any).latestId ?? null;
-  const cacheSize = status.cacheSize ?? (convo as any).interactionsCount ?? undefined;
-  const lastEtag = status.lastEtag ?? (convo as any).lastEtag ?? null;
-  const isLoading = status.isLoading ?? (convo as any).isInteractionsLoading ?? false;
-  const waitingForSession = !(convo as any)?.getSummaryMeta && !sinceModeActive && !latestId && (cacheSize === 0 || cacheSize === undefined);
-  return (
-    <div className="grid grid-cols-2 gap-2">
-      <div><span className="text-gray-500">sinceModeActive:</span> {String(sinceModeActive)}</div>
-      <div><span className="text-gray-500">lastFetchWasIncremental:</span> {String(lastFetchWasIncremental)}</div>
-      <div><span className="text-gray-500">lastFetchWas304:</span> {String(lastFetchWas304)}</div>
-      <div><span className="text-gray-500">latestId:</span> {latestId ? String(latestId) : 'null'}</div>
-      <div><span className="text-gray-500">cacheSize:</span> {typeof cacheSize === 'number' ? cacheSize : '-'}</div>
-      <div><span className="text-gray-500">lastEtag:</span> {lastEtag ? String(lastEtag) : 'null'}</div>
-      <div><span className="text-gray-500">loading:</span> {String(isLoading)}{waitingForSession ? ' (waiting for session)' : ''}</div>
-    </div>
-  );
-}
 
 function Content({
   profile,
@@ -110,12 +90,14 @@ function Content({
   isSystemPromptEnabled,
   setIsSystemPromptEnabled,
   selectedModel,
-  setSelectedModel
+  setSelectedModel,
+  ingestTestStatus,
+  setIngestTestStatus
 }: {
-  profile: any;
-  setProfile: React.Dispatch<React.SetStateAction<any>>;
-  goals: any[];
-  setGoals: React.Dispatch<React.SetStateAction<any[]>>;
+  profile: { displayName?: string; bio?: string } | null;
+  setProfile: React.Dispatch<React.SetStateAction<{ displayName?: string; bio?: string } | null>>;
+  goals: Array<{ goalId: string; title: string; description?: string; status?: string; targetDateMs?: number }>;
+  setGoals: React.Dispatch<React.SetStateAction<Array<{ goalId: string; title: string; description?: string; status?: string; targetDateMs?: number }>>>;
   profileLoading: boolean;
   setProfileLoading: React.Dispatch<React.SetStateAction<boolean>>;
   goalsLoading: boolean;
@@ -126,11 +108,32 @@ function Content({
   setIsSystemPromptEnabled: (value: boolean) => void;
   selectedModel: string;
   setSelectedModel: (value: string) => void;
+  ingestTestStatus: string;
+  setIngestTestStatus: (value: string) => void;
 }) {
   const mic = useMinimalMic();
   const audio = useMinimalAudio();
   const voice = useMinimalVoice();
   const convo = useMinimalConversation();
+
+  // Debug: Log available methods on convo
+  React.useEffect(() => {
+    devLog('debug', 'coach-min: available convo methods', { methods: Object.keys(convo), convoType: typeof convo });
+
+    // Test if getRecentInteractions exists
+    if (typeof convo.getRecentInteractions === 'function') {
+      devLog('debug', 'coach-min: getRecentInteractions is available');
+      try {
+        const recent = convo.getRecentInteractions(2);
+        devLog('debug', 'coach-min: getRecentInteractions result', { recent });
+      } catch (error) {
+        devLog('error', 'coach-min: error calling getRecentInteractions', { error: String(error) });
+      }
+    } else {
+      devLog('error', 'coach-min: getRecentInteractions is NOT available on convo');
+      devLog('debug', 'coach-min: available convo methods', { methods: Object.keys(convo) });
+    }
+  }, [convo]);
   const { sessionId, startNewSession } = useMinimalSession();
   const { user } = useUser();
   const { getToken } = useAuth();
@@ -184,33 +187,95 @@ function Content({
   const [freshStatus, setFreshStatus] = React.useState<"idle" | "loading" | "ready" | "error">("idle");
   const [freshErr, setFreshErr] = React.useState<string | undefined>(undefined);
   const [dbgOpen, setDbgOpen] = React.useState<boolean>(false);
-  const [ingestTestStatus, setIngestTestStatus] = React.useState<string>("");
   const [dbgPrompt, setDbgPrompt] = React.useState<{ prevSummary: string; messages: Array<{ role: 'user'|'assistant'; content: string }> } | null>(null);
-  const [promptPreview, setPromptPreview] = React.useState<any>(null);
+  const [promptPreview, setPromptPreview] = React.useState<{
+    prompt?: string;
+    system?: string;
+    summary?: string;
+    summaryLen?: number;
+    recentMessages?: Array<{ role: string; content: string; len?: number }>;
+    createdAt?: number;
+  } | null>(null);
   
   // Session cost tracking state
-  const [sessionCosts, setSessionCosts] = React.useState<any>(null);
+  const [sessionCosts, setSessionCosts] = React.useState<{
+    costs: { totalCostCents: number; sttCostCents: number; llmCostCents: number; ttsCostCents: number };
+    metrics: { durationMs: number; interactionCount: number };
+    interactions: Array<{ id: string; role: string; createdAt: number }>;
+  } | null>(null);
   const [sessionCostsLoading, setSessionCostsLoading] = React.useState<boolean>(false);
   const [sessionCostsError, setSessionCostsError] = React.useState<string>("");
   
   // Fetch session metrics using the new lightweight endpoint
-  const [sessionMetricsData, setSessionMetricsData] = React.useState<any>(null);
+  const [sessionMetricsData, setSessionMetricsData] = React.useState<{
+    sessionId: string;
+    startTime?: number;
+    lastActivityAt?: number;
+    interactionCount?: number;
+    totalCostCents?: number;
+    sttCostCents?: number;
+    llmCostCents?: number;
+    ttsCostCents?: number;
+  } | null>(null);
   const [sessionMetricsLoading, setSessionMetricsLoading] = React.useState<boolean>(false);
   const [sessionMetricsError, setSessionMetricsError] = React.useState<string>("");
   
   // TRIAGE debug state
   const [triageItems, setTriageItems] = React.useState<Array<{ id: string; role: string; assessmentType?: string; groupId?: string; triageProcessedAt?: number; groupCount?: number; messages?: Array<{ id: string; role: string; text?: string; createdAt?: number; assessmentType?: string; triageProcessedAt?: number }> }>>([]);
-  const [triageUngrouped, setTriageUngrouped] = React.useState<Array<{ id: string; role: string; text?: string; createdAt?: number }>>([]);
+  const [triageUngrouped, setTriageUngrouped] = React.useState<Array<{ id: string; role: string; text?: string; createdAt?: number; assessmentType?: string; groupId?: string; triageProcessedAt?: number; isTriaged?: boolean; isGrouped?: boolean }>>([]);
   const [triageHasGroups, setTriageHasGroups] = React.useState<boolean>(false);
   const [triageStatus, setTriageStatus] = React.useState<string>("");
+  const [triageProcessing, setTriageProcessing] = React.useState<boolean>(false);
   const [triageOpenMap, setTriageOpenMap] = React.useState<Record<string, boolean>>({});
+  // Overlay of triage decisions derived from events: assess | not_assess | triaged (unknown kind)
+  const [triageDecisionById, setTriageDecisionById] = React.useState<Record<string, 'assess' | 'not_assess' | 'triaged'>>({});
 
   // ASSESS debug state
   const [assessStatus, setAssessStatus] = React.useState<string>("");
-  const [assessEvents, setAssessEvents] = React.useState<Array<{ createdAt?: number; kind?: string; payload?: any }>>([]);
+  const [assessEvents, setAssessEvents] = React.useState<Array<{ createdAt?: number; kind?: string; payload?: Record<string, unknown> }>>([]);
   const [assessLatestGroup, setAssessLatestGroup] = React.useState<string | null>(null);
+  const [assessGroups, setAssessGroups] = React.useState<Array<{ groupId: string; createdAt?: number; skillsCount?: number }>>([]);
+  const [assessOpenGroup, setAssessOpenGroup] = React.useState<string | null>(null);
+  const [assessOpenSkills, setAssessOpenSkills] = React.useState<Record<string, boolean>>({});
+  const [assessmentChipState, setAssessmentChipState] = React.useState<'idle' | 'loading' | 'completed' | 'error'>('idle');
+  const [assessmentChipExpanded, setAssessmentChipExpanded] = React.useState(false);
+  const [latestAssessmentResult, setLatestAssessmentResult] = React.useState<any>(null);
   const [trackedSkills, setTrackedSkills] = React.useState<Array<{ id: string; title?: string; currentLevel?: number }>>([]);
-  const [assessSummary, setAssessSummary] = React.useState<{
+  // Group-level summary for latest assessment (highlights, recommendations, rubric)
+  const [assessSummary, setAssessSummary] = React.useState<{ highlights: string[]; recommendations: string[]; rubricKeyPoints: string[]; meta?: any } | null>(null);
+  // Per-skill results for latest assessment
+  const [assessSkillResults, setAssessSkillResults] = React.useState<Array<any>>([]);
+  
+  // Live event polling state
+  const [isPolling, setIsPolling] = React.useState<boolean>(false);
+  const [lastEventId, setLastEventId] = React.useState<string | null>(null);
+  const pollingIntervalRef = React.useRef<number | null>(null);
+  const pollStopTimeoutRef = React.useRef<number | null>(null);
+
+  // Assessment chip reset logic - when new user interaction occurs
+  const resetAssessmentChipForNewInteraction = React.useCallback(() => {
+    // Reset assessment chip to idle state when a new user interaction occurs
+    // This makes the chip ready for the next assessment
+    setAssessmentChipState('idle');
+    setAssessmentChipExpanded(false);
+    // Don't clear the result immediately to allow viewing previous assessment
+    // but reset the state so the chip shows as ready for new assessment
+  }, []);
+
+  // Watch for new user interactions to reset assessment chip
+  React.useEffect(() => {
+    if (mic.transcript && mic.transcript.trim()) {
+      // Small delay to ensure we don't reset during active assessment
+      const timeoutId = setTimeout(() => {
+        if (assessmentChipState === 'completed') {
+          resetAssessmentChipForNewInteraction();
+        }
+      }, 2000); // Wait 2 seconds after transcript change
+
+      return () => clearTimeout(timeoutId);
+    }
+  }, [mic.transcript, assessmentChipState, resetAssessmentChipForNewInteraction]);
+  const [assessResults, setAssessResults] = React.useState<{
     highlights: string[];
     recommendations: string[];
     rubricKeyPoints: string[];
@@ -256,15 +321,17 @@ function Content({
     setTriageStatus('loading');
     try {
       const reqId = Math.random().toString(36).slice(2);
+      try { console.log('[TRIAGE_DEBUG] refreshTriageList start', { sessionId }); } catch {}
       const headers = await buildAuthHeaders({ accept: 'application/json', 'x-request-id': reqId });
-      const res = await fetch(`/api/v1/transcripts?sessionId=${encodeURIComponent(sessionId)}&limit=200`, {
+      const res = await fetch(`/api/v1/transcripts?sessionId=${encodeURIComponent(sessionId)}&limit=100`, {
         method: 'GET', headers, cache: 'no-store'
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || `transcripts failed: ${res.status}`);
       const items = Array.isArray(data?.items) ? data.items : [];
+      
       // Map to a unified shape
-      const mappedAll = items.map((d: any) => ({
+      const mappedAll = items.map((d: { id?: unknown; role?: unknown; text?: unknown; createdAt?: unknown; assessmentType?: unknown; groupId?: unknown; triageProcessedAt?: unknown; groupCount?: unknown }) => ({
         id: String(d?.id || ''),
         role: String(d?.role || ''),
         text: typeof d?.text === 'string' ? d.text : undefined,
@@ -272,55 +339,66 @@ function Content({
         assessmentType: d?.assessmentType,
         groupId: d?.groupId,
         triageProcessedAt: typeof d?.triageProcessedAt === 'number' ? d.triageProcessedAt : undefined,
+        isTriaged: !!(d?.assessmentType), // All turns with assessmentType are triaged (including 'none')
+        isGrouped: !!d?.groupId,
       }));
-      // Keep a fallback list of ungrouped recents (last 20)
-      const ungrouped = mappedAll.filter((m: any) => !m.groupId).slice(-20);
-      setTriageUngrouped(ungrouped);
-
-      // Filter to only items that were triaged and assigned to a group
-      const mapped = mappedAll.filter((m: any) => m.groupId && m.triageProcessedAt);
-      // Collapse by groupId keeping latest triageProcessedAt and count, and capture messages per group
-      const groupedMap = new Map<string, { id: string; role: string; assessmentType?: string; groupId: string; triageProcessedAt: number; groupCount: number; messages: Array<{ id: string; role: string; text?: string; createdAt?: number; assessmentType?: string; triageProcessedAt?: number }> }>();
-      for (const m of mapped) {
-        const gid = String(m.groupId);
-        const existing = groupedMap.get(gid);
-        const msg = { id: m.id, role: m.role, text: m.text, createdAt: m.createdAt, assessmentType: m.assessmentType, triageProcessedAt: m.triageProcessedAt } as any;
-        if (!existing) {
-          groupedMap.set(gid, {
-            id: m.id,
-            role: m.role,
-            assessmentType: m.assessmentType,
-            groupId: gid,
-            triageProcessedAt: m.triageProcessedAt as number,
-            groupCount: 1,
-            messages: [msg],
-          });
-        } else {
-          existing.groupCount += 1;
-          existing.messages.push(msg);
-          if ((m.triageProcessedAt as number) > existing.triageProcessedAt) {
-            existing.triageProcessedAt = m.triageProcessedAt as number;
-            existing.id = m.id;
-            existing.role = m.role;
-            existing.assessmentType = m.assessmentType;
-          }
-        }
+      
+      // Show all recent turns, sorted by creation time (newest first)
+      const allRecentTurns = mappedAll
+        .sort((a: any, b: any) => (b.createdAt || 0) - (a.createdAt || 0))
+        .slice(0, 30); // Show up to 30 most recent turns
+      
+      // Set all recent turns for display
+      setTriageUngrouped(allRecentTurns);
+      
+      // Keep the grouped view for backward compatibility (empty for now since we're showing individual turns)
+      setTriageItems([]);
+      setTriageHasGroups(false);
+      
+      // Count stats with better pending logic
+      const triaged = allRecentTurns.filter((m: any) => m.isTriaged).length;
+      const assessed = allRecentTurns.filter((m: any) => m.isTriaged && m.isGrouped).length;
+      const notAssessed = allRecentTurns.filter((m: any) => m.isTriaged && !m.isGrouped).length;
+      const pending = allRecentTurns.filter((m: any) => !m.isTriaged).length;
+      
+      // Update status based on processing state
+      if (triageProcessing) {
+        setTriageStatus(`processing... (${pending} pending)`);
+      } else {
+        setTriageStatus(`ready (${allRecentTurns.length} recent: ${triaged} triaged [${assessed} assessed, ${notAssessed} not assessed], ${pending} pending)`);
       }
-      const grouped = Array.from(groupedMap.values())
-        .sort((a, b) => (b.triageProcessedAt - a.triageProcessedAt));
-      setTriageItems(grouped as any);
-      setTriageHasGroups(grouped.length > 0);
-      setTriageStatus('ready');
-    } catch (e: any) {
-      setTriageStatus(e?.message || 'error');
+      
+      try { 
+        console.log('[TRIAGE_DEBUG] refreshTriageList ok', { total: allRecentTurns.length, triaged, assessed, notAssessed, pending, processing: triageProcessing });
+        // Debug: show the last few items and their triage status
+        const debugItems = allRecentTurns.slice(0, 5).map((item: any) => ({
+          id: item.id?.slice(-8),
+          role: item.role,
+          text: item.text?.slice(0, 30),
+          assessmentType: item.assessmentType,
+          groupId: !!item.groupId,
+          triageProcessedAt: !!item.triageProcessedAt,
+          isTriaged: item.isTriaged,
+          createdAt: item.createdAt ? new Date(item.createdAt).toLocaleTimeString() : 'unknown'
+        }));
+        console.log('[TRIAGE_DEBUG] recent items detail:', debugItems);
+      } catch {}
+    } catch (e: unknown) {
+      setTriageStatus((e as any)?.message || 'error');
+      try { console.warn('[TRIAGE_DEBUG] refreshTriageList error', e); } catch {}
     }
-  }, [sessionId, buildAuthHeaders]);
+  }, [sessionId, buildAuthHeaders, triageProcessing]);
+
+  // Triage refresh is now event-driven (handled in pollEvents when triage_start/triage_done occur)
+  // No longer refresh on every transcript change to avoid UI churn during voice input
 
   const runTriageNow = React.useCallback(async () => {
     if (!sessionId) { setTriageStatus('no session'); return; }
     setTriageStatus('running');
+
     try {
       const reqId = Math.random().toString(36).slice(2);
+      try { console.log('[TRIAGE_DEBUG] runTriageNow start', { sessionId }); } catch {}
       const headers = await buildAuthHeaders({ accept: 'application/json', 'x-request-id': reqId });
       const res = await fetch(`/api/v1/triage?sessionId=${encodeURIComponent(sessionId)}&limit=20`, {
         method: 'POST', headers, cache: 'no-store'
@@ -328,8 +406,34 @@ function Content({
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || `triage failed: ${res.status}`);
       setTriageStatus(`ok: updated=${Number(data?.updated || 0)} inferred=${String(data?.inferred || '')}`);
-    } catch (e: any) {
-      setTriageStatus(e?.message || 'error');
+      try { console.log('[TRIAGE_DEBUG] runTriageNow ok', { updated: Number(data?.updated || 0), inferred: String(data?.inferred || '') }); } catch {}
+    } catch (e: unknown) {
+      setTriageStatus((e as any)?.message || 'error');
+      try { console.warn('[TRIAGE_DEBUG] runTriageNow error', e); } catch {}
+    }
+  }, [sessionId, buildAuthHeaders]);
+
+  const runAssessNow = React.useCallback(async () => {
+    if (!sessionId) { setAssessStatus('no session'); return; }
+    setAssessStatus('running');
+
+    try {
+      const reqId = Math.random().toString(36).slice(2);
+      try { console.log('[ASSESS_DEBUG] runAssessNow start', { sessionId }); } catch {}
+      const headers = await buildAuthHeaders({ accept: 'application/json', 'x-request-id': reqId });
+      const res = await fetch(`/api/assessments/run`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ sessionId }),
+        cache: 'no-store'
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `assessment failed: ${res.status}`);
+      setAssessStatus(`ok: groupId=${String(data?.groupId || '').slice(-8)}`);
+      try { console.log('[ASSESS_DEBUG] runAssessNow ok', { groupId: data?.groupId, status: data?.status }); } catch {}
+    } catch (e: unknown) {
+      setAssessStatus((e as any)?.message || 'error');
+      try { console.warn('[ASSESS_DEBUG] runAssessNow error', e); } catch {}
     }
   }, [sessionId, buildAuthHeaders]);
 
@@ -339,39 +443,134 @@ function Content({
     try {
       const reqId = Math.random().toString(36).slice(2);
       const headers = await buildAuthHeaders({ accept: 'application/json', 'x-request-id': reqId });
-      // 1) Latest assessment summary (to get latestGroupId)
-      const resLatest = await fetch(`/api/assessments/convex/${encodeURIComponent(sessionId)}`, { method: 'GET', headers, cache: 'no-store' });
+      console.log('[ASSESS_DEBUG] refresh start', { sessionId, reqId });
+      // 1) Latest assessment results (to get latestGroupId and populate skills)
+      const resLatest = await fetch(`/api/assessments/results?sessionId=${encodeURIComponent(sessionId)}`, { method: 'GET', headers, cache: 'no-store' });
       const latestJson = await resLatest.json().catch(() => ({}));
-      const latestGroupId = typeof latestJson?.latestGroupId === 'string' ? latestJson.latestGroupId : null;
+      console.log('[ASSESS_DEBUG] results endpoint', { status: resLatest.status, hasResults: !!latestJson?.results, skillAssessmentsLen: Array.isArray(latestJson?.results?.skillAssessments) ? latestJson.results.skillAssessments.length : undefined, groupId: latestJson?.results?.groupId });
+      const latestGroupId = typeof latestJson?.results?.groupId === 'string' ? latestJson.results.groupId : null;
       setAssessLatestGroup(latestGroupId);
-      const sum = latestJson && latestJson.summary && Array.isArray(latestJson.summary.highlights) && Array.isArray(latestJson.summary.recommendations) && Array.isArray(latestJson.summary.rubricKeyPoints)
+      const sum = latestJson && latestJson.results && Array.isArray(latestJson.results.highlights) && Array.isArray(latestJson.results.recommendations) && Array.isArray(latestJson.results.rubricKeyPoints)
         ? {
-            highlights: latestJson.summary.highlights || [],
-            recommendations: latestJson.summary.recommendations || [],
-            rubricKeyPoints: latestJson.summary.rubricKeyPoints || [],
-            meta: latestJson.summary.meta || undefined,
-            // Include V2 skill assessments if available
-            skillAssessments: Array.isArray(latestJson.summary.skillAssessments) ? latestJson.summary.skillAssessments : undefined,
+            highlights: latestJson.results.highlights || [],
+            recommendations: latestJson.results.recommendations || [],
+            rubricKeyPoints: latestJson.results.rubricKeyPoints || [],
+            meta: latestJson.results.meta || undefined,
           }
         : null;
       setAssessSummary(sum);
+      // Store per-skill results for expandable list and wire assessResults for UI
+      const rawSkillsArr = Array.isArray(latestJson?.results?.skillAssessments) ? latestJson.results.skillAssessments : [];
+      // Normalize any missing fields so the renderer can be defensive but simple
+      const skillsArr = rawSkillsArr.map((it: any) => ({
+        ...it,
+        level: Number(it?.level ?? 0),
+        // v3 structured feedback (already at root level)
+        structuredFeedback: it?.structuredFeedback || {
+          primaryTakeaway: 'Assessment completed',
+          primaryFocus: {
+            description: 'Continue practicing',
+            nextLevelCriteria: 'Practice regularly',
+            exampleToPractice: undefined
+          },
+          annotatedExamples: []
+        },
+        quantitativeMetrics: it?.quantitativeMetrics || {},
+        assessmentMetadata: it?.assessmentMetadata || {},
+        sourceContext: it?.sourceContext || {},
+      }));
+      try { setAssessSkillResults(skillsArr); } catch {}
+      try { setAssessResults(latestJson?.results ? { ...latestJson.results } : { highlights: [], recommendations: [], rubricKeyPoints: [], meta: latestJson?.results?.meta, skillAssessments: skillsArr }); } catch {}
       // 2) Tracked skills
       const resTracked = await fetch(`/api/v1/skills/tracked`, { method: 'GET', headers, cache: 'no-store' });
       const trackedJson = await resTracked.json().catch(() => ({}));
       const rows = Array.isArray(trackedJson?.tracked) ? trackedJson.tracked : [];
-      const list = rows.map((r: any) => ({ id: String(r?.skillId || r?.skill?.id || ''), title: String(r?.skill?.title || r?.title || ''), currentLevel: Number(r?.currentLevel ?? r?.level ?? 0) }));
+      const list = rows.map((r: { skillId?: unknown; skill?: { id?: unknown; title?: unknown }; title?: unknown; currentLevel?: unknown; level?: unknown }) => ({ id: String(r?.skillId || r?.skill?.id || ''), title: String(r?.skill?.title || r?.title || ''), currentLevel: Number(r?.currentLevel ?? r?.level ?? 0) }));
       setTrackedSkills(list);
+      console.log('[ASSESS_DEBUG] tracked skills', { count: list.length });
       // 3) Recent events (filter assess_*)
       const resEvents = await fetch(`/api/v1/events?sessionId=${encodeURIComponent(sessionId)}&limit=100`, { method: 'GET', headers, cache: 'no-store' });
       const evJson = await resEvents.json().catch(() => ({}));
       const evs = Array.isArray(evJson?.events) ? evJson.events : [];
-      const assessEvs = evs.filter((e: any) => typeof e?.kind === 'string' && e.kind.startsWith('assess_')).map((e: any) => ({ createdAt: Number(e?.createdAt || Date.now()), kind: String(e?.kind || ''), payload: e?.payload || {} }));
+      const assessEvs = evs
+        .filter((e: { kind?: unknown }) => typeof e?.kind === 'string' && e.kind.startsWith('assess_'))
+        .map((e: { createdAt?: unknown; kind?: unknown; payload?: unknown }) => ({ createdAt: Number(e?.createdAt || Date.now()), kind: String(e?.kind || ''), payload: e?.payload || {} }));
       setAssessEvents(assessEvs);
+      console.log('[ASSESS_DEBUG] assess events', { total: evs.length, assessTotal: assessEvs.length, kinds: Array.from(new Set(assessEvs.map((e: { kind: string }) => e.kind))) });
+      // Build group list from any assess_* event that has a payload.groupId, prefer finalize_group if present
+      const groupMap = new Map<string, { groupId: string; createdAt?: number; skillsCount?: number }>();
+      // First, include finalize_group events (carry skillsCount)
+      for (const ev of assessEvs) {
+        if (ev.kind === 'assess_finalize_group') {
+          const gid = String((ev.payload as any)?.groupId || '').trim();
+          if (!gid) continue;
+          const createdAt = ev.createdAt;
+          const skillsCount = Number((ev.payload as any)?.skillsCount || 0) || undefined;
+          const cur = groupMap.get(gid);
+          if (!cur || (createdAt && (cur.createdAt || 0) < createdAt)) {
+            groupMap.set(gid, { groupId: gid, createdAt, skillsCount });
+          }
+        }
+      }
+      // Then, backfill from other assess_* events with a groupId
+      for (const ev of assessEvs) {
+        const gid = String((ev.payload as any)?.groupId || '').trim();
+        if (!gid) continue;
+        if (!groupMap.has(gid)) {
+          groupMap.set(gid, { groupId: gid, createdAt: ev.createdAt });
+        }
+      }
+      let groups = Array.from(groupMap.values()).sort((a, b) => (Number(b.createdAt || 0) - Number(a.createdAt || 0)));
+      if (groups.length === 0 && latestGroupId) {
+        groups = [{ groupId: latestGroupId, createdAt: typeof latestJson?.assessment?.createdAt === 'number' ? latestJson.assessment.createdAt : Date.now(), skillsCount: Array.isArray(skillsArr) ? skillsArr.length : undefined }];
+      }
+      console.log('[ASSESS_DEBUG] groups computed', { groupsCount: groups.length, groups });
+      setAssessGroups(groups);
+      setAssessOpenGroup((prev) => {
+        if (prev && groups.find(g => g.groupId === prev)) return prev;
+        return latestGroupId;
+      });
       setAssessStatus('ready');
-    } catch (e: any) {
-      setAssessStatus(e?.message || 'error');
+      console.log('[ASSESS_DEBUG] refresh done', { status: 'ready', openGroup: latestGroupId, skillsLen: skillsArr.length });
+    } catch (e) {
+      setAssessStatus((e as any)?.message || 'error');
+      console.warn('[ASSESS_DEBUG] refresh error', e);
     }
   }, [sessionId, buildAuthHeaders]);
+
+  // Auto-refresh ASSESS shortly after a user message
+  const assessRefreshInflightRef = React.useRef<boolean>(false);
+  const lastUserTextRef = React.useRef<string>("");
+  React.useEffect(() => {
+    const cur = mic.transcript || "";
+    const prev = lastUserTextRef.current || "";
+    if (cur && cur !== prev && !assessRefreshInflightRef.current) {
+      assessRefreshInflightRef.current = true;
+      lastUserTextRef.current = cur;
+      setTimeout(() => {
+        void refreshAssessPanel().finally(() => { assessRefreshInflightRef.current = false; });
+      }, 1000);
+    }
+  }, [mic.transcript, refreshAssessPanel]);
+
+  // Auto-refresh ASSESS after a group is detected but groups list is still empty (race-safe UX)
+  React.useEffect(() => {
+    // If we have a latest group but the computed groups list is empty,
+    // poll a few times to let Convex/events catch up so the UI shows the group
+    const needsFollowUp = Boolean(assessLatestGroup) && (!assessGroups || assessGroups.length === 0);
+    if (!needsFollowUp) return;
+    let attempts = 0;
+    const maxAttempts = 5;
+    const intervalMs = 800;
+    const iv = setInterval(() => {
+      attempts++;
+      void refreshAssessPanel();
+      if (attempts >= maxAttempts) {
+        clearInterval(iv);
+      }
+    }, intervalMs);
+    return () => { try { clearInterval(iv); } catch {} };
+  }, [assessLatestGroup, assessGroups, refreshAssessPanel]);
 
   const fetchSessionMetrics = React.useCallback(async () => {
     if (!sessionId) return;
@@ -387,7 +586,7 @@ function Content({
       });
       const data = await res.json().catch(() => ({})) as { error?: string; sessionId?: string; lastActivityAt?: number; interactionCount?: number; sttCostCents?: number; llmCostCents?: number; ttsCostCents?: number; totalCostCents?: number; startTime?: number };
       if (!res.ok) throw new Error(data?.error || `session metrics failed: ${res.status}`);
-      setSessionMetricsData(data);
+      setSessionMetricsData({ ...data, sessionId: data.sessionId || sessionId });
     } catch (e) {
       setSessionMetricsError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -472,6 +671,199 @@ function Content({
   // Tab management for collapsible panel
   const [activeTab, setActiveTab] = React.useState<'status' | 'chat' | 'summary' | 'session' | 'triage' | 'assess'>('status');
   const [panelCollapsed, setPanelCollapsed] = React.useState<boolean>(true);
+  
+  // Live event polling for real-time triage and assessment status
+  const pollEvents = React.useCallback(async () => {
+    if (!sessionId || panelCollapsed || (activeTab !== 'triage' && activeTab !== 'assess')) return;
+    
+    try {
+      const reqId = Math.random().toString(36).slice(2);
+      const headers = await buildAuthHeaders({ accept: 'application/json', 'x-request-id': reqId });
+      const res = await fetch(`/api/v1/events?sessionId=${encodeURIComponent(sessionId)}&limit=100`, {
+        method: 'GET', headers, cache: 'no-store'
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return;
+      
+      const events = Array.isArray(data?.events) ? data.events : [];
+      const triageEvents = events.filter((e: { kind?: string }) => typeof e?.kind === 'string' && e.kind.startsWith('triage_'));
+      const assessEvents = events.filter((e: { kind?: string }) => typeof e?.kind === 'string' && e.kind.startsWith('assess_'));
+
+      // If we observe a finalize_group event, proactively refresh the assess panel
+      // so the groups list appears without waiting for other triggers.
+      if (assessEvents.some((e: any) => e?.kind === 'assess_finalize_group')) {
+        void refreshAssessPanel();
+      }
+      
+      // Update triage status based on latest events
+      const latestTriageEvent = triageEvents[0]; // events are sorted newest first
+
+      // Walk triage events (newest first) to overlay decisions on specific messageIds so UI can clear PENDING deterministically
+      for (const ev of triageEvents) {
+        const kindEach = (ev as any)?.kind as string;
+        const payloadEach = (ev as any)?.payload || {} as any;
+        const ids: string[] = Array.isArray(payloadEach?.messageIds)
+          ? payloadEach.messageIds.map((x: any) => String(x))
+          : [];
+        if ((kindEach === 'triage_persist_ok' || kindEach === 'triage_done') && ids.length > 0) {
+          const decisions = payloadEach?.decisions || {};
+          const assessCount = Number(decisions?.assess || 0);
+          const notAssessCount = Number(decisions?.not_assess || 0);
+          setTriageDecisionById((cur) => {
+            const next = { ...cur } as Record<string, 'assess' | 'not_assess' | 'triaged'>;
+            // If provider returned no updates and default persist marked not_assess, reflect that
+            const label: 'assess' | 'not_assess' | 'triaged' = notAssessCount > 0 && assessCount === 0 ? 'not_assess' : (assessCount > 0 ? 'assess' : 'triaged');
+            for (const mid of ids) {
+              next[mid] = label;
+            }
+            return next;
+          });
+        }
+      }
+
+      if (latestTriageEvent) {
+        const kind = latestTriageEvent.kind;
+        const payload = latestTriageEvent.payload || {};
+        
+        switch (kind) {
+          case 'triage_start':
+            setTriageProcessing(true);
+            setTriageStatus(`starting (limit=${payload.limit})`);
+            // Refresh triage list to show initial state when triage starts
+            void refreshTriageList();
+            break;
+          case 'triage_queued':
+            setTriageStatus(`queued (${payload.messageIds} messages)`);
+            break;
+          case 'triage_external_response':
+            setTriageStatus(`external response ${payload.status} (${payload.tookMs}ms)`);
+            break;
+          case 'triage_updates_prepared':
+            setTriageStatus(`prepared ${payload.updatesLen} updates`);
+            break;
+          case 'triage_persist_attempt':
+            setTriageStatus(`persisting ${payload.updatesLen} updates`);
+            break;
+          case 'triage_persist_ok':
+            setTriageStatus(`persisted ${payload.updated} updates`);
+            // Refresh triage list immediately when updates are persisted
+            if (payload.updated && Number(payload.updated) > 0) {
+              void refreshTriageList();
+            }
+            break;
+          case 'triage_persist_zero_updated':
+            setTriageStatus(`persisted but 0 updated (${payload.updatesLen} attempted)`);
+            // Still refresh to clear any pending states
+            void refreshTriageList();
+            break;
+          case 'triage_persist_error':
+            setTriageStatus(`persist error: ${payload.error}`);
+            // Refresh to show error state properly
+            void refreshTriageList();
+            break;
+          case 'triage_done':
+            setTriageProcessing(false);
+            setTriageStatus(`done: updated=${payload.updated} provider=${payload.provider} (${payload.tookMs || 0}ms)`);
+            // Refresh triage list one final time on completion
+            void refreshTriageList();
+            // Stop polling after completion
+            setTimeout(() => {
+              if (pollingIntervalRef.current) {
+                window.clearInterval(pollingIntervalRef.current);
+                pollingIntervalRef.current = null;
+                setIsPolling(false);
+              }
+            }, 2000);
+            break;
+        }
+      }
+      
+      // Update assessment status based on latest events
+      const latestAssessEvent = assessEvents[0];
+      if (latestAssessEvent) {
+        const kind = latestAssessEvent.kind;
+        const payload = latestAssessEvent.payload || {};
+        
+        switch (kind) {
+          case 'assess_cadence_started':
+            setAssessStatus(`running (${payload.groups} groups, ${payload.skills} skills)`);
+            break;
+          case 'assess_finalize_attempt':
+            setAssessStatus(`finalizing group ${payload.groupId} (${payload.skills} skills)`);
+            break;
+          case 'assess_finalize_result':
+            if (payload.status === 'error') {
+              setAssessStatus(`error in group ${payload.groupId}: ${payload.error}`);
+            } else {
+              setAssessStatus(`group ${payload.groupId} result: ${payload.status}`);
+            }
+            // Refresh to pick up latest group and per-skill results
+            setTimeout(() => { void refreshAssessPanel(); }, 250);
+            break;
+          case 'assess_cadence_completed':
+            setAssessStatus(`done: ${payload.completed}/${payload.groups} groups completed`);
+            // Final refresh to ensure groups and latest summary are visible
+            setTimeout(() => { void refreshAssessPanel(); }, 250);
+            // Stop polling after completion
+            setTimeout(() => {
+              if (pollingIntervalRef.current) {
+                window.clearInterval(pollingIntervalRef.current);
+                pollingIntervalRef.current = null;
+                setIsPolling(false);
+              }
+            }, 2000);
+            break;
+        }
+      }
+      
+    } catch (e) {
+      // Silently handle polling errors
+    }
+  }, [sessionId, panelCollapsed, activeTab, buildAuthHeaders, refreshTriageList, refreshAssessPanel]);
+  
+  const startEventPolling = React.useCallback(() => {
+    if (pollingIntervalRef.current || !sessionId || panelCollapsed || (activeTab !== 'triage' && activeTab !== 'assess')) return;
+    
+    setIsPolling(true);
+    pollingIntervalRef.current = window.setInterval(pollEvents, 1200); // Poll every ~1.2s
+    
+    // Auto-stop polling after 30 seconds of inactivity
+    if (pollStopTimeoutRef.current) {
+      window.clearTimeout(pollStopTimeoutRef.current);
+    }
+    pollStopTimeoutRef.current = window.setTimeout(() => {
+      if (pollingIntervalRef.current) {
+        window.clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+        setIsPolling(false);
+      }
+    }, 30000);
+  }, [sessionId, panelCollapsed, activeTab, pollEvents]);
+  
+  const stopEventPolling = React.useCallback(() => {
+    if (pollingIntervalRef.current) {
+      window.clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+    if (pollStopTimeoutRef.current) {
+      window.clearTimeout(pollStopTimeoutRef.current);
+      pollStopTimeoutRef.current = null;
+    }
+    setIsPolling(false);
+  }, []);
+  
+  // Start/stop polling based on debug panel state and active tab
+  React.useEffect(() => {
+    if (!panelCollapsed && sessionId && (activeTab === 'triage' || activeTab === 'assess')) {
+      startEventPolling();
+    } else {
+      stopEventPolling();
+    }
+    
+    return () => {
+      stopEventPolling();
+    };
+  }, [panelCollapsed, sessionId, activeTab, startEventPolling, stopEventPolling]);
   // Keep the latest prompt preview from SSE in sync automatically
   const lastSsePreview = convo.promptPreview;
   React.useEffect(() => {
@@ -539,7 +931,6 @@ function Content({
 
   // Note: turns tracking is now handled server-side only
   // Server-driven cadence values (fallbacks remain for local-only)
-  const thresholdTurns = fresh && Number.isFinite(Number(fresh.thresholdTurns)) ? Number(fresh.thresholdTurns) : undefined;
   const refreshFresh = React.useCallback(async () => {
     if (!sessionId) return;
     setFreshStatus("loading");
@@ -585,6 +976,7 @@ function Content({
 
   const generateFresh = React.useCallback(async () => {
     if (!sessionId) return;
+    
     try {
       const prev = fresh?.text || "";
       let recentMessages = convo.getImmediateHistory();
@@ -636,11 +1028,40 @@ function Content({
       try { console.log("[fresh] POST ok (ack)"); } catch {}
     } catch {}
   }, [sessionId, fresh, convo, mic.transcript, mic.assistantText, buildAuthHeaders]);
+  
+  // Enhanced runTriageNow with live polling
+  const runTriageNowWithPolling = React.useCallback(async () => {
+    // Start event polling to show live progress
+    if (!panelCollapsed && (activeTab === 'triage' || activeTab === 'assess')) {
+      startEventPolling();
+    }
+    // Delegate to the original function
+    return runTriageNow();
+  }, [panelCollapsed, activeTab, startEventPolling, runTriageNow]);
+
+  // Enhanced runAssessNow with live polling
+  const runAssessNowWithPolling = React.useCallback(async () => {
+    // Start event polling to show live progress for assessments
+    if (!panelCollapsed && (activeTab === 'triage' || activeTab === 'assess')) {
+      startEventPolling();
+      setAssessStatus('initializing');
+    }
+    // Delegate to the original function
+    return runAssessNow();
+  }, [panelCollapsed, activeTab, startEventPolling, runAssessNow]);
+  
+  // Enhanced generateFresh with live polling for assessments
+  const generateFreshWithPolling = React.useCallback(async () => {
+    // Start event polling to show live progress for assessments
+    if (!panelCollapsed && (activeTab === 'triage' || activeTab === 'assess')) {
+      startEventPolling();
+      setAssessStatus('initializing');
+    }
+    // Delegate to the original function
+    return generateFresh();
+  }, [panelCollapsed, activeTab, startEventPolling, generateFresh]);
 
   // Server cadence: remove UI auto trigger; rely on backend via persisted interactions
-  const lastAutoRef = React.useRef<number>(0);
-  const autoInflightRef = React.useRef<boolean>(false);
-  const meta = convo.getSummaryMeta();
   // Remove UI auto cadence effect
   React.useEffect(() => {
     // Auto-start VAD loop on mount
@@ -715,7 +1136,7 @@ function Content({
         });
       }
     } catch (e) { try { console.warn('[LLM_DEBUG] Mic seed failed', e); } catch {} }
-  }, [mic.status, mic.transcript, (fresh as any)?.text]);
+  }, [mic.status, mic.transcript, fresh?.text]);
 
   // Gate triage refreshes by server cadence: when turnsSince hits thresholdTurns
   React.useEffect(() => {
@@ -859,7 +1280,7 @@ function Content({
   }, [userId, fetchGoals, buildAuthHeaders]);
 
   // Update goal
-  const updateGoal = React.useCallback(async (goalId: string, updates: Partial<{ goalId: string; title: string; description?: string; status?: string }>) => {
+  const updateGoal = React.useCallback(async (goalId: string, updates: Partial<{ goalId: string; title: string; description?: string; status?: string; targetDateMs?: number }>) => {
     try {
       const headers = await buildAuthHeaders({ 'Content-Type': 'application/json' });
       const response = await fetch('/api/v1/users/goals', {
@@ -985,11 +1406,11 @@ function Content({
     try {
       // Use the same chat options as voice chat
       const chatOptions = {
-        userProfile: profile,
+        userProfile: profile || undefined,
         userGoals: goals,
         customSystemPrompt: isSystemPromptEnabled && customSystemPrompt.trim() ? customSystemPrompt.trim() : undefined,
         model: selectedModel && selectedModel.trim() ? selectedModel.trim() : undefined,
-        onModelUsed: (model: string, provider: string) => {
+        onModelUsed: (model: string) => {
           // Update the model if it differs from current selection
           if (model && model !== selectedModel) {
             console.log(`[ManualChat] Model updated from ${selectedModel} to ${model}`);
@@ -1015,6 +1436,13 @@ function Content({
             body: JSON.stringify(payload),
           }).catch(() => null);
           try { console.debug('[ManualChat] persist user status', res?.status); } catch {}
+          // Because triage runs asynchronously on user ingest, schedule a short debug refresh
+          try {
+            setTimeout(() => {
+              try { console.log('[TRIAGE_DEBUG] scheduling triage list refresh after user ingest'); } catch {}
+              void refreshTriageList();
+            }, 1500);
+          } catch {}
         }
       } catch (e) { console.debug('[ManualChat] persist user failed', e); }
 
@@ -1620,8 +2048,37 @@ function Content({
             {/* Tab Content */}
             <div className="p-4 bg-white text-black font-mono text-sm overflow-auto flex-1">
               {activeTab === 'status' && (
-                <div className="space-y-3">
-                  <div><span className="text-blue-600 font-semibold">&gt; USER:</span> {mic.transcript || <span className="text-gray-500">(none)</span>}</div>
+              <div className="space-y-3">
+                {/* Test Controls Section */}
+                <div className="border border-gray-200 rounded p-3 bg-gray-50 mb-4">
+                  <div className="text-sm font-mono text-blue-600 font-semibold mb-2">[TEST_CONTROLS]</div>
+                  <div className="flex gap-2 flex-wrap">
+                    <button type="button" onClick={() => mic.startRecording()} disabled={mic.vadLoop} className={`px-3 py-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-50 ${mic.vadLoop ? 'opacity-50 cursor-not-allowed' : ''}`}>[TAP_TO_SPEAK]</button>
+                    <button type="button" onClick={() => mic.stopRecording()} disabled={mic.vadLoop} className={`px-3 py-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-50 ${mic.vadLoop ? 'opacity-50 cursor-not-allowed' : ''}`}>[STOP]</button>
+                    <button type="button" onClick={() => mic.toggleVadLoop()} className={`px-3 py-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-50`}>[VAD_LOOP]: {mic.vadLoop ? 'ON' : 'OFF'}</button>
+                    <button type="button" onClick={() => (audio.isPaused ? audio.resume() : audio.pause())} className={`px-3 py-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-50`}>[{audio.isPaused ? 'RESUME' : 'PAUSE'}_PLAYBACK]</button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!sessionId) { setIngestTestStatus('no sessionId'); return; }
+                        try {
+                          const now = Date.now();
+                          const reqId = Math.random().toString(36).slice(2);
+                          const body = { sessionId, messageId: `test_${now}`, role: 'user', contentHash: 'test', text: 'ping', ts: now };
+                          const res = await fetchWithRetry('/api/v1/interactions', { method: 'POST', headers: { 'content-type': 'application/json', 'x-request-id': reqId }, body: JSON.stringify(body) }, { maxAttempts: 3, endpoint: 'interactions' });
+                          const data = await res.json().catch(() => ({}));
+                          setIngestTestStatus(res.ok ? `ok id=${String(data?.id || '')}` : `err ${res.status}: ${String(data?.error || '')}`);
+                        } catch (e) { setIngestTestStatus(e instanceof Error ? e.message : String(e)); }
+                      }}
+                      className={`px-3 py-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-50`}
+                    >[TEST_INGEST]</button>
+                  </div>
+                  <div className="text-xs text-gray-500 mt-2">
+                    Status: {ingestTestStatus || 'ready'}
+                  </div>
+                </div>
+
+                <div><span className="text-blue-600 font-semibold">&gt; USER:</span> {mic.transcript || <span className="text-gray-500">(none)</span>}</div>
                   <div><span className="text-blue-600 font-semibold">&gt; ASSISTANT:</span> {mic.assistantText || <span className="text-gray-500">(none)</span>}</div>
                   <div className="text-xs text-gray-600">status={mic.status} | loop={String(mic.vadLoop)} | recording={String(mic.recording)} | playing={String(audio.isPlaybackActive)}</div>
 
@@ -1824,666 +2281,63 @@ function Content({
                       </div>
                     </div>
                   </div>
-
-                  <div className="flex gap-2 flex-wrap">
-          {(() => {
-            const isAnyLoop = mic.vadLoop;
-            return (
-              <>
-                          <button type="button" onClick={() => mic.startRecording()} disabled={isAnyLoop} className={`px-3 py-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-50 ${isAnyLoop ? 'opacity-50 cursor-not-allowed' : ''}`}>[TAP_TO_SPEAK]</button>
-                          <button type="button" onClick={() => mic.stopRecording()} disabled={isAnyLoop} className={`px-3 py-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-50 ${isAnyLoop ? 'opacity-50 cursor-not-allowed' : ''}`}>[STOP]</button>
-                          <button type="button" onClick={() => mic.toggleVadLoop()} className={`px-3 py-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-50`}>[VAD_LOOP]: {mic.vadLoop ? 'ON' : 'OFF'}</button>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    if (!sessionId) { setIngestTestStatus('no sessionId'); return; }
-                    try {
-                      const now = Date.now();
-                      const reqId = Math.random().toString(36).slice(2);
-                      const body = { sessionId, messageId: `test_${now}`, role: 'user', contentHash: 'test', text: 'ping', ts: now };
-                      const res = await fetchWithRetry('/api/v1/interactions', { method: 'POST', headers: { 'content-type': 'application/json', 'x-request-id': reqId }, body: JSON.stringify(body) }, { maxAttempts: 3, endpoint: 'interactions' });
-                      const data = await res.json().catch(() => ({}));
-                      setIngestTestStatus(res.ok ? `ok id=${String(data?.id || '')}` : `err ${res.status}: ${String(data?.error || '')}`);
-                    } catch (e) { setIngestTestStatus(e instanceof Error ? e.message : String(e)); }
-                  }}
-                            className={`px-3 py-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-50`}
-                          >[TEST_INGEST]</button>
-                          <button type="button" onClick={() => (audio.isPaused ? audio.resume() : audio.pause())} className={`px-3 py-1.5 rounded border border-gray-300 text-gray-700 hover:bg-gray-50`}>[{audio.isPaused ? 'RESUME' : 'PAUSE'}_PLAYBACK]</button>
-              </>
-            );
-          })()}
-              </div>
-            </div>
-              )}
-
-
-              {activeTab === 'summary' && (
-                <div className="space-y-4">
-                  {/* Fresh Summary */}
-                  <div className="border border-gray-200 rounded p-3 bg-gray-50">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="text-sm font-mono text-blue-600 font-semibold">[FRESH_SUMMARY]</div>
-            <div className="flex gap-2">
-                        <button type="button" onClick={refreshFresh} className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-100">[REFRESH]</button>
-                        <button type="button" onClick={generateFresh} className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-100">[GENERATE]</button>
-            </div>
-          </div>
-                    <div className="text-xs text-gray-600 mb-2">
-            status={freshStatus}
-                      {fresh?.updatedAt ? ` | updated ${new Date(fresh.updatedAt).toLocaleTimeString()}` : ""}
-                      {fresh ? ` | v${fresh.version}` : ""}
-            {(() => {
-              // Only show turns until due if we have server data
-              const serverTurnsSince = fresh && Number.isFinite(Number((fresh as any).turnsSince)) ? Number((fresh as any).turnsSince) : undefined;
-              const serverThresholdTurns = fresh && Number.isFinite(Number((fresh as any).thresholdTurns)) ? Number((fresh as any).thresholdTurns) : undefined;
-
-              if (serverTurnsSince !== undefined && serverThresholdTurns !== undefined) {
-                const turnsUntilDue = Math.max(0, serverThresholdTurns - serverTurnsSince);
-                return ` | turns_until_due: ${turnsUntilDue}`;
-              } else {
-                return ` | turns_until_due: unknown`;
-              }
-            })()}
-          </div>
-
-          {/* Summary observability badges */}
-          <div className="flex flex-wrap gap-2 mb-2">
-            <span className="px-2 py-0.5 text-[11px] rounded border bg-white text-gray-700">ver: <span className="font-semibold">{fresh?.version ?? '-'}</span></span>
-            <span className="px-2 py-0.5 text-[11px] rounded border bg-white text-gray-700">in_progress: <span className="font-semibold">{String((fresh as any)?.inProgress ?? false)}</span></span>
-            <span className="px-2 py-0.5 text-[11px] rounded border bg-white text-gray-700">cutoff_index: <span className="font-semibold">{(fresh as any)?.cutoffIndex ?? '-'}</span></span>
-            <span className="px-2 py-0.5 text-[11px] rounded border bg-white text-gray-700">turns_since: <span className="font-semibold">{(fresh as any)?.turnsSince ?? '-'}</span></span>
-            <span className="px-2 py-0.5 text-[11px] rounded border bg-white text-gray-700">threshold_turns: <span className="font-semibold">{(fresh as any)?.thresholdTurns ?? '-'}</span></span>
-            <span className="px-2 py-0.5 text-[11px] rounded border bg-white text-gray-700">seconds_since: <span className="font-semibold">{(fresh as any)?.secondsSince ?? '-'}</span></span>
-            <span className="px-2 py-0.5 text-[11px] rounded border bg-white text-gray-700">last_msg_ts: <span className="font-semibold">{(fresh as any)?.lastMessageTs ? new Date((fresh as any).lastMessageTs).toLocaleTimeString() : '-'}</span></span>
-          </div>
-                    <div className="text-xs whitespace-pre-wrap min-h-[64px] text-gray-800">{fresh?.text || <span className="text-gray-500">(none)</span>}</div>
-
-                    {/* Incorporated/pending messages since last cutoff (from endpoint) */}
-                    <div className="mt-3">
-                      <div className="text-xs text-gray-700 font-mono mb-2 font-semibold">&gt; MESSAGES_SINCE_LAST_CUTOFF (endpoint):</div>
-                      <div className="text-xs bg-white border border-gray-200 p-2 rounded max-h-40 overflow-auto font-mono">
-                        {Array.isArray((fresh as any)?.messagesSinceCutoffPreview) && (fresh as any).messagesSinceCutoffPreview.length > 0 ? (
-                          <div className="space-y-1">
-                            {(fresh as any).messagesSinceCutoffPreview.map((t: string, i: number) => (
-                              <div key={i} className="text-gray-800">{t}</div>
-                            ))}
-                          </div>
-                        ) : (
-                          <span className="text-gray-500">(none)</span>
-                        )}
-                      </div>
-                    </div>
-
-                    {freshErr ? <div className="text-xs text-red-600 mt-2 font-mono font-semibold">&gt; ERROR: {freshErr}</div> : null}
-
-          {/* Debug prompt details */}
-                    <div className="mt-3">
-                      <button type="button" onClick={() => setDbgOpen(o => !o)} className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-100">[{dbgOpen ? 'HIDE' : 'SHOW'}_LLM_PROMPT_DEBUG]</button>
-            {dbgOpen && (
-                        <div className="mt-2 text-xs text-gray-700 space-y-2 font-mono">
-                          <div className="text-blue-600 font-semibold">&gt; PREV_SUMMARY_PREVIEW:</div>
-                          <div className="whitespace-pre-wrap bg-white border border-gray-200 p-2 rounded text-gray-800">{dbgPrompt?.prevSummary ? (dbgPrompt.prevSummary.length > 300 ? dbgPrompt.prevSummary.slice(0,300) + '…' : dbgPrompt.prevSummary) : '(none)'}</div>
-                          <div className="text-blue-600 font-semibold mt-2">&gt; RECENT_MESSAGES ({dbgPrompt?.messages?.length ?? 0}):</div>
-                <div className="space-y-1">
-                  {(dbgPrompt?.messages || []).slice(0, 6).map((m, i) => (
-                              <div key={i} className="bg-white border border-gray-200 p-2 rounded">
-                                <span className="text-blue-600 font-semibold">{m.role}:</span> <span className="text-gray-800">{m.content.length > 120 ? m.content.slice(0,120) + '…' : m.content}</span>
-                    </div>
-                  ))}
-                            {(dbgPrompt?.messages || []).length > 6 ? <div className="text-gray-500">…and more</div> : null}
-                </div>
-              </div>
-            )}
-          </div>
         </div>
+      )}
 
-                  {/* Summary History */}
-                  <div className="border border-gray-200 rounded p-3 bg-gray-50">
-          <div className="flex items-center justify-between mb-2">
-                      <div className="text-sm font-mono text-blue-600 font-semibold">[SUMMARY_HISTORY_LOCAL]</div>
-                      <div className="text-xs text-gray-600">{transcript.length} versions</div>
-          </div>
-          {transcript.length === 0 ? (
-                      <div className="text-xs text-gray-500">(empty)</div>
-          ) : (
-            <div className="space-y-2">
-              {transcript.map((h) => (
-                          <div key={h.version} className="border border-gray-200 rounded bg-white">
-                            <div className="flex items-center justify-between px-2 py-1 bg-gray-100">
-                              <div className="text-xs text-gray-700 font-mono">v{h.version} | {new Date(h.updatedAt).toLocaleTimeString()}</div>
-                              <button type="button" className="text-xs px-2 py-0.5 border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-200" onClick={() => setOpenMap((m) => ({ ...m, [h.version]: !m[h.version] }))}>[{openMap[h.version] ? 'HIDE' : 'SHOW'}]</button>
-                  </div>
-                  {openMap[h.version] ? (
-                              <div className="p-2 text-xs whitespace-pre-wrap text-gray-800 font-mono">{h.text}</div>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-                </div>
-              )}
-
-              {activeTab === 'triage' && (
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="text-sm font-mono text-blue-600 font-semibold">[TRIAGE_OBSERVABILITY]</div>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={async () => { await refreshTriageList(); }}
-                        className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-50"
-                      >[REFRESH]</button>
-                      <button
-                        type="button"
-                        onClick={async () => { await runTriageNow(); await refreshTriageList(); }}
-                        className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-50"
-                      >[RUN_TRIAGE_NOW]</button>
-                    </div>
-                  </div>
-                  <div className="text-xs text-gray-600">{triageStatus || '(idle)'}</div>
-                  {!triageHasGroups && (
-                    <div className="mb-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
-                      No triage group assignments found in transcripts. Showing recent ungrouped messages instead.
-                    </div>
-                  )}
-                  <div className="text-xs bg-white border border-gray-200 rounded p-2 max-h-96 overflow-auto">
-                    {triageHasGroups ? (
-                      triageItems.length === 0 ? (
-                        <div className="text-gray-500">(empty)</div>
-                      ) : (
-                        <div className="space-y-2">
-                          {triageItems.map((it, i) => {
-                            const batchId = String(it.groupId || `batch_${i}`);
-                            const open = !!triageOpenMap[batchId];
-                            // Parse batch info from groupId format: sessionId:batch:timestamp:label
-                            let batchTs: string | null = null;
-                            let batchLabel: string | null = null;
-                            try {
-                              const parts = batchId.split(':');
-                              if (parts.length >= 4) {
-                                const tsNum = Number(parts[2]);
-                                batchTs = Number.isFinite(tsNum) ? new Date(tsNum).toLocaleTimeString() : null;
-                                batchLabel = parts.slice(3).join(':');
-                              }
-                            } catch {}
-                            return (
-                              <div key={i} className="border border-gray-200 rounded p-2 bg-white">
-                                <div className="flex items-center justify-between mb-2">
-                                  <div className="text-[11px] text-gray-700 break-all">
-                                    <div><span className="text-gray-500">group:</span> {batchId}</div>
-                                    <div className="flex gap-3 mt-1 flex-wrap">
-                                      <div><span className="text-gray-500">count:</span> {it.groupCount ?? '-'}</div>
-                                      <div className="break-all"><span className="text-gray-500">latest_id:</span> {it.id}</div>
-                                      <div><span className="text-gray-500">triaged:</span> {it.triageProcessedAt ? new Date(it.triageProcessedAt).toLocaleTimeString() : '-'}</div>
-                                      {batchTs ? <div><span className="text-gray-500">batch_ts:</span> {batchTs}</div> : null}
-                                      {batchLabel ? <div className="break-all"><span className="text-gray-500">label:</span> {batchLabel}</div> : null}
-                                    </div>
-                                  </div>
-                                  <button type="button" onClick={() => setTriageOpenMap((m) => ({ ...m, [batchId]: !open }))} className="px-2 py-1 text-xs border rounded">
-                                    [{open ? 'HIDE' : 'SHOW'}]
-                                  </button>
-                                </div>
-                                {open && (
-                                  <div className="text-[11px] text-gray-700">
-                                    <div className="text-blue-600 font-semibold mb-1">messages ({it.messages?.length ?? 0}):</div>
-                                    {it.messages && it.messages.length > 0 ? (
-                                      <div className="space-y-1">
-                                        {it.messages.map((m, j) => (
-                                          <div key={j} className="bg-gray-50 border border-gray-200 rounded p-2">
-                                            <div className="flex items-center justify-between gap-2 flex-wrap">
-                                              <div><span className="text-blue-600 font-semibold">{m.role}:</span> <span className="text-gray-800 whitespace-pre-wrap break-words">{m.text || '(no text)'}</span></div>
-                                            </div>
-                                            <div className="text-[10px] text-gray-500 mt-1 flex gap-3 flex-wrap">
-                                              <div>id={m.id}</div>
-                                              {m.createdAt ? <div>{new Date(m.createdAt).toLocaleTimeString()}</div> : null}
-                                              {m.assessmentType ? <div>assessment={String(m.assessmentType)}</div> : null}
-                                              {m.triageProcessedAt ? <div>triaged={new Date(m.triageProcessedAt).toLocaleTimeString()}</div> : null}
-                                            </div>
-                                          </div>
-                                        ))}
-                                      </div>
-                                    ) : (
-                                      <div className="text-gray-500">(no messages)</div>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )
-                    ) : (
-                      triageUngrouped.length === 0 ? (
-                        <div className="text-gray-500">(empty)</div>
-                      ) : (
-                        <div className="space-y-1">
-                          {triageUngrouped.map((it, i) => (
-                            <div key={i} className="grid grid-cols-6 gap-2">
-                              <div className="col-span-3 break-all"><span className="text-gray-500">id:</span> {it.id}</div>
-                              <div className="col-span-1"><span className="text-gray-500">role:</span> {it.role}</div>
-                              <div className="col-span-2"><span className="text-gray-500">time:</span> {it.createdAt ? new Date(it.createdAt).toLocaleTimeString() : '-'}</div>
-                              <div className="col-span-6"><span className="text-gray-500">text:</span> <span className="whitespace-pre-wrap break-words text-gray-800">{it.text || '-'}</span></div>
-                            </div>
-                          ))}
-                        </div>
-                      )
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {activeTab === 'assess' && (
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="text-sm font-mono text-blue-600 font-semibold">[ASSESS_OBSERVABILITY]</div>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={async () => { await refreshAssessPanel(); }}
-                        className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-50"
-                      >[REFRESH]</button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          // Test with mock V2 data
-                          setAssessSummary({
-                            highlights: ['Test highlight 1', 'Test highlight 2'],
-                            recommendations: ['Test recommendation 1', 'Test recommendation 2'],
-                            rubricKeyPoints: ['Test rubric point 1'],
-                            meta: { provider: 'test', modelId: 'test-model', skillsCount: 1 },
-                            skillAssessments: [{
-                              skillId: 'clarity_eloquence',
-                              skillHash: 'test_hash_123',
-                              level: 4,
-                              confidence: 0.85,
-                              levelFeedback: {
-                                currentLevel: 4,
-                                nextLevelCriteria: ['Meet criteria for level 5', 'Reduce filler words'],
-                                strengths: ['Clear speech structure', 'Good logical flow'],
-                                improvements: ['Work on reducing awkward phrasing', 'Eliminate remaining fillers'],
-                                focus: ['Practice transitional phrases', 'Focus on smoother transitions'],
-                                examples: ['Clear speech structure example', 'Good logical flow example']
-                              },
-                              assessmentMetadata: {
-                                provider: 'google',
-                                modelId: 'gemini-2.5-flash',
-                                processingTimeMs: 1200,
-                                tokenCount: 450,
-                                costCents: 2
-                              },
-                              sourceContext: {
-                                interactionCount: 5,
-                                transcriptLength: 800,
-                                assessmentType: 'roleplay_scenario',
-                                sessionDuration: 1800000
-                              }
-                            }]
-                          });
-                        }}
-                        className="px-2 py-1 text-xs border border-gray-300 rounded font-mono text-gray-700 hover:bg-gray-50"
-                      >[TEST_V2]</button>
-                    </div>
-                  </div>
-                  <div className="text-xs text-gray-600">{assessStatus || '(idle)'}</div>
-
-                  {/* Latest group + tracked skills snapshot */}
-                  <div className="bg-white border border-gray-200 rounded p-2">
-                    <div className="text-[11px] text-gray-700"><span className="text-gray-500">latest_group:</span> {assessLatestGroup || '-'}</div>
-                    <div className="mt-2">
-                      <div className="text-blue-600 font-semibold text-[12px]">tracked_skills ({trackedSkills.length}):</div>
-                      {trackedSkills.length === 0 ? (
-                        <div className="text-gray-500 text-[12px]">(none)</div>
-                      ) : (
-                        <div className="mt-1 grid grid-cols-2 gap-1">
-                          {trackedSkills.map((s, i) => (
-                            <div key={i} className="text-[11px] text-gray-700 bg-gray-50 border border-gray-200 rounded px-2 py-1">
-                              <span className="text-gray-500">id:</span> {s.id} {s.title ? (<span className="text-gray-400">— {s.title}</span>) : null}
-                              <span className="ml-2 text-gray-500">level:</span> <span className="font-semibold">{Number.isFinite(Number(s.currentLevel)) ? s.currentLevel : '-'}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Latest Assess Summary */}
-                  <div className="bg-white border border-gray-200 rounded p-2">
-                    <div className="text-blue-600 font-semibold text-[12px] mb-1">latest_summary (schema)</div>
-                    {!assessSummary ? (
-                      <div className="text-gray-500 text-[12px]">(none)</div>
-                    ) : (
-                      <div className="text-[11px] text-gray-700 space-y-2">
-                        {/* V2 Skill Assessments */}
-                        {assessSummary.skillAssessments && assessSummary.skillAssessments.length > 0 ? (
-                          <div>
-                            <div className="text-gray-600 font-semibold mb-2">V2 Skill Assessments ({assessSummary.skillAssessments.length}):</div>
-                            <div className="space-y-3">
-                              {assessSummary.skillAssessments.map((skill, idx) => (
-                                <div key={idx} className="bg-gray-50 border border-gray-200 rounded p-2">
-                                  <div className="flex items-center justify-between mb-2">
-                                    <div className="text-gray-600 font-semibold">Skill: {skill.skillId}</div>
-                                    <div className="text-gray-500">
-                                      Level: <span className="font-semibold">{skill.level}</span>
-                                      {skill.confidence && (
-                                        <span className="ml-2">
-                                          Confidence: <span className="font-semibold">{(skill.confidence * 100).toFixed(1)}%</span>
-                                        </span>
-                                      )}
-                                    </div>
-                                  </div>
-                                  
-                                  {/* Level Feedback */}
-                                  <div className="mb-2">
-                                    <div className="text-gray-600 font-semibold text-[10px] mb-1">Level Feedback:</div>
-                                    <div className="grid grid-cols-1 gap-1 text-[10px]">
-                                      <div><span className="text-gray-500">Current Level:</span> {skill.levelFeedback.currentLevel}</div>
-                                      <div><span className="text-gray-500">Next Criteria:</span> {skill.levelFeedback.nextLevelCriteria.join(', ')}</div>
-                                      <div><span className="text-gray-500">Strengths:</span> {skill.levelFeedback.strengths.join(', ')}</div>
-                                      <div><span className="text-gray-500">Improvements:</span> {skill.levelFeedback.improvements.join(', ')}</div>
-                                      <div><span className="text-gray-500">Focus:</span> {skill.levelFeedback.focus.join(', ')}</div>
-                                      {skill.levelFeedback.examples && skill.levelFeedback.examples.length > 0 && (
-                                        <div><span className="text-gray-500">Examples:</span> {skill.levelFeedback.examples.join(', ')}</div>
-                                      )}
-                                    </div>
-                                  </div>
-
-                                  {/* Assessment Metadata */}
-                                  <div className="mb-2">
-                                    <div className="text-gray-600 font-semibold text-[10px] mb-1">Metadata:</div>
-                                    <div className="grid grid-cols-2 gap-1 text-[10px]">
-                                      <div><span className="text-gray-500">Provider:</span> {skill.assessmentMetadata.provider || '-'}</div>
-                                      <div><span className="text-gray-500">Model:</span> {skill.assessmentMetadata.modelId || '-'}</div>
-                                      {skill.assessmentMetadata.processingTimeMs && (
-                                        <div><span className="text-gray-500">Time:</span> {skill.assessmentMetadata.processingTimeMs}ms</div>
-                                      )}
-                                      {skill.assessmentMetadata.tokenCount && (
-                                        <div><span className="text-gray-500">Tokens:</span> {skill.assessmentMetadata.tokenCount}</div>
-                                      )}
-                                    </div>
-                                  </div>
-
-                                  {/* Source Context */}
-                                  <div>
-                                    <div className="text-gray-600 font-semibold text-[10px] mb-1">Source Context:</div>
-                                    <div className="grid grid-cols-2 gap-1 text-[10px]">
-                                      {skill.sourceContext.interactionCount && (
-                                        <div><span className="text-gray-500">Interactions:</span> {skill.sourceContext.interactionCount}</div>
-                                      )}
-                                      {skill.sourceContext.transcriptLength && (
-                                        <div><span className="text-gray-500">Transcript:</span> {skill.sourceContext.transcriptLength} chars</div>
-                                      )}
-                                      {skill.sourceContext.assessmentType && (
-                                        <div><span className="text-gray-500">Type:</span> {skill.sourceContext.assessmentType}</div>
-                                      )}
-                                      {skill.sourceContext.sessionDuration && (
-                                        <div><span className="text-gray-500">Duration:</span> {Math.floor(skill.sourceContext.sessionDuration / 60000)}m</div>
-                                      )}
-                                    </div>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        ) : null}
-
-                        {/* Legacy V1 Summary */}
-                        <div className="border-t border-gray-200 pt-2">
-                          <div className="text-gray-600 font-semibold text-[10px] mb-1">Legacy V1 Summary:</div>
-                          <div>
-                            <div className="text-gray-600">highlights:</div>
-                            {assessSummary.highlights.length === 0 ? (
-                              <div className="text-gray-500 text-[12px]">(none)</div>
-                            ) : (
-                              <ul className="list-disc list-inside">
-                                {assessSummary.highlights.map((h, i) => (
-                                  <li key={i}>{h}</li>
-                                ))}
-                              </ul>
-                            )}
-                          </div>
-                          <div>
-                            <div className="text-gray-600">recommendations:</div>
-                            {assessSummary.recommendations.length === 0 ? (
-                              <div className="text-gray-500 text-[12px]">(none)</div>
-                            ) : (
-                              <ul className="list-disc list-inside">
-                                {assessSummary.recommendations.map((h, i) => (
-                                  <li key={i}>{h}</li>
-                                ))}
-                              </ul>
-                            )}
-                          </div>
-                          <div>
-                            <div className="text-gray-600">rubricKeyPoints:</div>
-                            {assessSummary.rubricKeyPoints.length === 0 ? (
-                              <div className="text-gray-500 text-[12px]">(none)</div>
-                            ) : (
-                              <ul className="list-disc list-inside">
-                                {assessSummary.rubricKeyPoints.map((h, i) => (
-                                  <li key={i}>{h}</li>
-                                ))}
-                              </ul>
-                            )}
-                          </div>
-                          <div className="text-gray-600">meta: <span className="text-gray-800">{(() => { try { return JSON.stringify(assessSummary.meta || {}); } catch { return '{}'; } })()}</span></div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Recent assess_* events */}
-                  <div className="bg-white border border-gray-200 rounded p-2">
-                    <div className="text-blue-600 font-semibold text-[12px] mb-1">events (assess_*)</div>
-                    {assessEvents.length === 0 ? (
-                      <div className="text-gray-500 text-[12px]">(none)</div>
-                    ) : (
-                      <div className="space-y-1">
-                        {assessEvents.map((e, i) => (
-                          <div key={i} className="text-[11px] text-gray-700 bg-gray-50 border border-gray-200 rounded px-2 py-1">
-                            <div className="flex items-center justify-between">
-                              <div><span className="text-gray-500">kind:</span> <span className="font-semibold">{e.kind}</span></div>
-                              <div className="text-gray-500">{e.createdAt ? new Date(e.createdAt).toLocaleTimeString() : ''}</div>
-                            </div>
-                            {e.payload ? (
-                              <div className="text-[10px] text-gray-600 mt-1 whitespace-pre overflow-x-auto">{(() => { try { return JSON.stringify(e.payload); } catch { return ''; } })()}</div>
-                            ) : null}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-
-              {activeTab === 'session' && (
-                <div className="space-y-4">
-                  {/* Start New Session Button */}
-                  <div className="border border-gray-200 rounded p-3 bg-blue-50">
-                    <div className="text-sm font-mono text-blue-600 font-semibold mb-2">[SESSION_CONTROLS]</div>
-                    <button
-                      onClick={() => {
-                        if (window.confirm('Start a new session? This will reset all session data and costs.')) {
-                          startNewSession();
-                          // Show success message
-                          setTimeout(() => {
-                            alert('New session started! Session data has been reset.');
-                          }, 100);
-                        }
-                      }}
-                      className="px-4 py-2 bg-blue-600 text-white text-sm font-mono rounded hover:bg-blue-700 transition-colors"
-                    >
-                      Start New Session
-                    </button>
-                    <div className="text-xs text-gray-600 mt-2 font-mono">
-                      Current Session: {sessionId || 'Loading...'}
-                    </div>
-                  </div>
-
-                  {/* Session Cost Summary */}
-                  <div className="border border-gray-200 rounded p-3 bg-gray-50">
-                    <div className="text-sm font-mono text-blue-600 font-semibold mb-2">[SESSION_COST_SUMMARY]</div>
-                    {sessionCosts ? (
-                      <div className="text-xs space-y-2 font-mono">
-                        <div className="grid grid-cols-2 gap-4">
-                          <div>
-                            <div className="text-gray-600">Total Cost:</div>
-                            <div className="text-lg font-bold text-green-600">
-                              ${(sessionCosts.costs.totalCostCents / 100).toFixed(2)}
-                            </div>
-                          </div>
-                          <div>
-                            <div className="text-gray-600">Session Duration:</div>
-                            <div className="text-lg font-bold text-blue-600">
-                              {Math.floor(sessionCosts.metrics.durationMs / 60000)}m {Math.floor((sessionCosts.metrics.durationMs % 60000) / 1000)}s
-                            </div>
-                          </div>
-                        </div>
-                        <div className="grid grid-cols-3 gap-2 pt-2 border-t border-gray-300">
-                          <div className="text-center">
-                            <div className="text-xs text-gray-600">STT</div>
-                            <div className="font-semibold text-orange-600">
-                              ${(sessionCosts.costs.sttCostCents / 100).toFixed(2)}
-                            </div>
-                          </div>
-                          <div className="text-center">
-                            <div className="text-xs text-gray-600">LLM</div>
-                            <div className="font-semibold text-purple-600">
-                              ${(sessionCosts.costs.llmCostCents / 100).toFixed(2)}
-                            </div>
-                          </div>
-                          <div className="text-center">
-                            <div className="text-xs text-gray-600">TTS</div>
-                            <div className="font-semibold text-blue-600">
-                              ${(sessionCosts.costs.ttsCostCents / 100).toFixed(2)}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="pt-2 border-t border-gray-300">
-                          <div className="text-gray-600">Interactions:</div>
-                          <div className="font-semibold text-gray-800">{sessionCosts.metrics.interactionCount}</div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="text-xs text-gray-500 font-mono">Loading session costs...</div>
-                    )}
-                  </div>
-
-                  {/* Per-Interaction Cost History */}
-                  <div className="border border-gray-200 rounded p-3 bg-gray-50">
-                    <div className="text-sm font-mono text-blue-600 font-semibold mb-2">[COST_HISTORY]</div>
-                    {sessionCosts ? (
-                      <div className="text-xs space-y-1 font-mono max-h-40 overflow-auto">
-                        {sessionCosts.interactions.length === 0 ? (
-                          <div className="text-gray-500">(no interactions yet)</div>
-                        ) : (
-                          sessionCosts.interactions.map((interaction: any, index: number) => (
-                            <div key={interaction.id} className="border border-gray-200 rounded p-2 bg-white">
-                              <div className="flex justify-between items-start mb-1">
-                                <span className="text-blue-600 font-semibold">{interaction.role.toUpperCase()}:</span>
-                                <span className="text-gray-600">
-                                  {new Date(interaction.createdAt).toLocaleTimeString()}
-                                </span>
-                              </div>
-                              <div className="text-gray-800 mb-1">
-                                {interaction.text ? (interaction.text.length > 50 ? interaction.text.slice(0, 50) + '...' : interaction.text) : '(no text)'}
-                              </div>
-                              <div className="flex justify-between text-xs">
-                                <span className="text-gray-600">Cost:</span>
-                                <span className="font-semibold text-green-600">
-                                  ${(interaction.costs.totalCostCents / 100).toFixed(2)}
-                                </span>
-                              </div>
-                              {(interaction.costs.sttCostCents > 0 || interaction.costs.llmCostCents > 0 || interaction.costs.ttsCostCents > 0) && (
-                                <div className="flex justify-between text-xs mt-1">
-                                  <span className="text-gray-500">
-                                    STT: ${(interaction.costs.sttCostCents / 100).toFixed(2)} | 
-                                    LLM: ${(interaction.costs.llmCostCents / 100).toFixed(2)} | 
-                                    TTS: ${(interaction.costs.ttsCostCents / 100).toFixed(2)}
-                                  </span>
-                                </div>
-                              )}
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    ) : (
-                      <div className="text-xs text-gray-500 font-mono">Loading cost history...</div>
-                    )}
-                  </div>
-
-                  {/* Session Metrics */}
-                  <div className="border border-gray-200 rounded p-3 bg-gray-50">
-                    <div className="flex justify-between items-center mb-2">
-                      <div className="text-sm font-mono text-blue-600 font-semibold">[SESSION_METRICS]</div>
-                      <button
-                        onClick={fetchSessionMetrics}
-                        disabled={sessionMetricsLoading}
-                        className="text-xs px-2 py-1 bg-blue-100 hover:bg-blue-200 disabled:bg-gray-100 text-blue-700 rounded border border-blue-300 disabled:text-gray-500"
-                      >
-                        {sessionMetricsLoading ? '...' : '↻'}
-                      </button>
-                    </div>
-                    {sessionMetricsLoading ? (
-                      <div className="text-xs text-gray-500 font-mono">Loading session metrics...</div>
-                    ) : sessionMetricsError ? (
-                      <div className="text-xs text-red-500 font-mono">Error: {sessionMetricsError}</div>
-                    ) : sessionMetricsData ? (
-                      <div className="text-xs space-y-1 font-mono">
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">Session ID:</span>
-                          <span className="text-gray-800 font-mono">{sessionMetricsData.sessionId}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">Start Time:</span>
-                          <span className="text-gray-800">
-                            {sessionMetricsData.startTime ? new Date(sessionMetricsData.startTime).toLocaleTimeString() : 'N/A'}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">Last Activity:</span>
-                          <span className="text-gray-800">
-                            {sessionMetricsData.lastActivityAt ? new Date(sessionMetricsData.lastActivityAt).toLocaleTimeString() : 'N/A'}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">Interactions:</span>
-                          <span className="text-gray-800">{sessionMetricsData.interactionCount || 0}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">Total Cost:</span>
-                          <span className="text-gray-800">${((sessionMetricsData.totalCostCents || 0) / 100).toFixed(2)}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">STT Cost:</span>
-                          <span className="text-gray-800">${((sessionMetricsData.sttCostCents || 0) / 100).toFixed(2)}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">LLM Cost:</span>
-                          <span className="text-gray-800">${((sessionMetricsData.llmCostCents || 0) / 100).toFixed(2)}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">TTS Cost:</span>
-                          <span className="text-gray-800">${((sessionMetricsData.ttsCostCents || 0) / 100).toFixed(2)}</span>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="text-xs text-gray-500 font-mono">No session data available</div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Floating Mic Button */}
       <MicMinButton
         showDashboard={showDashboard}
         onDashboardClick={() => setShowDashboard(false)}
       />
+
+      <AssessmentChip
+        sessionId={sessionId || undefined}
+        latestInteraction={(() => {
+          try {
+            const recent = convo.getRecentInteractions(5);
+            if (!Array.isArray(recent) || recent.length === 0) return null;
+
+            const latestUserInteraction = recent
+              .filter((interaction) => interaction && interaction.role === 'user')
+              .sort((a, b) => (b.ts || 0) - (a.ts || 0))[0];
+
+            return latestUserInteraction ? {
+              id: latestUserInteraction.messageId || `user_${latestUserInteraction.ts || Date.now()}`,
+              text: latestUserInteraction.text || '',
+              createdAt: latestUserInteraction.ts || Date.now()
+            } : null;
+          } catch (error) {
+            console.warn('Error getting latest interaction for assessment:', error);
+            return null;
+          }
+        })()}
+        // Pass external state for better synchronization
+        externalState={assessmentChipState}
+        externalExpanded={assessmentChipExpanded}
+        externalResult={latestAssessmentResult}
+        onStateChange={setAssessmentChipState}
+        onExpandedChange={setAssessmentChipExpanded}
+        onAssessmentTriggered={() => {
+          console.log('Assessment triggered for latest interaction');
+          setAssessmentChipState('loading');
+          // Start event polling when assessment is triggered
+          if (!panelCollapsed && (activeTab === 'triage' || activeTab === 'assess')) {
+            startEventPolling();
+          }
+        }}
+        onAssessmentCompleted={(result) => {
+          setAssessmentChipState('completed');
+          setLatestAssessmentResult(result);
+          refreshAssessPanel();
+        }}
+        onAssessmentError={() => {
+          setAssessmentChipState('error');
+        }}
+      />
+
+    </div>
+    </div>
+    </div>
+    </div>
     </div>
   );
 }

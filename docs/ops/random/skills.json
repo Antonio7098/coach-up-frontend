@@ -1,0 +1,633 @@
+{
+    "confirm": "yes",
+    "skills": [
+      {
+        "id": "syntactic_complexity",
+        "title": "Syntactic Complexity",
+        "description": "Ability to construct varied, complex sentences (subordination, embedding, nominalization) to convey nuanced relationships between ideas.",
+        "category": "linguistic_foundation",
+        "isActive": true,
+        "levels": [
+          {
+            "level": 1,
+            "criteria": "Very short, simple SVO sentences; additive flow via simple coordinators.",
+            "examples": [
+              "I went to the store. I bought milk. I came home.",
+              "The cat is black. It is big. I like it."
+            ],
+            "rubricHints": [
+              "Low average clause (T‑unit) length",
+              "Frequent coordinating conjunctions (e.g., and)",
+              "Minimal subordination"
+            ]
+          },
+          {
+            "level": 2,
+            "criteria": "Uses a wider variety of coordinating conjunctions (e.g., but, so) to connect simple ideas.",
+            "examples": [
+              "I wanted to go, but it was raining, so I stayed inside.",
+              "We finished the project, and we were happy with the results."
+            ],
+            "rubricHints": [
+              "Increased variety of coordinators",
+              "Slightly higher average sentence length"
+            ]
+          },
+          {
+            "level": 3,
+            "criteria": "Begins to use simple subordination (because, when); application may be formulaic.",
+            "examples": [
+              "I was late because the train was delayed.",
+              "She cried when she heard the news."
+            ],
+            "rubricHints": [
+              "Presence of simple subordinating conjunctions (e.g., because, when)",
+              "Low subordination index"
+            ]
+          },
+          {
+            "level": 4,
+            "criteria": "Functional, consistent use of dependent clauses to add context and detail.",
+            "examples": [
+              "Since the meeting was cancelled, we went to lunch early.",
+              "I decided to go to the park even though it was cloudy."
+            ],
+            "rubricHints": [
+              "Moderate use of subordination",
+              "Occasional relative pronouns (who, which)"
+            ]
+          },
+          {
+            "level": 5,
+            "criteria": "Good mix of simple, compound, and complex sentences; varied structure.",
+            "examples": [
+              "The report, which was released last week, includes several key findings we should discuss.",
+              "Although the plan was rejected, we proposed an alternative that was accepted."
+            ],
+            "rubricHints": [
+              "Moderate structural variety",
+              "Early relative clause usage"
+            ]
+          },
+          {
+            "level": 6,
+            "criteria": "Frequent embedded clauses; increased information density.",
+            "examples": [
+              "The dog that chased the ball, which was red, ran into the street.",
+              "I think the decision we made, though difficult, was the right one."
+            ],
+            "rubricHints": [
+              "Clear evidence of nested clauses",
+              "Higher average dependency distance"
+            ]
+          },
+          {
+            "level": 7,
+            "criteria": "Regular multi‑clause sentences; controls hierarchical relationships across ideas.",
+            "examples": [
+              "The committee’s recommendation, responding to the unexpected shortfall, was tabled for review.",
+              "The findings, though preliminary, strongly indicate the new treatment’s advantage."
+            ],
+            "rubricHints": [
+              "High frequency of embeddings and participial phrases",
+              "Clear thematic structuring"
+            ]
+          },
+          {
+            "level": 8,
+            "criteria": "Employs nominalizations for abstraction and formal register.",
+            "examples": [
+              "The realization of the project’s complexity led to a reevaluation of the timeline.",
+              "The development of this policy is a functional necessity."
+            ],
+            "rubricHints": [
+              "Frequent nominalizations (‑tion, ‑ment, etc.)",
+              "More abstract style"
+            ]
+          },
+          {
+            "level": 9,
+            "criteria": "Mastery of varied clause types; shifts forms strategically for rhetorical effect.",
+            "examples": [
+              "Why did the decision, ostensibly made to increase efficiency, reduce morale?",
+              "Consider the implications: adopting this method could save millions."
+            ],
+            "rubricHints": [
+              "High variety of main clause types (declarative, interrogative, imperative)",
+              "Advanced rhetorical structuring"
+            ]
+          },
+          {
+            "level": 10,
+            "criteria": "Sophisticated structural mastery: nested clauses, strategic passives, nominalizations for precise discourse.",
+            "examples": [
+              "The proposed policy, predicated on careful macroeconomic analysis, should be given immediate consideration.",
+              "Although early results were inconclusive, subsequent rigorous analysis provided definitive evidence."
+            ],
+            "rubricHints": [
+              "Consistently complex syntax for communicative goals",
+              "High structural sophistication"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "lexical_sophistication",
+        "title": "Lexical Sophistication",
+        "description": "Breadth and depth of vocabulary—precision, variety, domain specificity, and effective figurative/abstract usage.",
+        "category": "linguistic_foundation",
+        "isActive": true,
+        "levels": [
+          {
+            "level": 1,
+            "criteria": "Very small, high‑frequency vocabulary; heavy repetition.",
+            "examples": [
+              "The house is big. It’s a good house. I like the house.",
+              "I like the stuff. It’s good. I want it now."
+            ],
+            "rubricHints": [
+              "Low lexical diversity (e.g., TTR)",
+              "High proportion of top‑2k words",
+              "Short average word length"
+            ]
+          },
+          {
+            "level": 2,
+            "criteria": "Functional but basic vocabulary; avoids some repetition.",
+            "examples": [
+              "The building was large and impressive. We saw many things inside.",
+              "It seems like a good idea and might be helpful."
+            ],
+            "rubricHints": [
+              "Low MTLD",
+              "Moderate frequency of common words"
+            ]
+          },
+          {
+            "level": 3,
+            "criteria": "Introduces simple synonyms to reduce repetition.",
+            "examples": [
+              "The plan was good, and the approach seemed sound.",
+              "The structure was tall, and the design was impressive."
+            ],
+            "rubricHints": [
+              "Increased lexical diversity",
+              "Early synonym substitution"
+            ]
+          },
+          {
+            "level": 4,
+            "criteria": "Solid general‑purpose vocabulary with some descriptive range.",
+            "examples": [
+              "The conference was quite engaging, and I learned a great deal.",
+              "The proposal is sound, though I have reservations."
+            ],
+            "rubricHints": [
+              "Moderate MTLD",
+              "Beyond top‑frequency bands"
+            ]
+          },
+          {
+            "level": 5,
+            "criteria": "Introduces domain‑specific terms appropriate to context.",
+            "examples": [
+              "We analyzed the dataset to identify anomalies.",
+              "The system’s extensibility is a key advantage."
+            ],
+            "rubricHints": [
+              "Domain‑specific vocabulary appears",
+              "Higher content‑word usage"
+            ]
+          },
+          {
+            "level": 6,
+            "criteria": "Prioritizes precise word choice; avoids vague generalities.",
+            "examples": [
+              "A dispassionate assessment supported the conclusion.",
+              "Her meticulous planning improved reliability."
+            ],
+            "rubricHints": [
+              "High precision in selection",
+              "Avoids polyfunctional verbs (make, have)"
+            ]
+          },
+          {
+            "level": 7,
+            "criteria": "Effective figurative language and analogy.",
+            "examples": [
+              "We need to get to the heart of the issue.",
+              "This project is the backbone of our roadmap."
+            ],
+            "rubricHints": [
+              "Presence of idioms and metaphors",
+              "Rhetorical vividness"
+            ]
+          },
+          {
+            "level": 8,
+            "criteria": "Comfortable with abstract and conceptual lexicon.",
+            "examples": [
+              "The confluence of these factors shifted the outcome.",
+              "We must consider long‑term sustainability."
+            ],
+            "rubricHints": [
+              "High frequency of abstract nouns/verbs",
+              "Higher MTLD"
+            ]
+          },
+          {
+            "level": 9,
+            "criteria": "Consistently sophisticated and infrequent vocabulary; nuanced register.",
+            "examples": [
+              "The dichotomy between theory and practice persists.",
+              "A congenial framework for subsequent iterations emerged."
+            ],
+            "rubricHints": [
+              "High vocd‑D",
+              "Low frequency band usage"
+            ]
+          },
+          {
+            "level": 10,
+            "criteria": "Mastery: precise, domain‑appropriate, and rhetorically impactful vocabulary.",
+            "examples": [
+              "This confluence precipitated a seismic shift in market equilibrium.",
+              "Our nascent initiative burgeoned into a robust methodology."
+            ],
+            "rubricHints": [
+              "Consistently high MTLD/vocd‑D",
+              "Expert use of infrequent and domain terms"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "discourse_coherence",
+        "title": "Discourse Coherence",
+        "description": "Logical organization and semantic unity across utterances; effective use of cohesive devices and information flow.",
+        "category": "linguistic_foundation",
+        "isActive": true,
+        "levels": [
+          {
+            "level": 1,
+            "criteria": "Disjointed ideas with no explicit links; listener must infer relationships.",
+            "examples": [
+              "I was tired. The movie was good. I ate popcorn.",
+              "My dog is small. She likes to play. I went for a walk."
+            ],
+            "rubricHints": [
+              "No transitions or cohesive devices",
+              "High semantic distance between sentences",
+              "Minimal anaphora"
+            ]
+          },
+          {
+            "level": 2,
+            "criteria": "Simple sequencing in time; basic chronological order.",
+            "examples": [
+              "I woke up. Then I went to work. After that, I came home.",
+              "First we met, and then we reviewed the notes."
+            ],
+            "rubricHints": [
+              "Basic time‑based conjunctions"
+            ]
+          },
+          {
+            "level": 3,
+            "criteria": "Introduces simple logical links (so, because, but).",
+            "examples": [
+              "I was tired, so I went to bed.",
+              "The project was hard, but we finished on time."
+            ],
+            "rubricHints": [
+              "Coordinating conjunctions for cause/contrast"
+            ]
+          },
+          {
+            "level": 4,
+            "criteria": "Consistent anaphora and referential clarity.",
+            "examples": [
+              "I like my new car. It is reliable and it saves gas.",
+              "Our team worked hard. They delivered ahead of schedule."
+            ],
+            "rubricHints": [
+              "Well‑resolved pronoun references",
+              "Clear linkbacks across sentences"
+            ]
+          },
+          {
+            "level": 5,
+            "criteria": "Functional transitional phrases to guide the listener.",
+            "examples": [
+              "In addition, this approach reduces cost.",
+              "For example, we sold fewer units in Q1."
+            ],
+            "rubricHints": [
+              "Presence of discourse markers (e.g., in addition, for example)"
+            ]
+          },
+          {
+            "level": 6,
+            "criteria": "Signals complex semantic relations (concession, contrast, exemplification).",
+            "examples": [
+              "Nonetheless, the long‑term strategy remains sound.",
+              "On the other hand, adoption has been slower than expected."
+            ],
+            "rubricHints": [
+              "Sophisticated cohesive devices for relations"
+            ]
+          },
+          {
+            "level": 7,
+            "criteria": "Clear macro‑structure (intro/body/conclusion); framed segments.",
+            "examples": [
+              "First, I’ll outline the problem; then the solution; finally, the timeline.",
+              "Our argument proceeds in three steps: hypothesis, evidence, and implications."
+            ],
+            "rubricHints": [
+              "Enumeration and signposting"
+            ]
+          },
+          {
+            "level": 8,
+            "criteria": "Coherence at sentence and paragraph level with multiple threads.",
+            "examples": [
+              "Our initial hypothesis was challenged; specifically, rising input costs altered viability.",
+              "Efficiency is one issue; additionally, scalability affects long‑term success."
+            ],
+            "rubricHints": [
+              "High density and variety of cohesive devices",
+              "Clear signaling of complex relations"
+            ]
+          },
+          {
+            "level": 9,
+            "criteria": "Strategic management of given/new information to reduce cognitive load.",
+            "examples": [
+              "This challenge, as discussed, stems from outdated data.",
+              "These results—already noted—support a revised approach."
+            ],
+            "rubricHints": [
+              "Effective information structure (given → new)"
+            ]
+          },
+          {
+            "level": 10,
+            "criteria": "Flawless logical cohesion throughout a multi‑layered argument or narrative.",
+            "examples": [
+              "While the data suggests growth, countervailing behaviors temper our forecast; therefore, we proceed cautiously.",
+              "First and foremost, reallocate resources; once done, the path forward is clear."
+            ],
+            "rubricHints": [
+              "Consistently high cohesive density",
+              "Complex relation signaling and anaphora"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "rhetorical_effectiveness",
+        "title": "Rhetorical Effectiveness",
+        "description": "Strategic language use (logos, ethos, pathos) to influence outcomes via argumentation, evidence, and rhetorical moves.",
+        "category": "linguistic_foundation",
+        "isActive": true,
+        "levels": [
+          {
+            "level": 1,
+            "criteria": "Descriptive/narrative only; no clear persuasive intent.",
+            "examples": [
+              "The policy changed. People were upset.",
+              "It’s a phone. It works for me."
+            ],
+            "rubricHints": [
+              "No explicit rhetorical moves",
+              "Lack of argument markers"
+            ]
+          },
+          {
+            "level": 2,
+            "criteria": "Simple assertion without justification.",
+            "examples": [
+              "We should adopt this software. It’s the best.",
+              "The project is important. We should prioritize it."
+            ],
+            "rubricHints": [
+              "Bare declarative claims",
+              "No support"
+            ]
+          },
+          {
+            "level": 3,
+            "criteria": "Basic justification with a single reason (because…).",
+            "examples": [
+              "We should do this because it saves time.",
+              "It’s a bad idea because it’s too expensive."
+            ],
+            "rubricHints": [
+              "Simple justification clauses"
+            ]
+          },
+          {
+            "level": 4,
+            "criteria": "Introduces explicit evidence or references.",
+            "examples": [
+              "The report shows adoption is faster.",
+              "According to the data, this reduces cost."
+            ],
+            "rubricHints": [
+              "Evidence markers (according to, data shows)"
+            ]
+          },
+          {
+            "level": 5,
+            "criteria": "Clear thesis and logical progression from claim to evidence.",
+            "examples": [
+              "Our system is inefficient; adopting X will address bottlenecks.",
+              "The team struggles; a new strategy can improve morale."
+            ],
+            "rubricHints": [
+              "Coherent argument structure",
+              "Simple persuasive verbs"
+            ]
+          },
+          {
+            "level": 6,
+            "criteria": "Begins to use ethos (credibility) and pathos (emotion).",
+            "examples": [
+              "As a veteran engineer, I’ve seen this approach succeed.",
+              "This decision affects local families; we must consider them."
+            ],
+            "rubricHints": [
+              "Personal expertise markers or emotional appeals"
+            ]
+          },
+          {
+            "level": 7,
+            "criteria": "Uses refutation and/or concession to address counterpoints.",
+            "examples": [
+              "Some may argue it’s costly, but long‑term benefits outweigh the initial spend.",
+              "While competitors focus on short‑term gains, we prioritize sustainability."
+            ],
+            "rubricHints": [
+              "Refutation and concession markers"
+            ]
+          },
+          {
+            "level": 8,
+            "criteria": "Employs complex moves (rhetorical questions, analogies, pointed examples).",
+            "examples": [
+              "If speed is our goal, why add steps?",
+              "It’s like fixing a leak by turning on the faucet."
+            ],
+            "rubricHints": [
+              "Rhetorical questions and analogies"
+            ]
+          },
+          {
+            "level": 9,
+            "criteria": "Strategic framing to shape audience perception.",
+            "examples": [
+              "Invest now to avoid catastrophic failure later.",
+              "We’re not selling a product; we’re offering a blueprint for success."
+            ],
+            "rubricHints": [
+              "Evaluative language and framing"
+            ]
+          },
+          {
+            "level": 10,
+            "criteria": "Rhetorical mastery: multi‑faceted argument with ethos, pathos, logos in concert.",
+            "examples": [
+              "While short‑term costs rise, the data demonstrates superior long‑term returns, benefiting all stakeholders.",
+              "We cannot disregard community needs; our shared future demands this path."
+            ],
+            "rubricHints": [
+              "Diverse advanced rhetorical moves",
+              "Integrated emotional and logical appeals"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "lexical_fluency",
+        "title": "Lexical Fluency (Filler Reduction)",
+        "description": "Smooth, confident delivery with minimal disfluencies; strategic repetition/pauses for effect rather than hesitation.",
+        "category": "linguistic_foundation",
+        "isActive": true,
+        "levels": [
+          {
+            "level": 1,
+            "criteria": "Heavily disfluent; frequent fillers and repetitions.",
+            "examples": [
+              "I, uh, think the, um, report was, like, good.",
+              "So, I, uhm, went to the store and, uh, I got stuff."
+            ],
+            "rubricHints": [
+              "High filler rate per minute",
+              "Frequent repetitions"
+            ]
+          },
+          {
+            "level": 2,
+            "criteria": "Frequent fillers; message still recoverable but effortful.",
+            "examples": [
+              "The new, um, system is, uh, complex.",
+              "We can, uh, start next week."
+            ],
+            "rubricHints": [
+              "High–moderate filler rate"
+            ]
+          },
+          {
+            "level": 3,
+            "criteria": "Moderate fillers; appear when searching for words or transitioning.",
+            "examples": [
+              "I believe we should, um, wait for the data.",
+              "The plan is, uh, solid overall."
+            ],
+            "rubricHints": [
+              "Moderate filler rate"
+            ]
+          },
+          {
+            "level": 4,
+            "criteria": "Occasional fillers; typically under cognitive load.",
+            "examples": [
+              "The implications are, um, significant.",
+              "We need to, uh, consider all variables."
+            ],
+            "rubricHints": [
+              "Low filler rate"
+            ]
+          },
+          {
+            "level": 5,
+            "criteria": "Minimal fillers; hesitations brief and non‑disruptive.",
+            "examples": [
+              "I propose a phased rollout with real‑time feedback.",
+              "The analysis results are conclusive."
+            ],
+            "rubricHints": [
+              "Very low filler rate"
+            ]
+          },
+          {
+            "level": 6,
+            "criteria": "Repetition used intentionally for emphasis.",
+            "examples": [
+              "This is a crucial—crucial—step.",
+              "I am certain—absolutely certain—this will work."
+            ],
+            "rubricHints": [
+              "Purposeful repetition"
+            ]
+          },
+          {
+            "level": 7,
+            "criteria": "Intentional unfilled pauses to aid processing and emphasis.",
+            "examples": [
+              "Our priority is quality … then speed.",
+              "The solution, as I see it, is simple."
+            ],
+            "rubricHints": [
+              "Strategic, unfilled pauses"
+            ]
+          },
+          {
+            "level": 8,
+            "criteria": "Highly fluid speech; near‑zero disfluencies.",
+            "examples": [
+              "The implications are clear; the path forward is unequivocal.",
+              "Let’s proceed with confidence and clarity."
+            ],
+            "rubricHints": [
+              "Near‑zero filler rate"
+            ]
+          },
+          {
+            "level": 9,
+            "criteria": "Strategic pacing; varies rate and pauses to maintain attention.",
+            "examples": [
+              "This. Is. Not. Optional.",
+              "We’re ready … the technology is prepared … now we execute."
+            ],
+            "rubricHints": [
+              "Purposeful rhythm and pacing"
+            ]
+          },
+          {
+            "level": 10,
+            "criteria": "Effortless fluency; entirely free of non‑purposeful hesitations.",
+            "examples": [
+              "The committee’s unanimous decision advances our trajectory.",
+              "Effective communication is clear, concise, and intentional."
+            ],
+            "rubricHints": [
+              "Zero or near‑zero fillers",
+              "No self‑corrections or false starts"
+            ]
+          }
+        ]
+      }
+    ]
+  }

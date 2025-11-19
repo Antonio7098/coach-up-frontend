@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { devLog } from "../app/api/lib/observability";
 
 export type AudioContextValue = {
   // Autoplay unlock banner state and action
@@ -22,6 +23,9 @@ export function useAudio() {
 }
 
 export function AudioProvider({ children }: { children: React.ReactNode }) {
+  devLog("debug", "AudioContext: initializing audio provider", {
+    timestamp: new Date().toISOString()
+  });
 
   // Standalone playback state (migrated from MicContext)
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -54,15 +58,15 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
         if (!userInteractedRef.current) {
           pendingAudioUrlRef.current = url!;
           setNeedsAudioUnlock(true);
-          try { console.log("AudioContext: Autoplay locked before play(); deferring"); } catch {}
+          devLog("warn", "AudioContext: Autoplay locked before play(), deferring", { url });
           return false;
         }
         await el.play();
-      } catch (e: any) {
-        if (e?.name === "NotAllowedError") {
+      } catch (e: unknown) {
+        if (e instanceof Error && e.name === "NotAllowedError") {
           pendingAudioUrlRef.current = url!;
           setNeedsAudioUnlock(true);
-          try { console.log("AudioContext: play() NotAllowedError; deferring until unlock"); } catch {}
+          devLog("warn", "AudioContext: play() NotAllowedError, deferring until unlock", { url });
           return false;
         }
         // Other playback failure: increment counter and maybe surface error after threshold
